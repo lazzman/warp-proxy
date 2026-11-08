@@ -125,7 +125,7 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
   --restart-retries 2
 ```
 
-- `--upstream` / `UPSTREAM_SOCKS5`：一个或多个 SOCKS5 地址，用逗号分隔。可以写主机和端口，也可以带用户名和密码。按账号序号固定分配，只支持 TCP CONNECT。启动前会探测，失败就退出，不会改走直连。
+- `--upstream` / `UPSTREAM_SOCKS5`：一个或多个 SOCKS5 地址，用逗号分隔。可以写主机和端口，也可以带用户名和密码。按账号序号固定分配，只支持 TCP CONNECT。启动前会探测，失败就退出，不会改走直连。注册请求对齐 usque 的请求头和 Go `net/http` 的 HTTP/2 窗口。遇到 HTTP 429、503 或 Cloudflare `1015` 时，按 `Retry-After` 或递增间隔等待后重试，最多 6 次，不会马上退出再打。
 - `--proxy-mode` / `PROXY_MODE`：默认 `socks5`。`mixed` 和 `http` 都表示同一端口同时接受 SOCKS5 和 HTTP 代理。未配置入口密码时允许匿名；客户端如果带了用户名，会用于黏性。
 - `--strategy` / `LB_STRATEGY`：见「调度」。
 - `--sticky` / `LB_STICKY_MODE`：见「黏性」。

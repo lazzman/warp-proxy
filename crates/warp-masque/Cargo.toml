@@ -18,6 +18,7 @@ p256.workspace = true
 rand.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
+webpki-roots = "1"
 
 # --- tunnel (Phase 0b): QUIC + mTLS, all on the `ring` provider so it builds
 # without a C toolchain (no cmake/nasm for aws-lc / BoringSSL) ---

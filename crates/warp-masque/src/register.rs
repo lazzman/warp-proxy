@@ -14,6 +14,9 @@
 //! from the public WARP app behaviour; they change with app releases, so they
 //! live as constants here. See DESIGN.md for provenance.
 
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
 use serde::Deserialize;
 
 use crate::config::{strip_v4_port, strip_v6_brackets, WarpConfig, DEFAULT_ENDPOINT_H2_V4};
@@ -77,19 +80,15 @@ impl RegistrationClient {
 
     /// Build a client with a sensible default reqwest client.
     pub fn with_default_client() -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .use_rustls_tls()
-            .build()
-            .map_err(Error::Http)?;
-        Ok(Self::new(http))
+        Ok(Self::new(
+            registration_builder().build().map_err(Error::Http)?,
+        ))
     }
 
     /// 注册请求只走这个 SOCKS5，失败时不回退直连。
     pub fn with_socks5(proxy: &crate::upstream::UpstreamProxy) -> Result<Self> {
         let proxy = reqwest::Proxy::all(proxy.reqwest_url()).map_err(Error::Http)?;
-        let http = reqwest::Client::builder()
-            .use_rustls_tls()
-            .timeout(std::time::Duration::from_secs(30))
+        let http = registration_builder()
             .proxy(proxy)
             .build()
             .map_err(Error::Http)?;
@@ -106,8 +105,7 @@ impl RegistrationClient {
                 "DoH bypass could not resolve api.cloudflareclient.com".into(),
             ));
         }
-        let http = reqwest::Client::builder()
-            .use_rustls_tls()
+        let http = registration_builder()
             .resolve_to_addrs(crate::doh::API_HOST, &addrs)
             .build()
             .map_err(Error::Http)?;
@@ -211,17 +209,117 @@ impl RegistrationClient {
 
     /// Send a request and decode a JSON [`AccountData`], surfacing API errors.
     async fn send_json(&self, req: reqwest::RequestBuilder) -> Result<AccountData> {
-        let resp = req.send().await?;
-        let status = resp.status();
-        let text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                body: text,
-            });
+        let prepared = req.build().map_err(Error::Http)?;
+        for attempt in 0..RATE_LIMIT_ATTEMPTS {
+            let retryable = prepared
+                .try_clone()
+                .ok_or_else(|| Error::Response("注册请求无法在限流后重试".into()))?;
+            let resp = self.http.execute(retryable).await?;
+            let status = resp.status();
+            let retry_after = retry_after_header(resp.headers());
+            let text = resp.text().await?;
+            if status.is_success() {
+                return serde_json::from_str(&text).map_err(Error::Json);
+            }
+            let status = status.as_u16();
+            let limited = is_rate_limited(status, &text);
+            if limited && attempt + 1 < RATE_LIMIT_ATTEMPTS {
+                let wait = rate_limit_delay(attempt, retry_after, &text);
+                eprintln!(
+                    "[register] 注册被限流 HTTP {status}，{} 秒后重试（{}/{}）",
+                    wait.as_secs(),
+                    attempt + 1,
+                    RATE_LIMIT_ATTEMPTS
+                );
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            return Err(Error::Api { status, body: text });
         }
-        serde_json::from_str(&text).map_err(Error::Json)
+        Err(Error::Response("注册重试次数已用完".into()))
     }
+}
+
+/// usque 4.2.1 使用 Go 1.26 的默认 `net/http`。这里对齐它的 HTTP/2 窗口，
+/// 并把 rustls 支持的套件排成 Go 的偏好顺序。ClientHello 扩展顺序仍由 rustls 决定，
+/// 不能和 Go 逐字节相同。
+fn registration_builder() -> reqwest::ClientBuilder {
+    reqwest::ClientBuilder::new()
+        .use_preconfigured_tls(registration_tls())
+        .timeout(Duration::from_secs(30))
+        .http2_initial_stream_window_size(4 << 20)
+        .http2_initial_connection_window_size(1 << 30)
+        .http2_max_frame_size(1 << 20)
+        .http2_adaptive_window(false)
+}
+
+fn registration_tls() -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut config = rustls::ClientConfig::builder_with_provider(go_crypto_provider())
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .expect("rustls 支持 TLS 1.3 和 1.2")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    config
+}
+
+fn go_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    static PROVIDER: OnceLock<Arc<rustls::crypto::CryptoProvider>> = OnceLock::new();
+    PROVIDER
+        .get_or_init(|| {
+            let base = rustls::crypto::ring::default_provider();
+            let preferred = [
+                rustls::CipherSuite::TLS13_AES_128_GCM_SHA256,
+                rustls::CipherSuite::TLS13_AES_256_GCM_SHA384,
+                rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+                rustls::CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                rustls::CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                rustls::CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                rustls::CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                rustls::CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                rustls::CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            ];
+            let mut ordered = Vec::new();
+            for suite in preferred {
+                if let Some(found) = base.cipher_suites.iter().find(|item| item.suite() == suite) {
+                    ordered.push(*found);
+                }
+            }
+            for suite in &base.cipher_suites {
+                if !ordered.iter().any(|item| item.suite() == suite.suite()) {
+                    ordered.push(*suite);
+                }
+            }
+            let mut provider = base;
+            provider.cipher_suites = ordered;
+            Arc::new(provider)
+        })
+        .clone()
+}
+
+const RATE_LIMIT_ATTEMPTS: u32 = 6;
+
+fn is_rate_limited(status: u16, body: &str) -> bool {
+    status == 429
+        || status == 503
+        || body.contains("1015")
+        || body.to_ascii_lowercase().contains("rate limit")
+}
+
+fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let seconds = value.trim().parse::<u64>().ok()?;
+    Some(Duration::from_secs(seconds))
+}
+
+fn rate_limit_delay(attempt: u32, retry_after: Option<Duration>, body: &str) -> Duration {
+    let requested = retry_after.unwrap_or_else(|| {
+        let base = if body.contains("1015") { 60 } else { 15 };
+        Duration::from_secs(base << attempt.min(4))
+    });
+    requested.clamp(Duration::from_secs(1), Duration::from_secs(10 * 60))
 }
 
 /// Assemble a [`WarpConfig`] from the enroll response.
@@ -346,5 +444,28 @@ mod tests {
         assert_eq!(cfg.id, "device-123");
         assert_eq!(cfg.ipv4, "100.96.0.3/32");
         assert!(cfg.endpoint_pub_key.contains("BEGIN PUBLIC KEY"));
+    }
+
+    #[test]
+    fn cloudflare_1015_waits_longer_than_a_plain_429() {
+        assert!(is_rate_limited(429, "error code: 1015"));
+        assert!(is_rate_limited(403, "error code: 1015"));
+        assert!(!is_rate_limited(400, "bad request"));
+        assert_eq!(
+            rate_limit_delay(0, None, "error code: 1015"),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            rate_limit_delay(1, None, "slow down"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            rate_limit_delay(0, Some(Duration::from_secs(5)), "1015"),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            rate_limit_delay(8, None, "1015"),
+            Duration::from_secs(10 * 60)
+        );
     }
 }
