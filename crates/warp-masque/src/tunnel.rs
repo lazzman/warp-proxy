@@ -184,9 +184,26 @@ impl Tunnel {
         kp: &DeviceKeypair,
         transport: Transport,
     ) -> Result<Tunnel> {
+        Self::connect_via(cfg, kp, transport, None).await
+    }
+
+    /// 与 connect_with 相同，但 HTTP/2 可以经 SOCKS5 CONNECT 拨号。
+    pub async fn connect_via(
+        cfg: &WarpConfig,
+        kp: &DeviceKeypair,
+        transport: Transport,
+        upstream: Option<&crate::upstream::UpstreamProxy>,
+    ) -> Result<Tunnel> {
         match transport {
-            Transport::Http3 => Self::connect_h3(cfg, kp).await,
-            Transport::Http2 => crate::h2tunnel::connect_h2(cfg, kp).await,
+            Transport::Http3 => {
+                if upstream.is_some() {
+                    return Err(Error::Config(
+                        "上游 SOCKS5 不能承载 HTTP/3，请改用 HTTP/2".into(),
+                    ));
+                }
+                Self::connect_h3(cfg, kp).await
+            }
+            Transport::Http2 => crate::h2tunnel::connect_h2(cfg, kp, upstream).await,
         }
     }
 

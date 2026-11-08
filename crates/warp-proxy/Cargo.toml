@@ -17,4 +17,3 @@ warp-masque = { path = "../warp-masque" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 serde_json.workspace = true
 anyhow.workspace = true
-rand.workspace = true

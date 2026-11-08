@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARP 管理</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f3f5f8;
+  --card: #fff;
+  --text: #1b1e27;
+  --muted: #5d6675;
+  --line: #d7dde7;
+  --accent: #1f6feb;
+  --danger: #b42318;
+  --ok: #067647;
+  --warn: #b54708;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11141a;
+    --card: #1b2029;
+    --text: #e7ebf2;
+    --muted: #a4adba;
+    --line: #303846;
+    --accent: #79a9ff;
+    --danger: #ff8f86;
+    --ok: #73d9a1;
+    --warn: #fec84b;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+main { max-width: 920px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 8px 0; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input[type="password"], input[type="number"] {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  min-width: 0;
+}
+input[type="password"] { flex: 1 1 180px; }
+button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+button.danger { color: var(--danger); }
+button:disabled { opacity: 0.55; cursor: default; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; }
+.stat b { display: block; font-size: 16px; }
+.stat span { color: var(--muted); font-size: 12px; }
+.accounts { display: grid; gap: 12px; }
+.badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+}
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--danger); }
+.msg { min-height: 1.2em; color: var(--danger); margin: 8px 0 0; }
+.head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>WARP 管理</h1>
+  <p class="sub" id="origin"></p>
+  <section class="card">
+    <div class="row">
+      <input id="token" type="password" autocomplete="off" spellcheck="false" aria-label="管理密码" placeholder="输入管理密码">
+      <button id="connect" class="primary" type="button">连接</button>
+    </div>
+    <p class="msg" id="msg"></p>
+  </section>
+  <section class="card" id="overview" hidden>
+    <div class="stats" id="stats"></div>
+    <div class="row" id="global" style="margin-top:12px"></div>
+    <div class="row" id="plan" style="margin-top:8px"></div>
+  </section>
+  <section class="accounts" id="accounts"></section>
+</main>
+<script>
+const tokenInput = document.querySelector("#token");
+const msg = document.querySelector("#msg");
+const overview = document.querySelector("#overview");
+const stats = document.querySelector("#stats");
+const globalActions = document.querySelector("#global");
+const plan = document.querySelector("#plan");
+const accounts = document.querySelector("#accounts");
+document.querySelector("#origin").textContent = location.origin;
+
+const params = new URLSearchParams(location.search);
+if (params.get("token")) {
+  sessionStorage.setItem("warpToken", params.get("token"));
+  params.delete("token");
+  const next = params.toString();
+  history.replaceState(null, "", location.pathname + (next ? "?" + next : ""));
+}
+tokenInput.value = sessionStorage.getItem("warpToken") || "";
+
+let busy = false;
+
+function setMsg(text) { msg.textContent = text || ""; }
+
+async function api(path) {
+  const resp = await fetch(path, {
+    headers: { "X-Warp-Token": tokenInput.value.trim() },
+    cache: "no-store"
+  });
+  const data = await resp.json().catch(() => ({ error: "响应不是 JSON" }));
+  if (!resp.ok) throw new Error(data.error || resp.statusText);
+  return data;
+}
+
+function planText(status) {
+  if (!status.restart_seconds) return "关闭";
+  const batch = status.restart_batch ? status.restart_batch + " 个" : "全部";
+  const parallel = status.restart_concurrency ? "，同时 " + status.restart_concurrency : "";
+  const defer = status.restart_defer_seconds ? "，忙碌延后 " + status.restart_defer_seconds + " 秒" : "";
+  return "每 " + status.restart_seconds + " 秒 " + batch + parallel + defer;
+}
+
+function labelText(text) {
+  const node = document.createElement("span");
+  node.className = "sub";
+  node.style.margin = "0";
+  node.textContent = text;
+  return node;
+}
+
+function stat(label, value) {
+  const box = document.createElement("div");
+  box.className = "stat";
+  const strong = document.createElement("b");
+  strong.textContent = value;
+  const span = document.createElement("span");
+  span.textContent = label;
+  box.append(strong, span);
+  return box;
+}
+
+function button(label, className, onClick) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.textContent = label;
+  if (className) node.className = className;
+  node.disabled = busy;
+  node.addEventListener("click", onClick);
+  return node;
+}
+
+function badge(text, kind) {
+  const node = document.createElement("span");
+  node.className = "badge" + (kind ? " " + kind : "");
+  node.textContent = text;
+  return node;
+}
+
+function render(status) {
+  overview.hidden = false;
+  stats.replaceChildren(
+    stat("代理", status.enabled ? "开启" : "关闭"),
+    stat("调度", status.mode === "pinned" ? "固定 #" + status.pinned : "自动"),
+    stat("策略", status.strategy || "-"),
+    stat("黏性", status.sticky || "-"),
+    stat("传输", status.http2 ? "HTTP/2" : "HTTP/3"),
+    stat("换号间隔", status.rotate_seconds ? status.rotate_seconds + " 秒" : "关闭"),
+    stat("保身份计划", planText(status))
+  );
+  if (!plan.contains(document.activeElement)) {
+    const seconds = document.createElement("input");
+    seconds.type = "number";
+    seconds.min = "0";
+    seconds.step = "60";
+    seconds.value = String(status.restart_seconds || 0);
+    seconds.setAttribute("aria-label", "保身份重启间隔秒数，0 表示关闭");
+    seconds.style.width = "110px";
+    const batch = document.createElement("input");
+    batch.type = "number";
+    batch.min = "0";
+    batch.step = "1";
+    batch.value = String(status.restart_batch || 0);
+    batch.setAttribute("aria-label", "每批账号数，0 表示全部");
+    batch.style.width = "80px";
+    const defer = document.createElement("input");
+    defer.type = "number";
+    defer.min = "0";
+    defer.step = "60";
+    defer.value = String(status.restart_defer_seconds || 0);
+    defer.setAttribute("aria-label", "忙碌时延后重启的秒数，0 表示立即排空");
+    defer.style.width = "90px";
+    plan.replaceChildren(
+      labelText("间隔"),
+      seconds,
+      labelText("每批"),
+      batch,
+      labelText("延后"),
+      defer,
+      button("设置分批重启", "", () => run(
+        "/api/restart-plan?seconds=" + encodeURIComponent(seconds.value || "0") +
+        "&batch=" + encodeURIComponent(batch.value || "0") +
+        "&defer=" + encodeURIComponent(defer.value || "0")
+      ))
+    );
+  }
+  if (!globalActions.contains(document.activeElement)) {
+    const unpin = button("取消固定", "", () => run("/api/select?slot=0"));
+    unpin.disabled = busy || !status.pinned;
+    const interval = document.createElement("input");
+    interval.type = "number";
+    interval.min = "0";
+    interval.step = "60";
+    interval.value = String(status.rotate_seconds || 0);
+    interval.setAttribute("aria-label", "换号间隔秒数，0 表示关闭，最小 60");
+    interval.style.width = "96px";
+    globalActions.replaceChildren(
+      button(status.enabled ? "关闭代理" : "开启代理", "primary", () => run("/api/toggle?on=" + (!status.enabled))),
+      button(status.http2 ? "改用 HTTP/3" : "改用 HTTP/2", "", () => run("/api/http2?on=" + (!status.http2))),
+      button("刷新出口", "", () => run("/api/trace?slot=0")),
+      button("保身份重启全部", "", () => run("/api/restart?slot=0")),
+      button("添加账号", "", () => run("/api/account/add")),
+      unpin,
+      interval,
+      button("设置换号", "", () => run("/api/interval?seconds=" + encodeURIComponent(interval.value || "0")))
+    );
+  }
+  accounts.replaceChildren();
+  for (const account of status.accounts || []) {
+    const card = document.createElement("article");
+    card.className = "card";
+    const head = document.createElement("div");
+    head.className = "head";
+    const title = document.createElement("strong");
+    title.textContent = "账号 " + account.id;
+    const flags = document.createElement("div");
+    flags.className = "row";
+    flags.append(
+      badge(account.ready ? "就绪" : "未就绪", account.ready ? "ok" : "bad"),
+      badge(account.tunnel ? "隧道在线" : "无隧道", account.tunnel ? "ok" : "bad")
+    );
+    if (account.draining) flags.append(badge("排空中", "warn"));
+    if (account.deferred) flags.append(badge("延后重启", "warn"));
+    if (status.pinned === account.id) flags.append(badge("已固定", ""));
+    head.append(title, flags);
+    const trace = account.trace || {};
+    const meta = document.createElement("p");
+    meta.className = "sub";
+    meta.textContent = [
+      "内网 " + (account.ip || "-"),
+      "出口 " + (trace.ip || "-"),
+      "节点 " + (trace.colo || "-"),
+      "WARP " + (trace.warp || "-"),
+      "连接 " + account.active
+    ].join(" · ");
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const id = account.id;
+    actions.append(
+      button(status.pinned === id ? "取消固定" : "固定", "", () => run("/api/select?slot=" + (status.pinned === id ? 0 : id))),
+      button("重连", "", () => run("/api/reconnect?slot=" + id)),
+      button("保身份重启", "", () => run("/api/restart?slot=" + id)),
+      button("刷新出口", "", () => run("/api/trace?slot=" + id)),
+      button("换新身份", "danger", () => {
+        if (confirm("账号 " + id + " 会重新注册，出口地址会变。继续？")) run("/api/rotate?slot=" + id);
+      }),
+      button("删除", "danger", () => {
+        if (confirm("删除账号 " + id + "？至少要留一个账号。")) run("/api/account/remove?slot=" + id);
+      })
+    );
+    card.append(head, meta, actions);
+    accounts.append(card);
+  }
+}
+
+async function refresh() {
+  if (busy || !tokenInput.value.trim()) return;
+  try {
+    render(await api("/api/status"));
+    setMsg("");
+  } catch (err) {
+    setMsg(err.message || String(err));
+  }
+}
+
+async function run(path) {
+  if (busy) return;
+  busy = true;
+  setMsg("正在处理…");
+  try {
+    render(await api(path));
+    setMsg("");
+  } catch (err) {
+    setMsg(err.message || String(err));
+  } finally {
+    busy = false;
+    refresh();
+  }
+}
+
+document.querySelector("#connect").addEventListener("click", () => {
+  sessionStorage.setItem("warpToken", tokenInput.value.trim());
+  refresh();
+});
+tokenInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") document.querySelector("#connect").click();
+});
+setInterval(refresh, 3000);
+refresh();
+</script>
+</body>
+</html>

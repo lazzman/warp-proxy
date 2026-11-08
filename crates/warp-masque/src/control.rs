@@ -1,10 +1,9 @@
-//! A minimal, token-guarded HTTP control API over loopback for driving the
-//! [`Pool`] live: status, WARP on/off, account select/rotate/reconnect, transport
-//! toggle, egress trace, and account add/remove.
+//! 本机回环上的控制接口，用来查看状态、开关 WARP、固定或轮换账号、重连、
+//! 保身份重启、刷新出口，以及增删账号。`GET /` 同时提供管理页面。
 //!
-//! It speaks just enough HTTP/1.1 to avoid a heavy dependency. Every request
-//! must carry the shared `X-Warp-Token` header (the API is reachable from any
-//! page the user visits, so this prevents a hostile site from toggling WARP off).
+//! 只实现了够用的 HTTP/1.1，避免再加一套网页框架。除了管理页面本身，
+//! 每个接口都要带 `X-Warp-Token`。页面可以被浏览器直接打开，但不能在里面
+//! 放令牌，否则其它网站拿到页面就等于拿到控制权。
 
 use std::sync::Arc;
 
@@ -49,8 +48,17 @@ async fn handle(mut conn: TcpStream, pool: Arc<Pool>, token: Arc<String>) -> std
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("");
 
-    // CORS preflight needs no token.
+    // 浏览器预检不带令牌。
     if method == "OPTIONS" {
+        return write_resp(&mut conn, "204 No Content", "").await;
+    }
+
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    // 管理页面必须能被地址栏打开，所以这里不校验令牌。页面里没有密钥。
+    if method == "GET" && is_panel_path(path) {
+        return write_html(&mut conn, PANEL_HTML).await;
+    }
+    if method == "GET" && path == "/favicon.ico" {
         return write_resp(&mut conn, "204 No Content", "").await;
     }
 
@@ -66,7 +74,6 @@ async fn handle(mut conn: TcpStream, pool: Arc<Pool>, token: Arc<String>) -> std
         return write_json(&mut conn, "403 Forbidden", "{\"error\":\"forbidden\"}").await;
     }
 
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
     match route(&pool, path, query).await {
         Ok(body) => write_json(&mut conn, "200 OK", &body).await,
         Err(msg) => {
@@ -83,6 +90,23 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
         "/api/toggle" => pool.set_enabled(bool_param(query, "on", true)),
         "/api/select" => pool.select(int_param(query, "slot").unwrap_or(0) as usize),
         "/api/reconnect" => pool.reconnect(int_param(query, "slot").unwrap_or(0) as usize),
+        "/api/restart" => {
+            pool.restart(int_param(query, "slot").unwrap_or(0) as usize)
+                .await?
+        }
+        "/api/restart-plan" => {
+            let seconds = int_param(query, "seconds");
+            let batch = int_param(query, "batch");
+            let defer = int_param(query, "defer");
+            if seconds.is_none() && batch.is_none() && defer.is_none() {
+                return Err("需要 seconds、batch 或 defer".into());
+            }
+            pool.set_restart_plan(
+                seconds.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
+                batch.map(|count| count.max(0) as usize),
+                defer.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
+            );
+        }
         "/api/rotate" => pool
             .rotate(int_param(query, "slot").unwrap_or(0) as usize)
             .await
@@ -145,6 +169,27 @@ async fn write_json(conn: &mut TcpStream, status: &str, body: &str) -> std::io::
     conn.write_all(resp.as_bytes()).await
 }
 
+const PANEL_HTML: &str = include_str!("panel.html");
+
+/// 管理页面只挂在这两个路径上，避免把接口误当成网页。
+fn is_panel_path(path: &str) -> bool {
+    matches!(path, "/" | "/panel" | "/panel/")
+}
+
+async fn write_html(conn: &mut TcpStream, body: &str) -> std::io::Result<()> {
+    let resp = format!(
+        "HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Content-Length: {}
+         Cache-Control: no-store
+Connection: close
+
+{body}",
+        body.len()
+    );
+    conn.write_all(resp.as_bytes()).await
+}
+
 async fn write_resp(conn: &mut TcpStream, status: &str, body: &str) -> std::io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\
@@ -153,4 +198,36 @@ async fn write_resp(conn: &mut TcpStream, status: &str, body: &str) -> std::io::
         body.len()
     );
     conn.write_all(resp.as_bytes()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_panel_path, PANEL_HTML};
+
+    #[test]
+    fn panel_paths_are_only_the_html_pages() {
+        assert!(is_panel_path("/"));
+        assert!(is_panel_path("/panel"));
+        assert!(is_panel_path("/panel/"));
+        assert!(!is_panel_path("/api/status"));
+        assert!(!is_panel_path("/panel/extra"));
+    }
+
+    #[test]
+    fn panel_html_uses_the_control_api_without_embedding_a_token() {
+        for path in [
+            "/api/status",
+            "/api/toggle",
+            "/api/select",
+            "/api/restart",
+            "/api/restart-plan",
+            "/api/rotate",
+            "/api/account/add",
+            "/api/account/remove",
+        ] {
+            assert!(PANEL_HTML.contains(path), "{path}");
+        }
+        assert!(PANEL_HTML.contains("X-Warp-Token"));
+        assert!(!PANEL_HTML.contains("controlToken"));
+    }
 }

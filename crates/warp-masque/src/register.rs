@@ -84,6 +84,18 @@ impl RegistrationClient {
         Ok(Self::new(http))
     }
 
+    /// 注册请求只走这个 SOCKS5，失败时不回退直连。
+    pub fn with_socks5(proxy: &crate::upstream::UpstreamProxy) -> Result<Self> {
+        let proxy = reqwest::Proxy::all(proxy.reqwest_url()).map_err(Error::Http)?;
+        let http = reqwest::Client::builder()
+            .use_rustls_tls()
+            .timeout(std::time::Duration::from_secs(30))
+            .proxy(proxy)
+            .build()
+            .map_err(Error::Http)?;
+        Ok(Self::new(http))
+    }
+
     /// Build a client that reaches `api.cloudflareclient.com` via DoH-resolved
     /// (and fallback) IPs, pinning the address while keeping the real TLS SNI —
     /// for networks that poison the API hostname. No admin / hosts-file edit.

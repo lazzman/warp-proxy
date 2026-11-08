@@ -62,7 +62,11 @@ impl H2Io {
 }
 
 /// Establish the MASQUE tunnel over HTTP/2.
-pub async fn connect_h2(cfg: &WarpConfig, kp: &DeviceKeypair) -> Result<Tunnel> {
+pub async fn connect_h2(
+    cfg: &WarpConfig,
+    kp: &DeviceKeypair,
+    upstream: Option<&crate::upstream::UpstreamProxy>,
+) -> Result<Tunnel> {
     let ep = {
         let v4 = if cfg.endpoint_h2_v4.trim().is_empty() {
             DEFAULT_ENDPOINT_H2_V4
@@ -76,7 +80,13 @@ pub async fn connect_h2(cfg: &WarpConfig, kp: &DeviceKeypair) -> Result<Tunnel> 
     };
 
     // TCP + TLS (ALPN h2), same mTLS identity + endpoint pinning as HTTP/3.
-    let tcp = TcpStream::connect(ep).await?;
+    let tcp = if let Some(upstream) = upstream {
+        crate::upstream::connect_via(upstream, ep)
+            .await
+            .map_err(|err| Error::Tunnel(format!("经上游连接 MASQUE 失败: {err}")))?
+    } else {
+        TcpStream::connect(ep).await?
+    };
     tcp.set_nodelay(true).ok();
     let tls_cfg = tunnel_client_config(cfg, kp, &[b"h2"])?;
     let connector = tokio_rustls::TlsConnector::from(Arc::new(tls_cfg));

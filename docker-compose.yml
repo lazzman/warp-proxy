@@ -1,0 +1,40 @@
+# 默认只发布到本机回环，避免代理和控制面板直接暴露到公网。
+# 管理面板密码由 CONTROL_PASSWORD 决定，默认 admin。
+services:
+  warp-proxy:
+    image: ghcr.io/lazzman/warp-proxy:latest
+    build: .
+    container_name: warp-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1080:1080"
+      - "127.0.0.1:47100:47100"
+    environment:
+      INSTANCE_COUNT: "1"
+      BIND_ADDR: "0.0.0.0"
+      BIND_PORT: "1080"
+      CONTROL_ADDR: "0.0.0.0"
+      CONTROL_PORT: "47100"
+      CONTROL_PASSWORD: "admin"
+      STATE_DIR: /var/lib/warp-proxy
+      PROXY_MODE: mixed
+      MASQUE_HTTP2: "0"
+      RESOLVE_PREFERENCE: auto
+      LB_STRATEGY: round
+      LB_STICKY_MODE: username-round
+      LB_ROTATE_INTERVAL: 5m
+      LB_ACCESS_LOG: "0"
+      # 需要上游时设置 UPSTREAM_SOCKS5，格式为 socks5://用户:密码@主机:端口。
+      # 需要入口认证时同时设置 SOCKS_USER 和 SOCKS_PASS。
+      ROTATE_RESTART_INTERVAL: "0"
+      ROTATE_RESTART_BATCH: "1"
+      ROTATE_RESTART_DEFER: "0"
+      ROTATE_RESTART_DRAIN_TIMEOUT: 660s
+      ROTATE_RESTART_PROBE_TIMEOUT: 90s
+      ROTATE_RESTART_RETRIES: "2"
+      ROTATE_RESTART_CONCURRENCY: "1"
+    volumes:
+      - warp-proxy-state:/var/lib/warp-proxy
+
+volumes:
+  warp-proxy-state:

@@ -36,6 +36,95 @@ const SOCK_BUF: usize = 64 * 1024;
 const RECV_CHUNK: usize = 8 * 1024;
 const CHAN_DEPTH: usize = 64;
 
+/// 隧道内域名解析的地址族偏好。字面量 IP 也按这个偏好过滤。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvePreference {
+    /// 同时查询 A 和 AAAA，两者都有时用 IPv4。
+    Auto,
+    Ipv4Prefer,
+    Ipv6Prefer,
+    Ipv4Only,
+    Ipv6Only,
+}
+
+impl ResolvePreference {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Ok(Self::Auto),
+            "ipv4_prefer" | "ipv4-prefer" => Ok(Self::Ipv4Prefer),
+            "ipv6_prefer" | "ipv6-prefer" => Ok(Self::Ipv6Prefer),
+            "ipv4_only" | "ipv4" | "v4" => Ok(Self::Ipv4Only),
+            "ipv6_only" | "ipv6" | "v6" => Ok(Self::Ipv6Only),
+            other => Err(format!(
+                "未知 RESOLVE_PREFERENCE={other}（auto|ipv4_prefer|ipv6_prefer|ipv4_only|ipv6_only）"
+            )),
+        }
+    }
+}
+
+/// 域名或字面量地址在进入 DNS 之前的决定。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ResolvePlan {
+    /// 已经有最终结果，不再发查询。
+    Ready(Result<IpAddr, String>),
+    /// 需要向隧道内 DNS 查询的地址族。
+    Lookup {
+        preference: ResolvePreference,
+        query_v4: bool,
+        query_v6: bool,
+    },
+}
+
+/// 根据偏好和隧道是否拥有 IPv6，决定字面量是否放行、以及要查 A 还是 AAAA。
+pub(crate) fn plan_resolve(
+    name: &str,
+    preference: ResolvePreference,
+    ipv6_enabled: bool,
+) -> ResolvePlan {
+    if let Ok(ip) = name.parse::<IpAddr>() {
+        let allowed = match ip {
+            IpAddr::V4(_) => preference != ResolvePreference::Ipv6Only,
+            IpAddr::V6(_) => ipv6_enabled && preference != ResolvePreference::Ipv4Only,
+        };
+        return ResolvePlan::Ready(if allowed {
+            Ok(ip)
+        } else {
+            Err("地址族与解析偏好不符".into())
+        });
+    }
+    if preference == ResolvePreference::Ipv6Only && !ipv6_enabled {
+        return ResolvePlan::Ready(Err("隧道没有 IPv6 地址".into()));
+    }
+    let preference = if ipv6_enabled {
+        preference
+    } else {
+        ResolvePreference::Ipv4Only
+    };
+    ResolvePlan::Lookup {
+        query_v4: preference != ResolvePreference::Ipv6Only,
+        query_v6: preference != ResolvePreference::Ipv4Only,
+        preference,
+    }
+}
+
+/// 按偏好从两组结果里选一个地址。
+pub fn select_ip(
+    preference: ResolvePreference,
+    v4: &[IpAddr],
+    v6: &[IpAddr],
+) -> Result<IpAddr, String> {
+    let v4 = v4.iter().find(|ip| ip.is_ipv4()).cloned();
+    let v6 = v6.iter().find(|ip| ip.is_ipv6()).cloned();
+    match preference {
+        ResolvePreference::Ipv4Only => v4.ok_or_else(|| "没有 IPv4 地址".into()),
+        ResolvePreference::Ipv6Only => v6.ok_or_else(|| "没有 IPv6 地址".into()),
+        ResolvePreference::Ipv6Prefer => v6.or(v4).ok_or_else(|| "没有地址".into()),
+        ResolvePreference::Auto | ResolvePreference::Ipv4Prefer => {
+            v4.or(v6).ok_or_else(|| "没有地址".into())
+        }
+    }
+}
+
 /// Commands sent from the async world to the smoltcp actor thread.
 enum Cmd {
     Inbound(Vec<u8>),
@@ -239,6 +328,16 @@ impl Drop for TcpWriter {
 /// Spawn the netstack: a feeder task pumping tunnel→actor, and the smoltcp actor
 /// thread. Returns a [`NetHandle`] for the async world.
 pub fn spawn(io: TunnelIo, assigned_v4: Ipv4Addr, assigned_v6: Option<Ipv6Addr>) -> NetHandle {
+    spawn_with(io, assigned_v4, assigned_v6, ResolvePreference::Ipv4Only)
+}
+
+/// 与 [`spawn`] 相同，但按 `preference` 解析域名。
+pub fn spawn_with(
+    io: TunnelIo,
+    assigned_v4: Ipv4Addr,
+    assigned_v6: Option<Ipv6Addr>,
+    preference: ResolvePreference,
+) -> NetHandle {
     let mtu = io.max_ip_packet().clamp(576, 1280);
     let (cmd_tx, cmd_rx) = smpsc::channel::<Cmd>();
 
@@ -255,7 +354,7 @@ pub fn spawn(io: TunnelIo, assigned_v4: Ipv4Addr, assigned_v6: Option<Ipv6Addr>)
 
     std::thread::Builder::new()
         .name("warp-netstack".into())
-        .spawn(move || Actor::new(io, mtu, assigned_v4, assigned_v6).run(cmd_rx))
+        .spawn(move || Actor::new(io, mtu, assigned_v4, assigned_v6, preference).run(cmd_rx))
         .expect("spawn netstack thread");
 
     NetHandle { cmd: cmd_tx }
@@ -271,8 +370,23 @@ struct Conn {
 }
 
 struct PendingDns {
-    query: dns::QueryHandle,
     reply: oneshot::Sender<Result<IpAddr, String>>,
+    preference: ResolvePreference,
+    v4: QuerySlot,
+    v6: QuerySlot,
+}
+
+enum QuerySlot {
+    Skip,
+    Pending(dns::QueryHandle),
+    Ready(Vec<IpAddr>),
+    Failed,
+}
+
+impl QuerySlot {
+    fn pending(&self) -> bool {
+        matches!(self, Self::Pending(_))
+    }
 }
 
 struct Actor {
@@ -285,10 +399,18 @@ struct Actor {
     conns: HashMap<SocketHandle, Conn>,
     dns_handle: SocketHandle,
     dns_pending: Vec<PendingDns>,
+    preference: ResolvePreference,
+    ipv6_enabled: bool,
 }
 
 impl Actor {
-    fn new(io: TunnelIo, mtu: usize, v4: Ipv4Addr, v6: Option<Ipv6Addr>) -> Self {
+    fn new(
+        io: TunnelIo,
+        mtu: usize,
+        v4: Ipv4Addr,
+        v6: Option<Ipv6Addr>,
+        preference: ResolvePreference,
+    ) -> Self {
         let mut device = TunDevice {
             rx: VecDeque::new(),
             tx: Vec::new(),
@@ -331,6 +453,8 @@ impl Actor {
             conns: HashMap::new(),
             dns_handle,
             dns_pending: Vec::new(),
+            preference,
+            ipv6_enabled: v6.is_some(),
         }
     }
 
@@ -442,19 +566,68 @@ impl Actor {
     }
 
     fn handle_resolve(&mut self, name: String, reply: oneshot::Sender<Result<IpAddr, String>>) {
-        // A literal IP needs no lookup.
-        if let Ok(ip) = name.parse::<IpAddr>() {
-            let _ = reply.send(Ok(ip));
+        let plan = plan_resolve(&name, self.preference, self.ipv6_enabled);
+        let ResolvePlan::Lookup {
+            preference,
+            query_v4,
+            query_v6,
+        } = plan
+        else {
+            let ResolvePlan::Ready(result) = plan else {
+                unreachable!();
+            };
+            let _ = reply.send(result);
             return;
-        }
+        };
+        let v4 = if query_v4 {
+            self.start_dns(&name, DnsQueryType::A)
+        } else {
+            QuerySlot::Skip
+        };
+        let v6 = if query_v6 {
+            self.start_dns(&name, DnsQueryType::Aaaa)
+        } else {
+            QuerySlot::Skip
+        };
+        self.dns_pending.push(PendingDns {
+            reply,
+            preference,
+            v4,
+            v6,
+        });
+        self.finish_ready_dns();
+    }
+
+    fn start_dns(&mut self, name: &str, kind: DnsQueryType) -> QuerySlot {
         let dns_handle = self.dns_handle;
         let iface = &mut self.iface;
         let sock = self.sockets.get_mut::<dns::Socket>(dns_handle);
-        match sock.start_query(iface.context(), &name, DnsQueryType::A) {
-            Ok(query) => self.dns_pending.push(PendingDns { query, reply }),
-            Err(e) => {
-                let _ = reply.send(Err(format!("dns query: {e:?}")));
+        match sock.start_query(iface.context(), name, kind) {
+            Ok(query) => QuerySlot::Pending(query),
+            Err(err) => {
+                eprintln!("[netstack] DNS 查询没有发出: {err:?}");
+                QuerySlot::Failed
             }
+        }
+    }
+
+    fn finish_ready_dns(&mut self) {
+        let mut index = 0;
+        while index < self.dns_pending.len() {
+            if self.dns_pending[index].v4.pending() || self.dns_pending[index].v6.pending() {
+                index += 1;
+                continue;
+            }
+            let pending = self.dns_pending.remove(index);
+            let v4 = match pending.v4 {
+                QuerySlot::Ready(addrs) => addrs,
+                _ => Vec::new(),
+            };
+            let v6 = match pending.v6 {
+                QuerySlot::Ready(addrs) => addrs,
+                _ => Vec::new(),
+            };
+            let _ = pending.reply.send(select_ip(pending.preference, &v4, &v6));
         }
     }
 
@@ -519,26 +692,22 @@ impl Actor {
 
     fn service_dns(&mut self) {
         let dns_handle = self.dns_handle;
-        let mut i = 0;
-        while i < self.dns_pending.len() {
-            let sock = self.sockets.get_mut::<dns::Socket>(dns_handle);
-            match sock.get_query_result(self.dns_pending[i].query) {
-                Ok(addrs) => {
-                    let pending = self.dns_pending.remove(i);
-                    let result = addrs
-                        .iter()
-                        .next()
-                        .map(|a| from_ip(*a))
-                        .ok_or_else(|| "no address".to_string());
-                    let _ = pending.reply.send(result);
-                }
-                Err(dns::GetQueryResultError::Pending) => i += 1,
-                Err(dns::GetQueryResultError::Failed) => {
-                    let pending = self.dns_pending.remove(i);
-                    let _ = pending.reply.send(Err("resolution failed".into()));
+        for pending in &mut self.dns_pending {
+            for slot in [&mut pending.v4, &mut pending.v6] {
+                let QuerySlot::Pending(query) = slot else {
+                    continue;
+                };
+                let sock = self.sockets.get_mut::<dns::Socket>(dns_handle);
+                match sock.get_query_result(*query) {
+                    Ok(addrs) => {
+                        *slot = QuerySlot::Ready(addrs.into_iter().map(from_ip).collect());
+                    }
+                    Err(dns::GetQueryResultError::Pending) => {}
+                    Err(dns::GetQueryResultError::Failed) => *slot = QuerySlot::Failed,
                 }
             }
         }
+        self.finish_ready_dns();
     }
 }
 
@@ -605,5 +774,144 @@ impl TxToken for TxTok<'_> {
         let r = f(&mut buf);
         self.tx.push(buf);
         r
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    fn v4() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))
+    }
+
+    fn v6() -> IpAddr {
+        IpAddr::V6(Ipv6Addr::LOCALHOST)
+    }
+
+    #[test]
+    fn parses_resolve_preference_aliases() {
+        assert_eq!(
+            ResolvePreference::parse("auto").unwrap(),
+            ResolvePreference::Auto
+        );
+        assert_eq!(
+            ResolvePreference::parse("ipv6").unwrap(),
+            ResolvePreference::Ipv6Only
+        );
+        assert_eq!(
+            ResolvePreference::parse("v6").unwrap(),
+            ResolvePreference::Ipv6Only
+        );
+        assert_eq!(
+            ResolvePreference::parse("ipv6-prefer").unwrap(),
+            ResolvePreference::Ipv6Prefer
+        );
+        assert_eq!(
+            ResolvePreference::parse("ipv4_only").unwrap(),
+            ResolvePreference::Ipv4Only
+        );
+        assert!(ResolvePreference::parse("both").is_err());
+    }
+
+    #[test]
+    fn select_ip_covers_each_preference() {
+        let v4s = [v4()];
+        let v6s = [v6()];
+        assert_eq!(
+            select_ip(ResolvePreference::Auto, &v4s, &v6s).unwrap(),
+            v4()
+        );
+        assert_eq!(
+            select_ip(ResolvePreference::Ipv4Prefer, &v4s, &v6s).unwrap(),
+            v4()
+        );
+        assert_eq!(
+            select_ip(ResolvePreference::Ipv6Prefer, &v4s, &v6s).unwrap(),
+            v6()
+        );
+        assert_eq!(
+            select_ip(ResolvePreference::Ipv4Only, &v4s, &v6s).unwrap(),
+            v4()
+        );
+        assert_eq!(
+            select_ip(ResolvePreference::Ipv6Only, &v4s, &v6s).unwrap(),
+            v6()
+        );
+        // 只有另一族时，prefer/auto 会回退；only 则失败。
+        assert_eq!(select_ip(ResolvePreference::Auto, &[], &v6s).unwrap(), v6());
+        assert_eq!(
+            select_ip(ResolvePreference::Ipv6Prefer, &v4s, &[]).unwrap(),
+            v4()
+        );
+        assert!(select_ip(ResolvePreference::Ipv4Only, &[], &v6s).is_err());
+        assert!(select_ip(ResolvePreference::Ipv6Only, &v4s, &[]).is_err());
+        assert!(select_ip(ResolvePreference::Ipv6Prefer, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn literal_ipv6_follows_preference_and_tunnel_capability() {
+        let ip = "2001:db8::1";
+        assert_eq!(
+            plan_resolve(ip, ResolvePreference::Ipv6Prefer, true),
+            ResolvePlan::Ready(Ok(ip.parse().unwrap()))
+        );
+        assert_eq!(
+            plan_resolve(ip, ResolvePreference::Auto, true),
+            ResolvePlan::Ready(Ok(ip.parse().unwrap()))
+        );
+        assert!(matches!(
+            plan_resolve(ip, ResolvePreference::Ipv4Only, true),
+            ResolvePlan::Ready(Err(_))
+        ));
+        assert!(matches!(
+            plan_resolve(ip, ResolvePreference::Ipv6Only, false),
+            ResolvePlan::Ready(Err(_))
+        ));
+        assert_eq!(
+            plan_resolve("1.2.3.4", ResolvePreference::Ipv6Only, true),
+            ResolvePlan::Ready(Err("地址族与解析偏好不符".into()))
+        );
+    }
+
+    #[test]
+    fn hostname_query_plan_selects_aaaa_only_when_ipv6_is_usable() {
+        assert_eq!(
+            plan_resolve("ipv6.google.com", ResolvePreference::Ipv6Only, true),
+            ResolvePlan::Lookup {
+                preference: ResolvePreference::Ipv6Only,
+                query_v4: false,
+                query_v6: true,
+            }
+        );
+        assert_eq!(
+            plan_resolve("ipv4.google.com", ResolvePreference::Ipv4Only, true),
+            ResolvePlan::Lookup {
+                preference: ResolvePreference::Ipv4Only,
+                query_v4: true,
+                query_v6: false,
+            }
+        );
+        assert_eq!(
+            plan_resolve("example.com", ResolvePreference::Ipv6Prefer, true),
+            ResolvePlan::Lookup {
+                preference: ResolvePreference::Ipv6Prefer,
+                query_v4: true,
+                query_v6: true,
+            }
+        );
+        // 隧道没有 IPv6 时不能假装去查 AAAA。
+        assert_eq!(
+            plan_resolve("example.com", ResolvePreference::Ipv6Prefer, false),
+            ResolvePlan::Lookup {
+                preference: ResolvePreference::Ipv4Only,
+                query_v4: true,
+                query_v6: false,
+            }
+        );
+        assert_eq!(
+            plan_resolve("example.com", ResolvePreference::Ipv6Only, false),
+            ResolvePlan::Ready(Err("隧道没有 IPv6 地址".into()))
+        );
     }
 }

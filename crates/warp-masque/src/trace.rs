@@ -26,7 +26,12 @@ const TRACE_HOST: &str = "www.cloudflare.com";
 
 /// Fetch the egress trace through `net`, capturing any error into the result.
 pub async fn fetch_trace(net: &NetHandle) -> TraceInfo {
-    match tokio::time::timeout(Duration::from_secs(15), do_fetch(net)).await {
+    fetch_trace_timeout(net, Duration::from_secs(15)).await
+}
+
+/// 在指定时间内拉取出口 trace。超时或失败都写进结果，不向外抛错。
+pub async fn fetch_trace_timeout(net: &NetHandle, timeout: Duration) -> TraceInfo {
+    match tokio::time::timeout(timeout, do_fetch(net)).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => TraceInfo {
             err: Some(e),
