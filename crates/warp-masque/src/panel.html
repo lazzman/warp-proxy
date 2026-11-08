@@ -1,337 +1,403 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WARP 管理</title>
+<title>warp-proxy</title>
 <style>
 :root {
   color-scheme: light dark;
-  --bg: #f3f5f8;
-  --card: #fff;
-  --text: #1b1e27;
-  --muted: #5d6675;
-  --line: #d7dde7;
-  --accent: #1f6feb;
-  --danger: #b42318;
-  --ok: #067647;
-  --warn: #b54708;
+  --bg: #fafafa;
+  --card: #ffffff;
+  --raised: #f4f4f5;
+  --line: rgba(23,23,23,.08);
+  --text: #171717;
+  --secondary: #525252;
+  --muted: #737373;
+  --accent: #171717;
+  --ok: #3f6212;
+  --warn: #92400e;
+  --bad: #991b1b;
+  --shadow: 0 1px 2px rgba(23,23,23,.04);
+  font-family: ui-sans-serif, system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #11141a;
-    --card: #1b2029;
-    --text: #e7ebf2;
-    --muted: #a4adba;
-    --line: #303846;
-    --accent: #79a9ff;
-    --danger: #ff8f86;
-    --ok: #73d9a1;
-    --warn: #fec84b;
+    --bg: #141415;
+    --card: #19191b;
+    --raised: #232325;
+    --line: rgba(237,237,237,.08);
+    --text: #ededed;
+    --secondary: #a1a1a6;
+    --muted: #85858b;
+    --accent: #ededed;
+    --ok: #b5d48a;
+    --warn: #e3b341;
+    --bad: #f0a8a4;
+    --shadow: none;
   }
 }
 * { box-sizing: border-box; }
-body {
-  margin: 0;
-  font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+body { margin: 0; background: var(--bg); color: var(--text); }
+button, input, select { font: inherit; color: inherit; }
+button { background: var(--card); border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 12px; cursor: pointer; }
+button:hover { background: var(--raised); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--bg); border-color: transparent; }
+button:disabled { opacity: .45; cursor: default; }
+input, select { height: 32px; border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 0 8px; }
+header { height: 56px; display: flex; align-items: center; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 500; min-width: 132px; }
+.lamp { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.lamp.on { background: var(--ok); }
+nav { display: flex; gap: 4px; }
+nav button { border: 0; background: transparent; height: 32px; border-radius: 8px; color: var(--secondary); }
+nav button.on { background: var(--raised); color: var(--text); }
+.tools { margin-left: auto; display: flex; align-items: center; gap: 12px; color: var(--secondary); font-size: 14px; }
+main { max-width: 1440px; margin: 0 auto; padding: 24px; }
+.login { display: flex; gap: 8px; margin-bottom: 24px; }
+.login input { width: 280px; }
+.view { display: none; }
+.view.on { display: block; }
+.lead { font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
+.meta { color: var(--secondary); margin: 8px 0 0; font-size: 14px; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 24px; }
+.stat, .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.stat { padding: 16px 20px; min-height: 92px; }
+.stat span, .quiet { color: var(--muted); font-size: 13px; }
+.stat strong { display: block; margin-top: 8px; font-size: 28px; font-weight: 500; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.panel { margin-top: 16px; padding: 20px; }
+.panel h2 { margin: 0; font-size: 16px; font-weight: 500; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spread { justify-content: space-between; }
+.plan-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 16px; margin-top: 16px; }
+.figure { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; font-size: 18px; margin: 4px 0 0; }
+.filters { display: flex; gap: 4px; }
+.filters button.on { background: var(--raised); }
+table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 400; padding: 8px; border-bottom: 1px solid var(--line); }
+td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; font-variant-numeric: tabular-nums; }
+tr:hover td { background: var(--raised); }
+.num, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.right { text-align: right; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; background: var(--muted); }
+.dot.healthy { background: var(--ok); }
+.dot.attention, .dot.down, .dot.waiting { background: var(--warn); }
+.dot.maintenance, .dot.disabled { background: var(--bad); }
+.empty { color: var(--secondary); padding: 24px 0; }
+pre { margin: 12px 0 0; max-height: 560px; overflow: auto; background: var(--raised); border-radius: 8px; padding: 12px; font: 12px/20px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.err { color: var(--bad); min-height: 20px; margin: 8px 0 0; }
+@media (max-width: 800px) {
+  header { height: auto; flex-wrap: wrap; padding: 12px 16px; gap: 8px; }
+  .tools { margin-left: 0; }
+  main { padding: 16px; }
+  .stats, .plan-grid { grid-template-columns: 1fr 1fr; }
+  .login { flex-direction: column; }
+  .login input { width: 100%; }
+  table { display: block; overflow-x: auto; }
 }
-main { max-width: 920px; margin: 0 auto; padding: 20px 16px 48px; }
-h1 { font-size: 22px; margin: 0 0 4px; }
-.sub { color: var(--muted); margin: 8px 0; }
-.card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
-}
-.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-input[type="password"], input[type="number"] {
-  font: inherit;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  min-width: 0;
-}
-input[type="password"] { flex: 1 1 180px; }
-button {
-  font: inherit;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: inherit;
-  border-radius: 8px;
-  padding: 7px 10px;
-  cursor: pointer;
-}
-button.primary { background: var(--accent); color: #fff; border-color: transparent; }
-button.danger { color: var(--danger); }
-button:disabled { opacity: 0.55; cursor: default; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; }
-.stat b { display: block; font-size: 16px; }
-.stat span { color: var(--muted); font-size: 12px; }
-.accounts { display: grid; gap: 12px; }
-.badge {
-  display: inline-block;
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 12px;
-  border: 1px solid var(--line);
-}
-.ok { color: var(--ok); }
-.warn { color: var(--warn); }
-.bad { color: var(--danger); }
-.msg { min-height: 1.2em; color: var(--danger); margin: 8px 0 0; }
-.head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
 </style>
 </head>
 <body>
+<header>
+  <div class="brand"><span class="lamp" id="lamp"></span>warp-proxy</div>
+  <nav>
+    <button type="button" data-view="overview" class="on">总览</button>
+    <button type="button" data-view="instances">实例</button>
+    <button type="button" data-view="connections">连接</button>
+    <button type="button" data-view="logs">日志</button>
+  </nav>
+  <div class="tools">
+    <span id="online">控制面离线</span>
+    <select id="refresh" aria-label="自动刷新">
+      <option value="1">1 秒</option>
+      <option value="3">3 秒</option>
+      <option value="5" selected>5 秒</option>
+      <option value="10">10 秒</option>
+      <option value="30">30 秒</option>
+    </select>
+  </div>
+</header>
 <main>
-  <h1>WARP 管理</h1>
-  <p class="sub" id="origin"></p>
-  <section class="card">
-    <div class="row">
-      <input id="token" type="password" autocomplete="off" spellcheck="false" aria-label="管理密码" placeholder="输入管理密码">
-      <button id="connect" class="primary" type="button">连接</button>
-    </div>
-    <p class="msg" id="msg"></p>
-  </section>
-  <section class="card" id="overview" hidden>
-    <div class="stats" id="stats"></div>
-    <div class="row" id="global" style="margin-top:12px"></div>
-    <div class="row" id="plan" style="margin-top:8px"></div>
-  </section>
-  <section class="accounts" id="accounts"></section>
+  <form class="login" id="login">
+    <input id="token" type="password" placeholder="管理密码" autocomplete="current-password">
+    <button class="primary" type="submit">连接</button>
+  </form>
+  <p class="err" id="error"></p>
+  <section class="view on" id="overview"></section>
+  <section class="view" id="instances"></section>
+  <section class="view" id="connections"></section>
+  <section class="view" id="logs"></section>
 </main>
 <script>
+const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0 };
 const tokenInput = document.querySelector("#token");
-const msg = document.querySelector("#msg");
-const overview = document.querySelector("#overview");
-const stats = document.querySelector("#stats");
-const globalActions = document.querySelector("#global");
-const plan = document.querySelector("#plan");
-const accounts = document.querySelector("#accounts");
-document.querySelector("#origin").textContent = location.origin;
+tokenInput.value = sessionStorage.getItem("warp-token") || "";
 
-const params = new URLSearchParams(location.search);
-if (params.get("token")) {
-  sessionStorage.setItem("warpToken", params.get("token"));
-  params.delete("token");
-  const next = params.toString();
-  history.replaceState(null, "", location.pathname + (next ? "?" + next : ""));
-}
-tokenInput.value = sessionStorage.getItem("warpToken") || "";
-
-let busy = false;
-
-function setMsg(text) { msg.textContent = text || ""; }
-
-async function api(path) {
-  const resp = await fetch(path, {
-    headers: { "X-Warp-Token": tokenInput.value.trim() },
-    cache: "no-store"
-  });
-  const data = await resp.json().catch(() => ({ error: "响应不是 JSON" }));
-  if (!resp.ok) throw new Error(data.error || resp.statusText);
-  return data;
-}
-
-function planText(status) {
-  if (!status.restart_seconds) return "关闭";
-  const batch = status.restart_batch ? status.restart_batch + " 个" : "全部";
-  const parallel = status.restart_concurrency ? "，同时 " + status.restart_concurrency : "";
-  const defer = status.restart_defer_seconds ? "，忙碌延后 " + status.restart_defer_seconds + " 秒" : "";
-  return "每 " + status.restart_seconds + " 秒 " + batch + parallel + defer;
-}
-
-function labelText(text) {
-  const node = document.createElement("span");
-  node.className = "sub";
-  node.style.margin = "0";
-  node.textContent = text;
-  return node;
-}
-
-function stat(label, value) {
-  const box = document.createElement("div");
-  box.className = "stat";
-  const strong = document.createElement("b");
-  strong.textContent = value;
-  const span = document.createElement("span");
-  span.textContent = label;
-  box.append(strong, span);
-  return box;
-}
-
-function button(label, className, onClick) {
-  const node = document.createElement("button");
-  node.type = "button";
-  node.textContent = label;
-  if (className) node.className = className;
-  node.disabled = busy;
-  node.addEventListener("click", onClick);
-  return node;
-}
-
-function badge(text, kind) {
-  const node = document.createElement("span");
-  node.className = "badge" + (kind ? " " + kind : "");
-  node.textContent = text;
-  return node;
-}
-
-function render(status) {
-  overview.hidden = false;
-  stats.replaceChildren(
-    stat("代理", status.enabled ? "开启" : "关闭"),
-    stat("调度", status.mode === "pinned" ? "固定 #" + status.pinned : "自动"),
-    stat("策略", status.strategy || "-"),
-    stat("黏性", status.sticky || "-"),
-    stat("传输", status.http2 ? "HTTP/2" : "HTTP/3"),
-    stat("换号间隔", status.rotate_seconds ? status.rotate_seconds + " 秒" : "关闭"),
-    stat("保身份计划", planText(status))
-  );
-  if (!plan.contains(document.activeElement)) {
-    const seconds = document.createElement("input");
-    seconds.type = "number";
-    seconds.min = "0";
-    seconds.step = "60";
-    seconds.value = String(status.restart_seconds || 0);
-    seconds.setAttribute("aria-label", "保身份重启间隔秒数，0 表示关闭");
-    seconds.style.width = "110px";
-    const batch = document.createElement("input");
-    batch.type = "number";
-    batch.min = "0";
-    batch.step = "1";
-    batch.value = String(status.restart_batch || 0);
-    batch.setAttribute("aria-label", "每批账号数，0 表示全部");
-    batch.style.width = "80px";
-    const defer = document.createElement("input");
-    defer.type = "number";
-    defer.min = "0";
-    defer.step = "60";
-    defer.value = String(status.restart_defer_seconds || 0);
-    defer.setAttribute("aria-label", "忙碌时延后重启的秒数，0 表示立即排空");
-    defer.style.width = "90px";
-    plan.replaceChildren(
-      labelText("间隔"),
-      seconds,
-      labelText("每批"),
-      batch,
-      labelText("延后"),
-      defer,
-      button("设置分批重启", "", () => run(
-        "/api/restart-plan?seconds=" + encodeURIComponent(seconds.value || "0") +
-        "&batch=" + encodeURIComponent(batch.value || "0") +
-        "&defer=" + encodeURIComponent(defer.value || "0")
-      ))
-    );
-  }
-  if (!globalActions.contains(document.activeElement)) {
-    const unpin = button("取消固定", "", () => run("/api/select?slot=0"));
-    unpin.disabled = busy || !status.pinned;
-    const interval = document.createElement("input");
-    interval.type = "number";
-    interval.min = "0";
-    interval.step = "60";
-    interval.value = String(status.rotate_seconds || 0);
-    interval.setAttribute("aria-label", "换号间隔秒数，0 表示关闭，最小 60");
-    interval.style.width = "96px";
-    globalActions.replaceChildren(
-      button(status.enabled ? "关闭代理" : "开启代理", "primary", () => run("/api/toggle?on=" + (!status.enabled))),
-      button(status.http2 ? "改用 HTTP/3" : "改用 HTTP/2", "", () => run("/api/http2?on=" + (!status.http2))),
-      button("刷新出口", "", () => run("/api/trace?slot=0")),
-      button("保身份重启全部", "", () => run("/api/restart?slot=0")),
-      button("添加账号", "", () => run("/api/account/add")),
-      unpin,
-      interval,
-      button("设置换号", "", () => run("/api/interval?seconds=" + encodeURIComponent(interval.value || "0")))
-    );
-  }
-  accounts.replaceChildren();
-  for (const account of status.accounts || []) {
-    const card = document.createElement("article");
-    card.className = "card";
-    const head = document.createElement("div");
-    head.className = "head";
-    const title = document.createElement("strong");
-    title.textContent = "账号 " + account.id;
-    const flags = document.createElement("div");
-    flags.className = "row";
-    flags.append(
-      badge(account.ready ? "就绪" : "未就绪", account.ready ? "ok" : "bad"),
-      badge(account.tunnel ? "隧道在线" : "无隧道", account.tunnel ? "ok" : "bad")
-    );
-    if (account.draining) flags.append(badge("排空中", "warn"));
-    if (account.deferred) flags.append(badge("延后重启", "warn"));
-    if (status.pinned === account.id) flags.append(badge("已固定", ""));
-    head.append(title, flags);
-    const trace = account.trace || {};
-    const meta = document.createElement("p");
-    meta.className = "sub";
-    meta.textContent = [
-      "内网 " + (account.ip || "-"),
-      "出口 " + (trace.ip || "-"),
-      "节点 " + (trace.colo || "-"),
-      "WARP " + (trace.warp || "-"),
-      "连接 " + account.active
-    ].join(" · ");
-    const actions = document.createElement("div");
-    actions.className = "row";
-    const id = account.id;
-    actions.append(
-      button(status.pinned === id ? "取消固定" : "固定", "", () => run("/api/select?slot=" + (status.pinned === id ? 0 : id))),
-      button("重连", "", () => run("/api/reconnect?slot=" + id)),
-      button("保身份重启", "", () => run("/api/restart?slot=" + id)),
-      button("刷新出口", "", () => run("/api/trace?slot=" + id)),
-      button("换新身份", "danger", () => {
-        if (confirm("账号 " + id + " 会重新注册，出口地址会变。继续？")) run("/api/rotate?slot=" + id);
-      }),
-      button("删除", "danger", () => {
-        if (confirm("删除账号 " + id + "？至少要留一个账号。")) run("/api/account/remove?slot=" + id);
-      })
-    );
-    card.append(head, meta, actions);
-    accounts.append(card);
-  }
-}
-
-async function refresh() {
-  if (busy || !tokenInput.value.trim()) return;
-  try {
-    render(await api("/api/status"));
-    setMsg("");
-  } catch (err) {
-    setMsg(err.message || String(err));
-  }
-}
-
-async function run(path) {
-  if (busy) return;
-  busy = true;
-  setMsg("正在处理…");
-  try {
-    render(await api(path));
-    setMsg("");
-  } catch (err) {
-    setMsg(err.message || String(err));
-  } finally {
-    busy = false;
+document.querySelectorAll("nav button").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.view = button.dataset.view;
+    document.querySelectorAll("nav button").forEach((item) => item.classList.toggle("on", item === button));
+    document.querySelectorAll(".view").forEach((view) => view.classList.toggle("on", view.id === state.view));
     refresh();
-  }
-}
-
-document.querySelector("#connect").addEventListener("click", () => {
-  sessionStorage.setItem("warpToken", tokenInput.value.trim());
+  });
+});
+document.querySelector("#login").addEventListener("submit", (event) => {
+  event.preventDefault();
+  sessionStorage.setItem("warp-token", tokenInput.value.trim());
   refresh();
 });
-tokenInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") document.querySelector("#connect").click();
-});
-setInterval(refresh, 3000);
+document.querySelector("#refresh").addEventListener("change", schedule);
+
+function schedule() {
+  clearTimeout(state.timer);
+  let seconds = Number(document.querySelector("#refresh").value);
+  if (state.status && state.status.tasks && state.status.tasks.length) seconds = Math.min(seconds, 1);
+  state.timer = setTimeout(refresh, seconds * 1000);
+}
+async function api(path) {
+  const token = (sessionStorage.getItem("warp-token") || "").trim();
+  const response = await fetch(path, { headers: token ? { "X-Warp-Token": token } : {}, cache: "no-store" });
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || response.statusText);
+  return text ? JSON.parse(text) : {};
+}
+async function refresh() {
+  const error = document.querySelector("#error");
+  try {
+    state.status = await api("/api/status");
+    if (state.view === "connections") {
+      const page = await api("/api/sessions");
+      state.sessions = page.sessions || page || [];
+    }
+    if (state.view === "logs") state.logs = await api("/api/logs");
+    error.textContent = "";
+    document.querySelector("#lamp").classList.add("on");
+    document.querySelector("#online").textContent = "控制面在线";
+    render();
+  } catch (err) {
+    document.querySelector("#lamp").classList.remove("on");
+    document.querySelector("#online").textContent = "控制面离线";
+    error.textContent = String(err.message || err).replace(/^Error: /, "");
+  }
+  schedule();
+}
+function render() {
+  const data = state.status;
+  if (!data) return;
+  if (state.view === "overview") document.querySelector("#overview").innerHTML = overview(data);
+  if (state.view === "instances") document.querySelector("#instances").innerHTML = instances(data);
+  if (state.view === "connections") document.querySelector("#connections").innerHTML = connections();
+  if (state.view === "logs") {
+    const box = document.querySelector("#logs pre");
+    const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    document.querySelector("#logs").innerHTML = logs();
+    const next = document.querySelector("#logs pre");
+    if (next && (state.stick || atBottom)) next.scrollTop = next.scrollHeight;
+  }
+  bind();
+}
+function overview(data) {
+  const total = data.accounts.length;
+  const bad = data.attention + data.unknown;
+  const title = data.ready === total && total > 0 ? "全部实例运行正常" : (bad ? bad + " 个实例需要关注" : "没有可调度的实例");
+  const mode = data.mixed ? "MIXED" : "SOCKS5";
+  const plan = data.plan || {};
+  const last = plan.last;
+  return `
+    <p class="lead">${escapeHtml(title)}</p>
+    <p class="meta">${escapeHtml(data.listen || "未绑定")} · ${mode} · ${escapeHtml(data.strategy)} · ${escapeHtml(data.sticky)} · 统计自 ${clock(data.started_at)}</p>
+    <div class="stats">
+      <div class="stat"><span>可用实例</span><strong>${data.ready}/${total}</strong></div>
+      <div class="stat"><span>活跃连接</span><strong>${data.active_connections}</strong></div>
+      <div class="stat"><span>累计上行</span><strong>${bytes(data.bytes_up)}</strong></div>
+      <div class="stat"><span>累计下行</span><strong>${bytes(data.bytes_down)}</strong></div>
+    </div>
+    <section class="panel">
+      <div class="row spread">
+        <h2>调度</h2>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button type="button" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
+        <label class="quiet">固定实例 <select id="pin">${["<option value=\"0\">自动</option>"].concat(data.accounts.map((account) => `<option value="${account.id}" ${data.pinned === account.id ? "selected" : ""}>${account.id}</option>`)).join("")}</select></label>
+        <button type="button" data-act="pin">应用</button>
+        <button type="button" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "HTTP/2" : "HTTP/3"}</button>
+        <label class="quiet">换出口 <input id="rotate-seconds" inputmode="numeric" value="${data.rotate_seconds}" style="width:72px"> 秒</label>
+        <button type="button" data-act="interval">设置</button>
+        <button type="button" data-act="rotate">立即换出口</button>
+        <button type="button" data-act="trace">刷新出口</button>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="row spread">
+        <h2>定时重启计划${plan.paused ? " · 已暂停" : ""}</h2>
+        <div class="row">
+          <button type="button" data-act="plan-now">立即执行</button>
+          <button type="button" data-act="${plan.paused ? "plan-resume" : "plan-pause"}">${plan.paused ? "恢复" : "暂停"}</button>
+        </div>
+      </div>
+      <div class="plan-grid">
+        <div><div class="quiet">下次执行</div><p class="figure" id="next">${nextText(plan.next_at, data.restart_seconds)}</p><div class="quiet">每 ${data.restart_seconds} 秒 · 每轮 ${data.restart_batch || "全部"} · 同时 ${data.restart_concurrency} · 延后 ${data.restart_defer_seconds} 秒</div></div>
+        <div><div class="quiet">上次结果</div><p class="figure">${last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有"}</p><div class="quiet">${last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at) : ""}</div></div>
+        <div><div class="quiet">队列</div><p class="figure">${(plan.ready || []).length} 就绪</p><div class="quiet">${(plan.deferred || []).length} 延后 · ${(plan.retry || []).length} 后续重试</div></div>
+      </div>
+      ${history(plan.history)}
+    </section>
+    <section class="panel">
+      <h2>进行中的任务</h2>
+      ${tasks(data.tasks)}
+    </section>`;
+}
+function history(rows) {
+  if (!rows || !rows.length) return `<p class="empty">还没有执行历史</p>`;
+  return `<table><thead><tr><th>时间</th><th class="right">成功</th><th class="right">失败</th><th class="right">延后</th><th class="right">耗时</th></tr></thead><tbody>${rows.slice(0, 10).map((row) => `<tr><td>${clock(row.at)}</td><td class="right mono">${row.success}</td><td class="right mono">${row.failed}</td><td class="right mono">${row.deferred}</td><td class="right mono">${(row.millis / 1000).toFixed(1)} 秒</td></tr>`).join("")}</tbody></table>`;
+}
+function tasks(rows) {
+  if (!rows || !rows.length) return `<p class="empty">没有进行中的任务。完成后会从这里消失</p>`;
+  return `<table><thead><tr><th>实例</th><th>阶段</th><th class="right">剩余连接</th><th class="right">已耗时</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="mono">${row.id}</td><td>${escapeHtml(row.stage)}</td><td class="right mono">${row.active}</td><td class="right mono">${duration(row.elapsed_seconds)}</td></tr>`).join("")}</tbody></table>`;
+}
+function instances(data) {
+  const filters = [["all", "全部"], ["attention", "需要关注"], ["busy", "操作中"], ["healthy", "健康"], ["disabled", "已停用"], ["temporary", "临时实例"]];
+  const rows = data.accounts.filter((account) => matchFilter(account, data));
+  return `
+    <div class="row spread">
+      <div class="filters">${filters.map(([id, label]) => `<button type="button" data-filter="${id}" class="${state.filter === id ? "on" : ""}">${label}</button>`).join("")}</div>
+      <div class="row">
+        <button type="button" data-act="add-temp">添加临时实例</button>
+        <button type="button" data-act="remove-temp">批量移除</button>
+        <button type="button" data-act="refresh">刷新数据</button>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th></th><th>实例</th><th>进程</th><th>人工状态</th><th>健康</th><th>WARP</th><th>IPv4 出口</th><th>IPv6 出口</th><th>国家</th><th>PoP</th><th>后端池</th><th class="right">活跃连接</th><th class="right">用户数</th><th class="right">在线时长</th><th>最近操作</th><th></th></tr></thead>
+      <tbody>${rows.map((account) => `<tr>
+        <td>${account.temporary ? `<input type="checkbox" data-temp="${account.id}" aria-label="选择 ${account.id}">` : ""}</td>
+        <td class="mono">${account.id}</td>
+        <td>${account.tunnel ? "运行" : "停止"}</td>
+        <td>${account.manual ? "启用" : "停用"}</td>
+        <td><span class="dot ${account.health}"></span>${healthText(account.health)}</td>
+        <td>${escapeHtml(account.warp || "—")}</td>
+        <td class="mono">${escapeHtml(account.ipv4 || "—")}</td>
+        <td class="mono">${escapeHtml(account.ipv6 || "—")}</td>
+        <td>${escapeHtml(account.country || "—")}</td>
+        <td>${escapeHtml(account.colo || "—")}</td>
+        <td>${account.pooled ? "已入池" : "未入池"}</td>
+        <td class="right mono">${account.active}</td>
+        <td class="right mono">${account.users}</td>
+        <td class="right mono">${duration(account.uptime_seconds)}</td>
+        <td>${escapeHtml(account.last_action || "—")}</td>
+        <td class="row"><button type="button" data-act="restart" data-slot="${account.id}">重连</button><button type="button" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}">${account.manual ? "停用" : "启用"}</button></td>
+      </tr>`).join("") || `<tr><td colspan="16" class="empty">没有符合筛选的实例</td></tr>`}</tbody>
+    </table>`;
+}
+function connections() {
+  const rows = state.sessions;
+  if (!rows.length) return `<section class="panel"><h2>当前活跃连接</h2><p class="empty">没有正在转发的连接。连接关闭后会立即从这里移除</p></section>`;
+  return `<section class="panel"><h2>当前活跃连接</h2><table><thead><tr><th>请求</th><th>协议</th><th>客户端</th><th>用户</th><th>目标</th><th>出口</th><th>地址族</th><th>后端</th><th class="right">已持续</th><th class="right">空闲</th><th class="right">上行</th><th class="right">下行</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="mono">${row.id}</td><td>${escapeHtml(row.protocol)}</td><td class="mono">${escapeHtml(row.client)}</td><td>${escapeHtml(row.user)}</td><td class="mono">${escapeHtml(row.target)}</td><td class="mono">${escapeHtml(row.egress || "—")}</td><td>${escapeHtml(row.family || "—")}</td><td class="mono">${row.account}</td><td class="right mono">${duration(Math.floor(row.age_ms / 1000))}</td><td class="right mono">${duration(Math.floor(row.idle_ms / 1000))}</td><td class="right mono">${bytes(row.up)}</td><td class="right mono">${bytes(row.down)}</td></tr>`).join("")}</tbody></table></section>`;
+}
+function logs() {
+  const page = state.logs || { lines: [], ready: 0, attention: 0, maintenance: 0, unknown: 0 };
+  const kinds = [["all", "全部"], ["access", "访问"], ["plan", "计划"], ["account", "账号"]];
+  const lines = page.lines.filter((line) => state.logKind === "all" || line.kind === state.logKind);
+  return `<section class="panel">
+    <div class="row spread">
+      <h2>控制台日志</h2>
+      <div class="row"><span class="quiet">${lines.length}/${page.lines.length}</span><button type="button" data-act="bottom">回到底部</button><button type="button" data-act="copy">复制日志</button></div>
+    </div>
+    <p class="meta">就绪 ${page.ready} · 异常 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</p>
+    <div class="filters">${kinds.map(([id, label]) => `<button type="button" data-log="${id}" class="${state.logKind === id ? "on" : ""}">${label}</button>`).join("")}</div>
+    <pre>${lines.map((line) => escapeHtml(clock(line.at) + "  " + line.text)).join("\n") || "还没有日志"}</pre>
+  </section>`;
+}
+function bind() {
+  document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; render(); }));
+  document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => { state.logKind = button.dataset.log; render(); }));
+  document.querySelectorAll("[data-act]").forEach((button) => button.addEventListener("click", () => act(button.dataset.act, button)));
+  const box = document.querySelector("#logs pre");
+  if (box) box.addEventListener("scroll", () => { state.stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40; });
+}
+async function act(name, button) {
+  try {
+    if (name === "refresh") return refresh();
+    if (name === "toggle") await api("/api/toggle?on=" + button.dataset.on);
+    if (name === "pin") await api("/api/select?slot=" + (document.querySelector("#pin").value || "0"));
+    if (name === "http2") await api("/api/http2?on=" + button.dataset.on);
+    if (name === "interval") await api("/api/interval?seconds=" + (document.querySelector("#rotate-seconds").value || "0"));
+    if (name === "rotate") await api("/api/rotate?slot=" + (document.querySelector("#pin").value || "0"));
+    if (name === "trace") await api("/api/trace?slot=0");
+    if (name === "plan-now") await api("/api/restart-plan?action=now");
+    if (name === "plan-pause") await api("/api/restart-plan?action=pause");
+    if (name === "plan-resume") await api("/api/restart-plan?action=resume");
+    if (name === "add-temp") await api("/api/account/add?temporary=1");
+    if (name === "remove-temp") {
+      const picked = [...document.querySelectorAll("[data-temp]:checked")].map((item) => item.dataset.temp);
+      for (const slot of picked) await api("/api/account/remove?slot=" + slot);
+    }
+    if (name === "restart") await api("/api/restart?slot=" + button.dataset.slot);
+    if (name === "manual") await api("/api/account/manual?slot=" + button.dataset.slot + "&on=" + button.dataset.on);
+    if (name === "bottom") {
+      const box = document.querySelector("#logs pre");
+      if (box) box.scrollTop = box.scrollHeight;
+      state.stick = true;
+      return;
+    }
+    if (name === "copy") {
+      const box = document.querySelector("#logs pre");
+      if (box) await navigator.clipboard.writeText(box.textContent);
+      return;
+    }
+    await refresh();
+  } catch (err) {
+    document.querySelector("#error").textContent = String(err.message || err);
+  }
+}
+function matchFilter(account, data) {
+  const busy = (data.tasks || []).some((task) => task.id === account.id) || account.draining || account.deferred;
+  if (state.filter === "attention") return account.health === "attention" || account.health === "down" || account.health === "unknown";
+  if (state.filter === "busy") return busy;
+  if (state.filter === "healthy") return account.health === "healthy";
+  if (state.filter === "disabled") return !account.manual;
+  if (state.filter === "temporary") return account.temporary;
+  return true;
+}
+function healthText(health) {
+  return { healthy: "健康", attention: "需关注", down: "中断", waiting: "等待空闲", maintenance: "维护", disabled: "已停用", unknown: "未知" }[health] || health;
+}
+function nextText(at, seconds) {
+  if (!seconds) return "未设置";
+  if (!at) return "等待计时";
+  const left = Math.max(0, Math.round((at - Date.now()) / 1000));
+  return clock(at) + " · " + duration(left);
+}
+function clock(ms) {
+  if (!ms) return "—";
+  const date = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+}
+function duration(seconds) {
+  seconds = Math.max(0, seconds | 0);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours) return hours + " 小时 " + minutes + " 分";
+  if (minutes) return minutes + " 分 " + rest + " 秒";
+  return rest + " 秒";
+}
+function bytes(value) {
+  const units = ["B", "KB", "MB", "GB"];
+  let size = Number(value) || 0;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+  return (index ? size.toFixed(1) : size.toFixed(0)) + " " + units[index];
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
+}
+setInterval(() => {
+  const node = document.querySelector("#next");
+  if (node && state.status) node.textContent = nextText(state.status.plan && state.status.plan.next_at, state.status.restart_seconds);
+}, 1000);
 refresh();
 </script>
 </body>

@@ -54,11 +54,18 @@ impl WarpConfig {
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let json = serde_json::to_vec_pretty(self)?;
         std::fs::write(path.as_ref(), &json)?;
+        // 私钥文件尽量收成仅所有者可读。Windows 盘经 WSL 挂进容器时不支持 chmod，
+        // 会返回 EPERM；文件已经写好，不能因此让启动失败。
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(path.as_ref(), perms)?;
+            if let Err(err) = std::fs::set_permissions(path.as_ref(), perms) {
+                eprintln!(
+                    "[config] 无法把 {} 设为 0600: {err}",
+                    path.as_ref().display()
+                );
+            }
         }
         Ok(())
     }

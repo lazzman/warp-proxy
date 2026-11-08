@@ -87,6 +87,12 @@ async fn handle(mut conn: TcpStream, pool: Arc<Pool>, token: Arc<String>) -> std
 async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, String> {
     match path {
         "/api/status" => {}
+        "/api/sessions" => {
+            return serde_json::to_string(&pool.sessions()).map_err(|e| e.to_string());
+        }
+        "/api/logs" => {
+            return serde_json::to_string(&pool.logs()).map_err(|e| e.to_string());
+        }
         "/api/toggle" => pool.set_enabled(bool_param(query, "on", true)),
         "/api/select" => pool.select(int_param(query, "slot").unwrap_or(0) as usize),
         "/api/reconnect" => pool.reconnect(int_param(query, "slot").unwrap_or(0) as usize),
@@ -95,17 +101,26 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
                 .await?
         }
         "/api/restart-plan" => {
+            if let Some(action) = param(query, "action") {
+                match action.as_str() {
+                    "pause" => pool.set_plan_paused(true),
+                    "resume" => pool.set_plan_paused(false),
+                    "now" => pool.run_plan_now(),
+                    other => return Err(format!("未知操作 {other}")),
+                }
+            }
             let seconds = int_param(query, "seconds");
             let batch = int_param(query, "batch");
             let defer = int_param(query, "defer");
-            if seconds.is_none() && batch.is_none() && defer.is_none() {
-                return Err("需要 seconds、batch 或 defer".into());
+            if seconds.is_some() || batch.is_some() || defer.is_some() {
+                pool.set_restart_plan(
+                    seconds.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
+                    batch.map(|count| count.max(0) as usize),
+                    defer.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
+                );
+            } else if param(query, "action").is_none() {
+                return Err("需要 seconds、batch、defer 或 action".into());
             }
-            pool.set_restart_plan(
-                seconds.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
-                batch.map(|count| count.max(0) as usize),
-                defer.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
-            );
         }
         "/api/rotate" => pool
             .rotate(int_param(query, "slot").unwrap_or(0) as usize)
@@ -121,7 +136,14 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
                 .await
         }
         "/api/account/add" => {
-            pool.add_account().await.map_err(|e| e.to_string())?;
+            pool.add_account_kind(bool_param(query, "temporary", false))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        "/api/account/manual" => {
+            let slot = int_param(query, "slot").ok_or("missing slot")? as usize;
+            pool.set_manual(slot, bool_param(query, "on", true))
+                .map_err(|e| e.to_string())?;
         }
         "/api/account/remove" => {
             let slot = int_param(query, "slot").ok_or("missing slot")? as usize;
@@ -223,6 +245,9 @@ mod tests {
             "/api/restart-plan",
             "/api/rotate",
             "/api/account/add",
+            "/api/account/manual",
+            "/api/logs",
+            "/api/sessions",
             "/api/account/remove",
         ] {
             assert!(PANEL_HTML.contains(path), "{path}");

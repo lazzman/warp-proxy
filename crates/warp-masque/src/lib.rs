@@ -13,6 +13,7 @@
 //! the provenance stays clean.
 
 pub mod config;
+mod console;
 pub mod control;
 pub mod doh;
 pub mod error;

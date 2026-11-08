@@ -66,9 +66,7 @@ fn parse_args() -> anyhow::Result<Args> {
         resolve: env_string("RESOLVE_PREFERENCE").unwrap_or_else(|| "auto".into()),
         socks_user: env_string("SOCKS_USER"),
         socks_pass: env_string("SOCKS_PASS"),
-        control_password: resolve_control_password(
-            env_string("CONTROL_PASSWORD").as_deref(),
-        ),
+        control_password: resolve_control_password(env_string("CONTROL_PASSWORD").as_deref()),
         mixed: matches!(
             env_string("PROXY_MODE")
                 .unwrap_or_else(|| "socks5".into())
@@ -224,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
             defer: args.restart_defer,
         },
         device_name: "warp-proxy".into(),
+        state_dir: args.state_dir.clone(),
     };
     let pool = Pool::start(configs, options).await.context("启动连接池")?;
 
@@ -234,7 +233,9 @@ async fn main() -> anyhow::Result<()> {
     let control_listener = TcpListener::bind(&args.control)
         .await
         .with_context(|| format!("绑定控制接口 {}", args.control))?;
-    let socks_port = socks_listener.local_addr()?.port();
+    let socks_addr = socks_listener.local_addr()?;
+    pool.set_listen(socks_addr.to_string());
+    let socks_port = socks_addr.port();
     let control_addr = control_listener.local_addr()?;
     let handshake = serde_json::json!({
         "socksPort": socks_port,
@@ -414,10 +415,7 @@ mod tests {
 
     #[test]
     fn control_password_uses_environment_or_default() {
-        assert_eq!(
-            resolve_control_password(None),
-            DEFAULT_CONTROL_PASSWORD
-        );
+        assert_eq!(resolve_control_password(None), DEFAULT_CONTROL_PASSWORD);
         assert_eq!(
             resolve_control_password(Some("   ")),
             DEFAULT_CONTROL_PASSWORD

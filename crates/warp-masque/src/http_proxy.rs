@@ -18,12 +18,14 @@ use std::sync::Arc;
 pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -> AccessRecord {
     let started = Instant::now();
     let mut record = AccessRecord {
+        id: 0,
         proto: "http",
         client: client_addr.to_string(),
         user: "-".into(),
         target: "-".into(),
         account: "-".into(),
         egress: "-".into(),
+        family: String::new(),
         result: "bad-request".into(),
         up: 0,
         down: 0,
@@ -74,7 +76,10 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -
         record.account = lease.worker_id.to_string();
         record.egress = lease.egress.clone();
         let conn = match open_tunnel(lease.net(), &host, port).await {
-            Ok(conn) => conn,
+            Ok((conn, family)) => {
+                record.family = family.into();
+                conn
+            }
             Err(result) => {
                 let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
                 record.result = result.into();
@@ -94,7 +99,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -
             let _ = conn_write(&conn, &request.rest);
             record.up += request.rest.len() as u64;
         }
-        let (up, down) = socks::relay_counted(client, conn).await;
+        let (up, down) = socks::relay_session(&pool, client, conn, &mut record).await;
         record.up += up;
         record.down += down;
         record.result = "ok".into();
@@ -117,7 +122,10 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -
         record.account = lease.worker_id.to_string();
         record.egress = lease.egress.clone();
         let mut conn = match open_tunnel(lease.net(), &forward.host, forward.port).await {
-            Ok(conn) => conn,
+            Ok((conn, family)) => {
+                record.family = family.into();
+                conn
+            }
             Err(result) => {
                 let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
                 record.result = result.into();
@@ -131,7 +139,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -
             return record;
         }
         record.up += forward.head.len() as u64;
-        let (up, down) = socks::relay_counted(client, conn).await;
+        let (up, down) = socks::relay_session(&pool, client, conn, &mut record).await;
         record.up += up;
         record.down += down;
         record.result = "ok".into();
@@ -305,10 +313,12 @@ async fn open_tunnel(
     net: &crate::netstack::NetHandle,
     host: &str,
     port: u16,
-) -> Result<crate::netstack::TcpConn, &'static str> {
+) -> Result<(crate::netstack::TcpConn, &'static str), &'static str> {
     let ip = net.resolve(host).await.map_err(|_| "resolve")?;
+    let family = if ip.is_ipv4() { "ipv4" } else { "ipv6" };
     net.connect(std::net::SocketAddr::new(ip, port))
         .await
+        .map(|conn| (conn, family))
         .map_err(|_| "connect")
 }
 

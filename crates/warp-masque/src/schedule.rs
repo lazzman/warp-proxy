@@ -76,6 +76,16 @@ impl Scheduler {
         }
     }
 
+    /// 每个账号当前黏住的用户名数量。
+    pub fn user_counts(&self) -> HashMap<usize, usize> {
+        let map = self.sticky_map.lock().unwrap();
+        let mut counts = HashMap::new();
+        for id in map.values() {
+            *counts.entry(*id).or_insert(0) += 1;
+        }
+        counts
+    }
+
     pub fn forget(&self, worker_id: usize) {
         self.sticky_map
             .lock()

@@ -4,14 +4,16 @@
 //! WarpConfig 中；保身份重启只重连隧道，不重新注册。
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, watch, Notify, Semaphore};
 
 use crate::config::DEFAULT_ENDPOINT_H2_V4;
+use crate::console::Console;
 use crate::netstack::{self, NetHandle, ResolvePreference};
 use crate::register::{RegisterOptions, RegistrationClient};
 use crate::schedule::{PickFail, Policy, Scheduler};
@@ -21,6 +23,15 @@ use crate::upstream::{UpstreamProxy, UpstreamSet};
 use crate::{DeviceKeypair, WarpConfig};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WakeReason {
+    None,
+    /// 间隔、批量或延后被改过，重新计时。
+    Plan,
+    /// 暂停、恢复或立即执行，不重置倒计时。
+    Control,
+}
 const MIN_ROTATE_SECS: u64 = 60;
 
 /// 入口代理的用户名密码。SOCKS5 和 HTTP 共用。
@@ -71,6 +82,7 @@ pub struct PoolOptions {
     pub access_log: bool,
     pub restart: RestartConfig,
     pub device_name: String,
+    pub state_dir: Option<PathBuf>,
 }
 
 impl PoolOptions {
@@ -86,6 +98,7 @@ impl PoolOptions {
             access_log: false,
             restart: RestartConfig::default(),
             device_name: "warp-proxy".into(),
+            state_dir: None,
         }
     }
 }
@@ -106,6 +119,13 @@ pub struct Worker {
     /// 计划重启因为仍有连接而被推迟。
     deferred: AtomicBool,
     active: AtomicUsize,
+    /// 人工停用后不再接新连接，已有连接继续走完。
+    manual: AtomicBool,
+    temporary: AtomicBool,
+    born: Instant,
+    stage: Mutex<String>,
+    stage_at: Mutex<Option<Instant>>,
+    last_action: Mutex<String>,
     upstream: Option<UpstreamProxy>,
     inner: Mutex<WorkerInner>,
 }
@@ -133,6 +153,12 @@ impl Worker {
             draining: AtomicBool::new(false),
             deferred: AtomicBool::new(false),
             active: AtomicUsize::new(0),
+            manual: AtomicBool::new(true),
+            temporary: AtomicBool::new(false),
+            born: Instant::now(),
+            stage: Mutex::new(String::new()),
+            stage_at: Mutex::new(None),
+            last_action: Mutex::new(String::new()),
             upstream,
             inner: Mutex::new(WorkerInner {
                 config,
@@ -172,7 +198,23 @@ impl Worker {
     }
 
     fn is_ready(&self) -> bool {
-        !self.draining.load(Ordering::Relaxed) && self.inner.lock().unwrap().net.is_some()
+        self.manual.load(Ordering::Relaxed)
+            && !self.draining.load(Ordering::Relaxed)
+            && self.inner.lock().unwrap().net.is_some()
+    }
+
+    fn set_stage(&self, stage: &str) {
+        *self.stage.lock().unwrap() = stage.to_string();
+        *self.stage_at.lock().unwrap() = Some(Instant::now());
+    }
+
+    fn clear_stage(&self) {
+        self.stage.lock().unwrap().clear();
+        *self.stage_at.lock().unwrap() = None;
+    }
+
+    fn note(&self, action: &str) {
+        *self.last_action.lock().unwrap() = action.to_string();
     }
 }
 
@@ -221,6 +263,12 @@ pub struct Pool {
     /// 忙碌账号延后重启的时间。0 表示到点就排空。
     restart_defer: Mutex<Duration>,
     restart_wake: Arc<Notify>,
+    restart_paused: AtomicBool,
+    restart_now: AtomicBool,
+    wake_reason: Mutex<WakeReason>,
+    console: Console,
+    listen: Mutex<String>,
+    state_dir: Option<PathBuf>,
 }
 
 impl Pool {
@@ -266,6 +314,12 @@ impl Pool {
             restart_batch: AtomicUsize::new(opts.restart.batch),
             restart_defer: Mutex::new(opts.restart.defer),
             restart_wake: Arc::new(Notify::new()),
+            restart_paused: AtomicBool::new(false),
+            restart_now: AtomicBool::new(false),
+            wake_reason: Mutex::new(WakeReason::None),
+            console: Console::new(),
+            listen: Mutex::new(String::new()),
+            state_dir: opts.state_dir.clone(),
         });
         for cfg in configs {
             let id = pool.next_id.fetch_add(1, Ordering::Relaxed);
@@ -366,10 +420,12 @@ impl Pool {
                 let Some(pool) = weak.upgrade() else { return };
                 let interval = *pool.restart_interval.lock().unwrap();
                 let wake = Arc::clone(&pool.restart_wake);
-                drop(pool);
                 if interval.is_zero() {
                     round_at = None;
                     deferred.clear();
+                    pool.console.set_next(None);
+                    pool.console.clear_queues();
+                    drop(pool);
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                         _ = wake.notified() => {}
@@ -380,28 +436,38 @@ impl Pool {
                 if round_at.is_none() {
                     round_at = Some(now + interval);
                 }
+                publish_next(&pool, round_at);
                 let next = earliest_restart(round_at.unwrap_or(now), &deferred);
                 let wait = next.saturating_duration_since(now);
+                drop(pool);
                 tokio::select! {
                     _ = tokio::time::sleep(wait) => {}
-                    // 计划被改过。清掉已延后的重启，按新间隔重新计时。
                     _ = wake.notified() => {
-                        round_at = None;
-                        deferred.clear();
-                        continue;
+                        let Some(pool) = weak.upgrade() else { return };
+                        if pool.take_wake() == WakeReason::Plan {
+                            round_at = None;
+                            deferred.clear();
+                            pool.console.clear_queues();
+                            continue;
+                        }
                     }
                 }
                 let Some(pool) = weak.upgrade() else { return };
                 if pool.restart_interval.lock().unwrap().is_zero() {
                     round_at = None;
                     deferred.clear();
+                    pool.console.set_next(None);
+                    pool.console.clear_queues();
                     for worker in pool.snapshot() {
                         worker.deferred.store(false, Ordering::Relaxed);
+                        worker.clear_stage();
                     }
                     continue;
                 }
                 let now = tokio::time::Instant::now();
                 let defer_for = *pool.restart_defer.lock().unwrap();
+                let force = pool.restart_now.swap(false, Ordering::Relaxed);
+                let paused = pool.restart_paused.load(Ordering::Relaxed);
                 let mut due = Vec::new();
                 deferred.retain(|(id, at)| {
                     if *at <= now {
@@ -411,7 +477,19 @@ impl Pool {
                         true
                     }
                 });
-                if round_at.is_some_and(|at| at <= now) {
+                let round_due = round_at.is_some_and(|at| at <= now);
+                if paused && !force {
+                    if round_due {
+                        round_at = Some(now + interval);
+                    }
+                    // 暂停期间到期的延后项先放回队列，恢复后再处理。
+                    for id in due.drain(..) {
+                        schedule_defer(&mut deferred, id, now + Duration::from_secs(5));
+                    }
+                    publish_next(&pool, round_at);
+                    continue;
+                }
+                if round_due || force {
                     let ids: Vec<usize> = pool.snapshot().iter().map(|worker| worker.id).collect();
                     let batch = pool.restart_batch.load(Ordering::Relaxed);
                     let (chosen, next_index) = next_restart_batch(&ids, index, batch);
@@ -421,8 +499,11 @@ impl Pool {
                             due.push(id);
                         }
                     }
-                    round_at = Some(now + interval);
+                    if round_due {
+                        round_at = Some(now + interval);
+                    }
                 }
+                publish_next(&pool, round_at);
                 if due.is_empty() {
                     continue;
                 }
@@ -435,16 +516,21 @@ impl Pool {
                         .unwrap_or(0)
                 };
                 let (restart_now, later) = split_due_restarts(&due, active, !defer_for.is_zero());
+                pool.console.set_queues(&restart_now, &later);
                 for id in &later {
                     if let Some(worker) = workers.iter().find(|worker| worker.id == *id) {
                         worker.deferred.store(true, Ordering::Relaxed);
+                        worker.set_stage("等待空闲");
+                        worker.note("延后重启");
                     }
                     schedule_defer(&mut deferred, *id, now + defer_for);
-                    eprintln!(
+                    let text = format!(
                         "[pool] 账号 {id} 仍有 {} 个连接，延后 {} 秒再重启",
                         active(*id),
                         defer_for.as_secs()
                     );
+                    eprintln!("{text}");
+                    pool.console.log("plan", text);
                 }
                 if restart_now.is_empty() {
                     continue;
@@ -454,23 +540,43 @@ impl Pool {
                     .map(|id| id.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                eprintln!(
+                let text = format!(
                     "[pool] 计划保身份重启账号 {label}（同时最多 {}）",
                     pool.restart.concurrency.max(1)
                 );
+                eprintln!("{text}");
+                pool.console.log("plan", text);
+                let started = Instant::now();
                 let mut joins = tokio::task::JoinSet::new();
                 for id in restart_now {
                     if let Some(worker) = workers.iter().find(|worker| worker.id == id) {
                         worker.deferred.store(false, Ordering::Relaxed);
+                        worker.set_stage("排队");
                     }
                     let pool = Arc::clone(&pool);
-                    joins.spawn(async move {
-                        if let Err(err) = pool.restart_one(id).await {
-                            eprintln!("[pool] 账号 {id} 保身份重启失败: {err}");
-                        }
-                    });
+                    joins.spawn(async move { pool.restart_one(id).await.is_ok() });
                 }
-                while joins.join_next().await.is_some() {}
+                let mut success = 0usize;
+                let mut failed = 0usize;
+                while let Some(joined) = joins.join_next().await {
+                    match joined {
+                        Ok(true) => success += 1,
+                        _ => failed += 1,
+                    }
+                }
+                pool.console.finish_round(
+                    success,
+                    failed,
+                    later.len(),
+                    started.elapsed().as_millis() as u64,
+                );
+                pool.console.log(
+                    "plan",
+                    format!(
+                        "一轮结束：成功 {success}，失败 {failed}，延后 {}",
+                        later.len()
+                    ),
+                );
             }
         });
     }
@@ -667,8 +773,64 @@ impl Pool {
         }
         for worker in self.snapshot() {
             worker.deferred.store(false, Ordering::Relaxed);
+            worker.clear_stage();
         }
+        self.wake(WakeReason::Plan);
+    }
+
+    pub fn set_plan_paused(&self, paused: bool) {
+        self.restart_paused.store(paused, Ordering::Relaxed);
+        self.console.set_paused(paused);
+        self.console.log(
+            "plan",
+            if paused {
+                "已暂停后续轮次"
+            } else {
+                "已恢复后续轮次"
+            },
+        );
+        self.wake(WakeReason::Control);
+    }
+
+    pub fn plan_paused(&self) -> bool {
+        self.restart_paused.load(Ordering::Relaxed)
+    }
+
+    pub fn run_plan_now(&self) {
+        self.restart_now.store(true, Ordering::Relaxed);
+        self.console.log("plan", "已请求立即执行一轮");
+        self.wake(WakeReason::Control);
+    }
+
+    fn wake(&self, reason: WakeReason) {
+        *self.wake_reason.lock().unwrap() = reason;
         self.restart_wake.notify_one();
+    }
+
+    fn take_wake(&self) -> WakeReason {
+        let mut reason = self.wake_reason.lock().unwrap();
+        let current = *reason;
+        *reason = WakeReason::None;
+        current
+    }
+
+    pub fn set_listen(&self, addr: impl Into<String>) {
+        *self.listen.lock().unwrap() = addr.into();
+    }
+
+    pub fn set_manual(&self, id: usize, on: bool) -> crate::Result<()> {
+        let worker = self
+            .snapshot()
+            .into_iter()
+            .find(|worker| worker.id == id)
+            .ok_or_else(|| crate::Error::Config(format!("没有账号 {id}")))?;
+        worker.manual.store(on, Ordering::Relaxed);
+        worker.note(if on { "已启用" } else { "已停用" });
+        self.console.log(
+            "account",
+            format!("账号 {id} {}", if on { "已启用" } else { "已停用" }),
+        );
+        Ok(())
     }
 
     pub fn set_rotate_interval(&self, secs: u64) {
@@ -681,6 +843,11 @@ impl Pool {
     }
 
     pub async fn add_account(self: &Arc<Self>) -> crate::Result<usize> {
+        self.add_account_kind(false).await
+    }
+
+    /// temporary 为真时不写入 STATE_DIR，进程退出后不会再被加载。
+    pub async fn add_account_kind(self: &Arc<Self>, temporary: bool) -> crate::Result<usize> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let opts = RegisterOptions {
             device_name: Some(format!("{}-{id}", self.device_name)),
@@ -688,11 +855,28 @@ impl Pool {
         };
         let upstream = self.upstream.for_index(id.saturating_sub(1));
         let cfg = register_with(upstream.as_ref(), &opts).await?;
+        if !temporary {
+            if let Some(dir) = &self.state_dir {
+                std::fs::create_dir_all(dir)
+                    .map_err(|err| crate::Error::Config(err.to_string()))?;
+                cfg.save(dir.join(format!("account-{id}.json")))?;
+            }
+        }
         let (worker, jobs) = Worker::new(id, cfg, upstream);
+        worker.temporary.store(temporary, Ordering::Relaxed);
+        worker.note(if temporary {
+            "临时添加"
+        } else {
+            "添加账号"
+        });
         self.workers.lock().unwrap().push(worker.clone());
         self.build_tunnel(&worker).await?;
         Pool::spawn_supervisor(self.clone(), worker.clone(), jobs);
         spawn_trace(&worker);
+        self.console.log(
+            "account",
+            format!("已添加{}账号 {id}", if temporary { "临时" } else { "" }),
+        );
         Ok(id)
     }
 
@@ -727,30 +911,89 @@ impl Pool {
 
     pub fn status(&self) -> PoolStatus {
         let pinned = self.pinned.load(Ordering::Relaxed);
+        let users = self.scheduler.user_counts();
+        let now_ms = crate::console::unix_ms();
+        let mut ready_n = 0usize;
+        let mut attention = 0usize;
+        let mut maintenance = 0usize;
+        let mut unknown = 0usize;
+        let mut tasks = Vec::new();
         let accounts = self
             .snapshot()
             .iter()
             .map(|worker| {
                 let draining = worker.draining.load(Ordering::Relaxed);
                 let active = worker.active.load(Ordering::Relaxed);
+                let manual = worker.manual.load(Ordering::Relaxed);
+                let deferred = worker.deferred.load(Ordering::Relaxed);
                 let inner = worker.inner.lock().unwrap();
+                let trace = inner.trace.clone();
+                let (ipv4, ipv6, country, colo, warp) = trace_parts(trace.as_ref());
+                let health = if !manual {
+                    "disabled"
+                } else if draining {
+                    "maintenance"
+                } else if deferred {
+                    "waiting"
+                } else if inner.net.is_none() {
+                    "down"
+                } else if warp == "on" || warp == "plus" {
+                    "healthy"
+                } else if warp.is_empty() {
+                    "unknown"
+                } else {
+                    "attention"
+                };
+                match health {
+                    "healthy" => ready_n += 1,
+                    "maintenance" | "waiting" | "disabled" => maintenance += 1,
+                    "unknown" => unknown += 1,
+                    _ => attention += 1,
+                }
+                let stage = worker.stage.lock().unwrap().clone();
+                let stage_at = *worker.stage_at.lock().unwrap();
+                if !stage.is_empty() {
+                    tasks.push(TaskStatus {
+                        id: worker.id,
+                        stage: stage.clone(),
+                        active,
+                        elapsed_seconds: stage_at.map(|at| at.elapsed().as_secs()).unwrap_or(0),
+                    });
+                }
+                let ready = manual && !draining && inner.net.is_some();
                 AccountStatus {
                     id: worker.id,
-                    ready: !draining && inner.net.is_some(),
+                    ready,
                     tunnel: inner.net.is_some(),
                     draining,
-                    deferred: worker.deferred.load(Ordering::Relaxed),
+                    deferred,
+                    manual,
+                    temporary: worker.temporary.load(Ordering::Relaxed),
                     active,
+                    health: health.to_string(),
+                    warp,
+                    ipv4,
+                    ipv6,
+                    country,
+                    colo,
+                    pooled: ready,
+                    users: users.get(&worker.id).copied().unwrap_or(0),
+                    uptime_seconds: worker.born.elapsed().as_secs(),
+                    last_action: worker.last_action.lock().unwrap().clone(),
                     ip: inner.assigned_v4.to_string(),
-                    trace: inner.trace.clone(),
+                    trace,
                 }
             })
             .collect();
+        let (bytes_up, bytes_down) = self.console.totals();
+        let _ = now_ms;
         PoolStatus {
             enabled: self.enabled(),
             mode: if pinned == 0 { "auto" } else { "pinned" },
             pinned,
             http2: self.http2.load(Ordering::Relaxed),
+            mixed: self.mixed,
+            listen: self.listen.lock().unwrap().clone(),
             rotate_seconds: self.rotate_secs.load(Ordering::Relaxed),
             restart_seconds: self.restart_interval.lock().unwrap().as_secs(),
             restart_batch: self.restart_batch.load(Ordering::Relaxed),
@@ -758,8 +1001,43 @@ impl Pool {
             restart_defer_seconds: self.restart_defer.lock().unwrap().as_secs(),
             strategy: strategy_name(self.policy.strategy),
             sticky: sticky_name(self.policy.sticky),
+            started_at: self.console.started_at(),
+            active_connections: self.console.sessions().len(),
+            bytes_up,
+            bytes_down,
+            ready: ready_n,
+            attention,
+            maintenance,
+            unknown,
+            plan: self.console.plan(),
+            tasks,
             accounts,
         }
+    }
+
+    pub fn sessions(&self) -> Vec<crate::console::SessionView> {
+        self.console.sessions()
+    }
+
+    pub fn logs(&self) -> crate::console::LogPage {
+        let status = self.status();
+        self.console.logs(
+            status.ready,
+            status.attention,
+            status.maintenance,
+            status.unknown,
+        )
+    }
+
+    pub fn track_session(&self, open: crate::console::SessionOpen) -> crate::console::SessionGuard {
+        self.console.open_session(open)
+    }
+
+    pub fn record_access(&self, line: String) {
+        if self.access_log {
+            eprintln!("{line}");
+        }
+        self.console.log("access", line);
     }
 }
 
@@ -778,6 +1056,14 @@ async fn register_with(
 
 /// 从账号列表里取出下一轮要重启的账号，并返回下一轮的游标。
 /// batch 为 0 时取当前全部账号，且同一轮不会重复同一个账号。
+fn publish_next(pool: &Pool, round_at: Option<tokio::time::Instant>) {
+    let next = round_at.map(|at| {
+        let wait = at.saturating_duration_since(tokio::time::Instant::now());
+        crate::console::unix_ms().saturating_add(wait.as_millis() as u64)
+    });
+    pool.console.set_next(next);
+}
+
 fn earliest_restart(
     round_at: tokio::time::Instant,
     deferred: &[(usize, tokio::time::Instant)],
@@ -920,8 +1206,15 @@ async fn reconnect_loop(
 
 async fn graceful(pool: &Weak<Pool>, worker: &Arc<Worker>, job: &RestartJob) -> Result<(), String> {
     worker.draining.store(true, Ordering::Relaxed);
+    worker.set_stage("排空");
     let result = restart_in_place(pool, worker, job).await;
     worker.draining.store(false, Ordering::Relaxed);
+    worker.clear_stage();
+    worker.note(if result.is_ok() {
+        "保身份重启"
+    } else {
+        "重启失败"
+    });
     result
 }
 
@@ -934,6 +1227,7 @@ async fn restart_in_place(
     while worker.active.load(Ordering::Relaxed) > 0 && started.elapsed() < job.drain_timeout {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    worker.set_stage("重连");
     let mut last = "没有探测结果".to_string();
     let attempts = job.retries.saturating_add(1);
     for attempt in 1..=attempts {
@@ -1017,18 +1311,34 @@ pub struct PoolStatus {
     pub mode: &'static str,
     pub pinned: usize,
     pub http2: bool,
+    pub mixed: bool,
+    pub listen: String,
     pub rotate_seconds: u64,
-    /// 保身份重启间隔，0 表示没有计划。
     pub restart_seconds: u64,
-    /// 每一轮重启几个账号，0 表示全部。
     pub restart_batch: usize,
-    /// 同一轮里最多同时重启几个账号。
     pub restart_concurrency: usize,
-    /// 忙碌时延后重启的秒数，0 表示不延后。
     pub restart_defer_seconds: u64,
     pub strategy: &'static str,
     pub sticky: &'static str,
+    pub started_at: u64,
+    pub active_connections: usize,
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+    pub ready: usize,
+    pub attention: usize,
+    pub maintenance: usize,
+    pub unknown: usize,
+    pub plan: crate::console::PlanView,
+    pub tasks: Vec<TaskStatus>,
     pub accounts: Vec<AccountStatus>,
+}
+
+#[derive(Serialize)]
+pub struct TaskStatus {
+    pub id: usize,
+    pub stage: String,
+    pub active: usize,
+    pub elapsed_seconds: u64,
 }
 
 /// 单个账号的状态。
@@ -1038,11 +1348,48 @@ pub struct AccountStatus {
     pub ready: bool,
     pub tunnel: bool,
     pub draining: bool,
-    /// 计划中的重启因为仍有连接而推迟。
     pub deferred: bool,
+    pub manual: bool,
+    pub temporary: bool,
     pub active: usize,
+    pub health: String,
+    pub warp: String,
+    pub ipv4: String,
+    pub ipv6: String,
+    pub country: String,
+    pub colo: String,
+    pub pooled: bool,
+    pub users: usize,
+    pub uptime_seconds: u64,
+    pub last_action: String,
     pub ip: String,
     pub trace: Option<TraceInfo>,
+}
+
+fn trace_parts(trace: Option<&TraceInfo>) -> (String, String, String, String, String) {
+    let Some(trace) = trace else {
+        return (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+    };
+    let mut ipv4 = String::new();
+    let mut ipv6 = String::new();
+    if trace.ip.contains(':') {
+        ipv6 = trace.ip.clone();
+    } else if !trace.ip.is_empty() {
+        ipv4 = trace.ip.clone();
+    }
+    (
+        ipv4,
+        ipv6,
+        trace.loc.clone(),
+        trace.colo.clone(),
+        trace.warp.clone(),
+    )
 }
 
 #[cfg(test)]

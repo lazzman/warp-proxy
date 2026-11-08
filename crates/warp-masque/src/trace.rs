@@ -16,6 +16,8 @@ use crate::tls::insecure_client_config;
 pub struct TraceInfo {
     pub ip: String,
     pub colo: String,
+    /// Cloudflare trace 的 loc，例如 US。
+    pub loc: String,
     /// `"on"` / `"off"` / `"plus"`.
     pub warp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -75,6 +77,7 @@ async fn do_fetch(net: &NetHandle) -> Result<TraceInfo, String> {
                 "ip" => info.ip = v.trim().to_string(),
                 "warp" => info.warp = v.trim().to_string(),
                 "colo" => info.colo = v.trim().to_string(),
+                "loc" => info.loc = v.trim().to_string(),
                 _ => {}
             }
         }

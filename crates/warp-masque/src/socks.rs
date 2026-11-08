@@ -3,7 +3,7 @@
 //! 域名在隧道内解析，避免 DNS 泄漏。关闭 WARP 或访问本机回环时直接连接。
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,25 +22,26 @@ const ATYP_V6: u8 = 0x04;
 
 /// 一条入口连接的访问日志字段。密码不会出现在这里。
 pub(crate) struct AccessRecord {
+    pub id: u64,
     pub proto: &'static str,
     pub client: String,
     pub user: String,
     pub target: String,
     pub account: String,
     pub egress: String,
+    pub family: String,
     pub result: String,
     pub up: u64,
     pub down: u64,
     pub millis: u64,
 }
 
-pub(crate) fn emit_access(enabled: bool, record: &AccessRecord) {
-    if !enabled {
-        return;
-    }
-    eprintln!(
-        "[access] 协议={} 结果={} 客户端={} 用户={} 目标={} 账号={} 出口={} 上行={} 下行={} 耗时毫秒={}",
+pub(crate) fn access_line(record: &AccessRecord) -> String {
+    format!(
+        "[access] 请求={} 协议={} 地址族={} 结果={} 客户端={} 用户={} 目标={} 账号={} 出口={} 上行={} 下行={} 耗时毫秒={}",
+        record.id,
         record.proto,
+        if record.family.is_empty() { "-" } else { record.family.as_str() },
         record.result,
         record.client,
         record.user,
@@ -50,7 +51,7 @@ pub(crate) fn emit_access(enabled: bool, record: &AccessRecord) {
         record.up,
         record.down,
         record.millis
-    );
+    )
 }
 
 /// 在 listener 上提供 SOCKS5，全部 CONNECT 走同一个 netstack。
@@ -92,23 +93,25 @@ async fn handle_client(client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) {
         let mut first = [0u8; 1];
         if client.peek(&mut first).await.is_ok() && first[0] != VER {
             let record = crate::http_proxy::handle(client, pool.clone(), &client_addr).await;
-            emit_access(pool.access_log(), &record);
+            pool.record_access(access_line(&record));
             return;
         }
     }
     let record = handle_pool(client, peer, pool.clone()).await;
-    emit_access(pool.access_log(), &record);
+    pool.record_access(access_line(&record));
 }
 
 async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -> AccessRecord {
     let started = Instant::now();
     let mut record = AccessRecord {
+        id: 0,
         proto: "socks",
         client: peer.to_string(),
         user: "-".into(),
         target: "-".into(),
         account: "-".into(),
         egress: "-".into(),
+        family: String::new(),
         result: "closed".into(),
         up: 0,
         down: 0,
@@ -175,11 +178,12 @@ async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -
     record.account = lease.worker_id.to_string();
     record.egress = lease.egress.clone();
     match connect_target(&mut client, lease.net(), &request.host, request.port).await {
-        Ok(conn) => {
+        Ok((conn, family)) => {
+            record.family = family.into();
             if client.write_all(&reply(0x00)).await.is_err() {
                 record.result = "write-failed".into();
             } else {
-                let (up, down) = relay_counted(client, conn).await;
+                let (up, down) = relay_session(&pool, client, conn, &mut record).await;
                 record.up = up;
                 record.down = down;
                 record.result = "ok".into();
@@ -198,7 +202,7 @@ async fn connect_target(
     net: &NetHandle,
     host: &str,
     port: u16,
-) -> Result<TcpConn, &'static str> {
+) -> Result<(TcpConn, &'static str), &'static str> {
     let ip = match net.resolve(host).await {
         Ok(ip) => ip,
         Err(_) => {
@@ -206,8 +210,9 @@ async fn connect_target(
             return Err("resolve");
         }
     };
+    let family = if ip.is_ipv4() { "ipv4" } else { "ipv6" };
     match net.connect(SocketAddr::new(ip, port)).await {
-        Ok(conn) => Ok(conn),
+        Ok(conn) => Ok((conn, family)),
         Err(_) => {
             let _ = client.write_all(&reply(0x05)).await;
             Err("connect")
@@ -222,25 +227,55 @@ async fn via_netstack(
     port: u16,
 ) -> std::io::Result<()> {
     let conn = match connect_target(&mut client, net, host, port).await {
-        Ok(conn) => conn,
+        Ok((conn, _)) => conn,
         Err(_) => return Ok(()),
     };
     client.write_all(&reply(0x00)).await?;
-    relay_counted(client, conn).await;
+    let meter = Arc::new(crate::console::TrafficMeter::new());
+    relay_counted(client, conn, meter).await;
     Ok(())
 }
 
-pub(crate) async fn relay_counted(client: TcpStream, conn: TcpConn) -> (u64, u64) {
+pub(crate) async fn relay_session(
+    pool: &Arc<Pool>,
+    client: TcpStream,
+    conn: TcpConn,
+    record: &mut AccessRecord,
+) -> (u64, u64) {
+    let meter = std::sync::Arc::new(crate::console::TrafficMeter::new());
+    let account = record.account.parse().unwrap_or(0);
+    let guard = pool.track_session(crate::console::SessionOpen {
+        protocol: record.proto.to_string(),
+        client: record.client.clone(),
+        user: record.user.clone(),
+        target: record.target.clone(),
+        egress: record.egress.clone(),
+        family: record.family.clone(),
+        account,
+        meter: meter.clone(),
+    });
+    record.id = guard.id();
+    let counts = relay_counted(client, conn, meter).await;
+    drop(guard);
+    counts
+}
+
+pub(crate) async fn relay_counted(
+    client: TcpStream,
+    conn: TcpConn,
+    meter: Arc<crate::console::TrafficMeter>,
+) -> (u64, u64) {
     let (mut reader_client, mut writer_client) = client.into_split();
     let (mut reader_net, writer_net) = conn.into_split();
-    let up = Arc::new(AtomicU64::new(0));
-    let down = Arc::new(AtomicU64::new(0));
-    let up_count = up.clone();
-    let down_count = down.clone();
+    let up_meter = Arc::clone(&meter);
+    let down_meter = Arc::clone(&meter);
 
     let net_to_client = async move {
         while let Some(chunk) = reader_net.recv().await {
-            down_count.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            down_meter
+                .down
+                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            down_meter.touch();
             if writer_client.write_all(&chunk).await.is_err() {
                 break;
             }
@@ -253,7 +288,8 @@ pub(crate) async fn relay_counted(client: TcpStream, conn: TcpConn) -> (u64, u64
             match reader_client.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    up_count.fetch_add(n as u64, Ordering::Relaxed);
+                    up_meter.up.fetch_add(n as u64, Ordering::Relaxed);
+                    up_meter.touch();
                     writer_net.send(buf[..n].to_vec());
                 }
             }
@@ -265,7 +301,10 @@ pub(crate) async fn relay_counted(client: TcpStream, conn: TcpConn) -> (u64, u64
         _ = net_to_client => {}
         _ = client_to_net => {}
     }
-    (up.load(Ordering::Relaxed), down.load(Ordering::Relaxed))
+    (
+        meter.up.load(Ordering::Relaxed),
+        meter.down.load(Ordering::Relaxed),
+    )
 }
 
 async fn relay_direct(mut client: TcpStream, mut upstream: TcpStream) {
