@@ -4,12 +4,12 @@
 //! WarpConfig 中；保身份重启只重连隧道，不重新注册。
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch, Notify, Semaphore};
 
 use crate::config::DEFAULT_ENDPOINT_H2_V4;
@@ -43,16 +43,47 @@ pub struct ProxyAuth {
 
 /// 保身份重启参数。interval 为 0 时不定时重启。
 /// batch 是每一轮重启几个账号，0 表示这一轮包含当前全部账号。
+/// 连上隧道之后必须看到 warp=on 或 warp=plus，否则按退避一直重试。
 #[derive(Clone, Debug)]
 pub struct RestartConfig {
     pub interval: Duration,
     pub probe_timeout: Duration,
-    pub retries: u32,
-    pub drain_timeout: Duration,
+    /// 已经开始重连后，最多再等现有连接这么久，到点就强制重连。
+    pub force_after: Duration,
     pub concurrency: usize,
     pub batch: usize,
     /// 计划重启时，账号仍有连接就延后这么久再试。0 表示不延后，直接排空。
     pub defer: Duration,
+    /// 上一轮拖过下次时间时，立刻补跑或跳到下一个间隔点。
+    pub misfire: Misfire,
+}
+
+/// 一轮超过间隔后怎么处理错过的那次。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Misfire {
+    /// 结束后立刻补跑一轮。错过的多个整点合成这一次。
+    Fire = 0,
+    /// 不补跑，下次排到仍在未来的下一个间隔点。
+    Skip = 1,
+}
+
+impl Misfire {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Misfire::Fire => "fire",
+            Misfire::Skip => "skip",
+        }
+    }
+}
+
+/// 解析 ROTATE_RESTART_MISFIRE。fire 立刻补跑，skip 跳过。
+pub fn parse_misfire(value: &str) -> Result<Misfire, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fire" => Ok(Misfire::Fire),
+        "skip" => Ok(Misfire::Skip),
+        other => Err(format!("未知 ROTATE_RESTART_MISFIRE={other}（fire|skip）")),
+    }
 }
 
 impl Default for RestartConfig {
@@ -60,11 +91,11 @@ impl Default for RestartConfig {
         Self {
             interval: Duration::ZERO,
             probe_timeout: Duration::from_secs(15),
-            retries: 2,
-            drain_timeout: Duration::from_secs(60),
+            force_after: Duration::from_secs(60),
             concurrency: 1,
             batch: 1,
             defer: Duration::ZERO,
+            misfire: Misfire::Fire,
         }
     }
 }
@@ -81,6 +112,10 @@ pub struct PoolOptions {
     pub mixed: bool,
     pub access_log: bool,
     pub restart: RestartConfig,
+    /// 经隧道访问 cdn-cgi/trace 的间隔。0 表示关闭。
+    pub health_interval: Duration,
+    /// 单次出口检查的最长时间。
+    pub health_timeout: Duration,
     pub device_name: String,
     pub state_dir: Option<PathBuf>,
 }
@@ -97,6 +132,8 @@ impl PoolOptions {
             mixed: false,
             access_log: false,
             restart: RestartConfig::default(),
+            health_interval: Duration::from_secs(60),
+            health_timeout: Duration::from_secs(20),
             device_name: "warp-proxy".into(),
             state_dir: None,
         }
@@ -106,8 +143,7 @@ impl PoolOptions {
 struct RestartJob {
     reply: oneshot::Sender<Result<(), String>>,
     probe_timeout: Duration,
-    retries: u32,
-    drain_timeout: Duration,
+    force_after: Duration,
 }
 
 /// 一个账号：配置、隧道、以及当前是否接新连接。
@@ -122,6 +158,10 @@ pub struct Worker {
     /// 人工停用后不再接新连接，已有连接继续走完。
     manual: AtomicBool,
     temporary: AtomicBool,
+    /// 已从池中移除。监督任务看到后退出，避免同一身份再建一条隧道。
+    stopped: AtomicBool,
+    /// 曾经确认过 warp=on 或 warp=plus。之后的出口检查失败不会拆隧道。
+    warp_ready: AtomicBool,
     born: Instant,
     stage: Mutex<String>,
     stage_at: Mutex<Option<Instant>>,
@@ -136,7 +176,8 @@ struct WorkerInner {
     tunnel: Option<Tunnel>,
     dead: Option<watch::Receiver<bool>>,
     assigned_v4: Ipv4Addr,
-    trace: Option<TraceInfo>,
+    egress_v4: Option<TraceInfo>,
+    egress_v6: Option<TraceInfo>,
 }
 
 impl Worker {
@@ -155,6 +196,8 @@ impl Worker {
             active: AtomicUsize::new(0),
             manual: AtomicBool::new(true),
             temporary: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            warp_ready: AtomicBool::new(false),
             born: Instant::now(),
             stage: Mutex::new(String::new()),
             stage_at: Mutex::new(None),
@@ -166,7 +209,8 @@ impl Worker {
                 tunnel: None,
                 dead: None,
                 assigned_v4: Ipv4Addr::UNSPECIFIED,
-                trace: None,
+                egress_v4: None,
+                egress_v6: None,
             }),
         });
         (worker, restart_rx)
@@ -181,20 +225,31 @@ impl Worker {
     }
 
     fn clear_net(&self) {
+        self.warp_ready.store(false, Ordering::Relaxed);
         let mut inner = self.inner.lock().unwrap();
         inner.net = None;
         inner.dead = None;
+        inner.egress_v4 = None;
+        inner.egress_v6 = None;
     }
 
     fn retire(&self) {
+        self.warp_ready.store(false, Ordering::Relaxed);
         let mut inner = self.inner.lock().unwrap();
         inner.net = None;
         inner.dead = None;
         inner.tunnel = None;
+        inner.egress_v4 = None;
+        inner.egress_v6 = None;
     }
 
-    fn set_trace(&self, trace: TraceInfo) {
-        self.inner.lock().unwrap().trace = Some(trace);
+    fn set_egress(&self, v4: TraceInfo, v6: TraceInfo) {
+        if warp_confirmed(&v4) || warp_confirmed(&v6) {
+            self.warp_ready.store(true, Ordering::Relaxed);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        inner.egress_v4 = Some(v4);
+        inner.egress_v6 = Some(v6);
     }
 
     fn is_ready(&self) -> bool {
@@ -255,9 +310,13 @@ pub struct Pool {
     policy: Policy,
     scheduler: Scheduler,
     restart: RestartConfig,
+    health_interval: Duration,
+    health_timeout: Duration,
     restart_limit: Arc<Semaphore>,
     /// 运行中可改的保身份重启间隔。0 表示关闭计划。
     restart_interval: Mutex<Duration>,
+    /// 错过整点时补跑或跳过。见 Misfire。
+    restart_misfire: AtomicU8,
     /// 每一轮重启几个账号。0 表示当前全部账号。
     restart_batch: AtomicUsize,
     /// 忙碌账号延后重启的时间。0 表示到点就排空。
@@ -269,6 +328,10 @@ pub struct Pool {
     console: Console,
     listen: Mutex<String>,
     state_dir: Option<PathBuf>,
+    /// 启动时由 INSTANCE_COUNT 加载的账号。这些身份不会被临时实例重复占用。
+    base_ids: Mutex<Vec<usize>>,
+    /// 正在添加、尚未进入 workers 的编号，避免并发添加用到同一个已保存身份。
+    reserved_ids: Mutex<Vec<usize>>,
 }
 
 impl Pool {
@@ -309,8 +372,11 @@ impl Pool {
             policy: opts.policy,
             scheduler: Scheduler::new(),
             restart: opts.restart.clone(),
+            health_interval: opts.health_interval,
+            health_timeout: opts.health_timeout,
             restart_limit: Arc::new(Semaphore::new(opts.restart.concurrency.max(1))),
             restart_interval: Mutex::new(opts.restart.interval),
+            restart_misfire: AtomicU8::new(opts.restart.misfire as u8),
             restart_batch: AtomicUsize::new(opts.restart.batch),
             restart_defer: Mutex::new(opts.restart.defer),
             restart_wake: Arc::new(Notify::new()),
@@ -320,6 +386,8 @@ impl Pool {
             console: Console::new(),
             listen: Mutex::new(String::new()),
             state_dir: opts.state_dir.clone(),
+            base_ids: Mutex::new(Vec::new()),
+            reserved_ids: Mutex::new(Vec::new()),
         });
         for cfg in configs {
             let id = pool.next_id.fetch_add(1, Ordering::Relaxed);
@@ -327,10 +395,26 @@ impl Pool {
             let (worker, jobs) = Worker::new(id, cfg, upstream);
             pool.workers.lock().unwrap().push(worker.clone());
             if let Err(err) = pool.build_tunnel(&worker).await {
-                eprintln!("[pool] 账号 {id} 初次连接失败: {err}");
+                let text = format!("[pool] 账号 {id} 初次连接失败: {err}");
+                eprintln!("{text}");
+                pool.console.log("account", text);
+            } else {
+                let (v4, v6) = {
+                    let inner = worker.inner.lock().unwrap();
+                    (inner.assigned_v4.to_string(), inner.config.ipv6.clone())
+                };
+                pool.console.log(
+                    "account",
+                    format!("[pool] 账号 {id} 隧道已连接，IPv4 {v4}，IPv6 {v6}"),
+                );
             }
             Pool::spawn_supervisor(pool.clone(), worker, jobs);
         }
+        {
+            let ids: Vec<usize> = pool.snapshot().iter().map(|worker| worker.id).collect();
+            *pool.base_ids.lock().unwrap() = ids;
+        }
+        pool.restore_temporary().await;
         Pool::spawn_rotator(pool.clone());
         Pool::spawn_restarter(pool.clone());
         Ok(pool)
@@ -436,6 +520,8 @@ impl Pool {
                 if round_at.is_none() {
                     round_at = Some(now + interval);
                 }
+                // 开始等待前就已经过点，说明上一轮把这次整点拖过去了。
+                let already_late = round_at.is_some_and(|at| at <= now);
                 publish_next(&pool, round_at);
                 let next = earliest_restart(round_at.unwrap_or(now), &deferred);
                 let wait = next.saturating_duration_since(now);
@@ -489,19 +575,35 @@ impl Pool {
                     publish_next(&pool, round_at);
                     continue;
                 }
-                if round_due || force {
-                    let ids: Vec<usize> = pool.snapshot().iter().map(|worker| worker.id).collect();
-                    let batch = pool.restart_batch.load(Ordering::Relaxed);
-                    let (chosen, next_index) = next_restart_batch(&ids, index, batch);
-                    index = next_index;
-                    for id in chosen {
-                        if !due.contains(&id) {
-                            due.push(id);
+                match round_action(pool.misfire(), already_late, round_due, force) {
+                    RoundAction::Skip => {
+                        if let Some(at) = round_at {
+                            let next_at = next_future_deadline(at, interval, now);
+                            let secs = next_at.saturating_duration_since(now).as_secs();
+                            round_at = Some(next_at);
+                            let text = format!(
+                                "[pool] 上一轮超过间隔，跳过补跑，约 {secs} 秒后进入下一间隔点"
+                            );
+                            eprintln!("{text}");
+                            pool.console.log("plan", text);
                         }
                     }
-                    if round_due {
-                        round_at = Some(now + interval);
+                    RoundAction::Run => {
+                        let ids: Vec<usize> =
+                            pool.snapshot().iter().map(|worker| worker.id).collect();
+                        let batch = pool.restart_batch.load(Ordering::Relaxed);
+                        let (chosen, next_index) = next_restart_batch(&ids, index, batch);
+                        index = next_index;
+                        for id in chosen {
+                            if !due.contains(&id) {
+                                due.push(id);
+                            }
+                        }
+                        if round_due {
+                            round_at = Some(now + interval);
+                        }
                     }
+                    RoundAction::Wait => {}
                 }
                 publish_next(&pool, round_at);
                 if due.is_empty() {
@@ -573,7 +675,7 @@ impl Pool {
                 pool.console.log(
                     "plan",
                     format!(
-                        "一轮结束：成功 {success}，失败 {failed}，延后 {}",
+                        "一轮结束：成功 {success}，失败 {failed}，延后 {}。失败的账号会继续重试，直到 warp=on",
                         later.len()
                     ),
                 );
@@ -656,10 +758,17 @@ impl Pool {
         worker.active.fetch_add(1, Ordering::Relaxed);
         let inner = worker.inner.lock().unwrap();
         let egress = inner
-            .trace
+            .egress_v4
             .as_ref()
             .map(|trace| trace.ip.clone())
             .filter(|ip| !ip.is_empty())
+            .or_else(|| {
+                inner
+                    .egress_v6
+                    .as_ref()
+                    .map(|trace| trace.ip.clone())
+                    .filter(|ip| !ip.is_empty())
+            })
             .unwrap_or_else(|| inner.assigned_v4.to_string());
         let net = inner.net.clone().expect("只租借已经就绪的账号");
         drop(inner);
@@ -711,8 +820,7 @@ impl Pool {
             .send(RestartJob {
                 reply: reply_tx,
                 probe_timeout: self.restart.probe_timeout,
-                retries: self.restart.retries,
-                drain_timeout: self.restart.drain_timeout,
+                force_after: self.restart.force_after,
             })
             .map_err(|_| "账号监督任务已退出".to_string())?;
         let result = reply_rx.await.map_err(|_| "重启任务中断".to_string())?;
@@ -755,27 +863,46 @@ impl Pool {
     }
 
     /// 修改保身份重启计划。`None` 表示这一项保持原值。
-    /// batch 为 0 时，每一轮包含当前全部账号。改完后按新间隔重新计时。
+    /// batch 为 0 时，每一轮包含当前全部账号。改间隔、批量或延后会重新计时；只改 misfire 不会。
     pub fn set_restart_plan(
         &self,
         interval: Option<Duration>,
         batch: Option<usize>,
         defer: Option<Duration>,
+        misfire: Option<Misfire>,
     ) {
+        let mut reschedule = false;
         if let Some(interval) = interval {
             *self.restart_interval.lock().unwrap() = interval;
+            reschedule = true;
         }
         if let Some(batch) = batch {
             self.restart_batch.store(batch, Ordering::Relaxed);
+            reschedule = true;
         }
         if let Some(defer) = defer {
             *self.restart_defer.lock().unwrap() = defer;
+            reschedule = true;
+        }
+        if let Some(misfire) = misfire {
+            self.restart_misfire.store(misfire as u8, Ordering::Relaxed);
+        }
+        // 只改错过策略时不重新计时，也不取消已经延后的账号。
+        if !reschedule {
+            return;
         }
         for worker in self.snapshot() {
             worker.deferred.store(false, Ordering::Relaxed);
             worker.clear_stage();
         }
         self.wake(WakeReason::Plan);
+    }
+
+    fn misfire(&self) -> Misfire {
+        match self.restart_misfire.load(Ordering::Relaxed) {
+            1 => Misfire::Skip,
+            _ => Misfire::Fire,
+        }
     }
 
     pub fn set_plan_paused(&self, paused: bool) {
@@ -846,54 +973,238 @@ impl Pool {
         self.add_account_kind(false).await
     }
 
-    /// temporary 为真时不写入 STATE_DIR，进程退出后不会再被加载。
+    /// 按数量添加账号。临时账号会记下身份；已移除但还留在磁盘上的身份会优先用回来，不再重新注册。
+    pub async fn add_accounts(
+        self: &Arc<Self>,
+        temporary: bool,
+        count: usize,
+    ) -> crate::Result<Vec<usize>> {
+        if count == 0 {
+            return Err(crate::Error::Config("添加数量至少为 1".into()));
+        }
+        if count > MAX_ADD_COUNT {
+            return Err(crate::Error::Config(format!(
+                "一次最多添加 {MAX_ADD_COUNT} 个"
+            )));
+        }
+        let mut ids = Vec::with_capacity(count);
+        for _ in 0..count {
+            ids.push(self.add_account_kind(temporary).await?);
+        }
+        Ok(ids)
+    }
+
+    /// 添加一个账号。临时账号写入 STATE_DIR，重启时按 temporary.json 加载，不重新注册。
     pub async fn add_account_kind(self: &Arc<Self>, temporary: bool) -> crate::Result<usize> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let opts = RegisterOptions {
-            device_name: Some(format!("{}-{id}", self.device_name)),
-            ..Default::default()
-        };
-        let upstream = self.upstream.for_index(id.saturating_sub(1));
-        let cfg = register_with(upstream.as_ref(), &opts).await?;
-        if !temporary {
-            if let Some(dir) = &self.state_dir {
-                std::fs::create_dir_all(dir)
-                    .map_err(|err| crate::Error::Config(err.to_string()))?;
-                cfg.save(dir.join(format!("account-{id}.json")))?;
+        let claim = self.claim_account(temporary);
+        let id = claim.id();
+        match self.finish_add(claim, temporary).await {
+            Ok(id) => Ok(id),
+            Err(err) => {
+                self.release_reserved(id);
+                Err(err)
             }
         }
-        let (worker, jobs) = Worker::new(id, cfg, upstream);
-        worker.temporary.store(temporary, Ordering::Relaxed);
-        worker.note(if temporary {
-            "临时添加"
-        } else {
-            "添加账号"
-        });
-        self.workers.lock().unwrap().push(worker.clone());
-        self.build_tunnel(&worker).await?;
-        Pool::spawn_supervisor(self.clone(), worker.clone(), jobs);
-        spawn_trace(&worker);
-        self.console.log(
-            "account",
-            format!("已添加{}账号 {id}", if temporary { "临时" } else { "" }),
-        );
+    }
+
+    fn claim_account(&self, temporary: bool) -> AccountClaim {
+        let mut reserved = self.reserved_ids.lock().unwrap();
+        if temporary {
+            if let Some((id, config)) = self.find_spare(&reserved) {
+                reserved.push(id);
+                return AccountClaim::Saved { id, config };
+            }
+        }
+        let id = self.allocate_id(&reserved);
+        reserved.push(id);
+        AccountClaim::Fresh { id }
+    }
+
+    async fn finish_add(
+        self: &Arc<Self>,
+        claim: AccountClaim,
+        temporary: bool,
+    ) -> crate::Result<usize> {
+        let id = claim.id();
+        let (config, message, note) = match claim {
+            AccountClaim::Saved { config, .. } => (
+                config,
+                format!("已添加临时账号 {id}，使用已保存身份"),
+                "使用已保存身份".to_string(),
+            ),
+            AccountClaim::Fresh { .. } => {
+                let opts = RegisterOptions {
+                    device_name: Some(format!("{}-{id}", self.device_name)),
+                    ..Default::default()
+                };
+                let upstream = self.upstream.for_index(id.saturating_sub(1));
+                let config = register_with(upstream.as_ref(), &opts).await?;
+                if let Some(dir) = &self.state_dir {
+                    std::fs::create_dir_all(dir)
+                        .map_err(|err| crate::Error::Config(err.to_string()))?;
+                    config.save(account_path(dir, id))?;
+                }
+                let (message, note) = if temporary {
+                    (format!("已添加临时账号 {id}"), "临时添加".to_string())
+                } else {
+                    (format!("已添加账号 {id}"), "添加账号".to_string())
+                };
+                (config, message, note)
+            }
+        };
+        if temporary {
+            if let Some(dir) = &self.state_dir {
+                remember_saved_temporary(dir, id)?;
+            }
+        }
+        self.attach_account(id, config, temporary, &note, &message)
+            .await?;
         Ok(id)
     }
 
+    async fn attach_account(
+        self: &Arc<Self>,
+        id: usize,
+        config: WarpConfig,
+        temporary: bool,
+        note: &str,
+        message: &str,
+    ) -> crate::Result<()> {
+        self.bump_next_id(id);
+        let upstream = self.upstream.for_index(id.saturating_sub(1));
+        let (worker, jobs) = Worker::new(id, config, upstream);
+        worker.temporary.store(temporary, Ordering::Relaxed);
+        worker.note(note);
+        self.workers.lock().unwrap().push(worker.clone());
+        self.release_reserved(id);
+        if let Err(err) = self.build_tunnel(&worker).await {
+            let text = format!("[pool] 账号 {id} 初次连接失败: {err}");
+            eprintln!("{text}");
+            self.console.log("account", text);
+        }
+        Pool::spawn_supervisor(self.clone(), worker, jobs);
+        self.console.log("account", message.to_string());
+        Ok(())
+    }
+
+    async fn restore_temporary(self: &Arc<Self>) {
+        let Some(dir) = self.state_dir.clone() else {
+            return;
+        };
+        let active = match read_temporary_active(&dir) {
+            Ok(active) => active,
+            Err(err) => {
+                eprintln!("[pool] 无法读取临时实例名单: {err}");
+                return;
+            }
+        };
+        for id in active {
+            if self.snapshot().iter().any(|worker| worker.id == id) {
+                continue;
+            }
+            let config = match WarpConfig::load(account_path(&dir, id)) {
+                Ok(config) => config,
+                Err(err) => {
+                    eprintln!("[pool] 临时账号 {id} 的配置还在，但暂时无法加载: {err}");
+                    continue;
+                }
+            };
+            if let Err(err) = self
+                .attach_account(
+                    id,
+                    config,
+                    true,
+                    "加载已保存的临时实例",
+                    &format!("已加载临时账号 {id}，使用已保存身份"),
+                )
+                .await
+            {
+                eprintln!("[pool] 加载临时账号 {id} 失败: {err}");
+            }
+        }
+    }
+
+    fn find_spare(&self, reserved: &[usize]) -> Option<(usize, WarpConfig)> {
+        let dir = self.state_dir.as_ref()?;
+        let running: Vec<usize> = self.snapshot().iter().map(|worker| worker.id).collect();
+        let base = self.base_ids.lock().unwrap().clone();
+        for id in saved_account_ids(dir) {
+            if running.contains(&id) || base.contains(&id) || reserved.contains(&id) {
+                continue;
+            }
+            match WarpConfig::load(account_path(dir, id)) {
+                Ok(config) => return Some((id, config)),
+                Err(err) => eprintln!("[pool] 跳过无法读取的账号 {id}: {err}"),
+            }
+        }
+        None
+    }
+
+    fn allocate_id(&self, reserved: &[usize]) -> usize {
+        if let Some(dir) = &self.state_dir {
+            for id in saved_account_ids(dir) {
+                self.bump_next_id(id);
+            }
+        }
+        for worker in self.snapshot() {
+            self.bump_next_id(worker.id);
+        }
+        for id in reserved {
+            self.bump_next_id(*id);
+        }
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn bump_next_id(&self, id: usize) {
+        let next = id.saturating_add(1);
+        let mut current = self.next_id.load(Ordering::Relaxed);
+        while current < next {
+            match self.next_id.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn release_reserved(&self, id: usize) {
+        self.reserved_ids
+            .lock()
+            .unwrap()
+            .retain(|existing| *existing != id);
+    }
+
+    /// 移出运行中的账号。临时实例只从名单里去掉，不删除已保存的身份。
     pub fn remove_account(&self, id: usize) -> crate::Result<()> {
         let mut workers = self.workers.lock().unwrap();
         if workers.len() <= 1 {
             return Err(crate::Error::Config("不能删除最后一个账号".into()));
         }
-        let before = workers.len();
-        workers.retain(|worker| worker.id != id);
-        if workers.len() == before {
+        let Some(index) = workers.iter().position(|worker| worker.id == id) else {
             return Err(crate::Error::Config(format!("没有账号 {id}")));
-        }
+        };
+        let worker = workers.remove(index);
+        let temporary = worker.temporary.load(Ordering::Relaxed);
         drop(workers);
+        worker.stopped.store(true, Ordering::Relaxed);
+        worker.retire();
+        worker.rebuild.notify_one();
         self.scheduler.forget(id);
         if self.pinned.load(Ordering::Relaxed) == id {
             self.pinned.store(0, Ordering::Relaxed);
+        }
+        if temporary {
+            if let Some(dir) = &self.state_dir {
+                if let Err(err) = forget_saved_temporary(dir, id) {
+                    eprintln!("[pool] 账号 {id} 已移出运行，但名单没有更新: {err}");
+                }
+            }
+            self.console
+                .log("account", format!("已移除临时账号 {id}，保留已保存身份"));
         }
         Ok(())
     }
@@ -903,9 +1214,16 @@ impl Pool {
             if id != 0 && worker.id != id {
                 continue;
             }
-            if let Some(net) = worker.net() {
-                worker.set_trace(crate::trace::fetch_trace(&net).await);
-            }
+            let text = match probe_egress(&worker, self.health_timeout).await {
+                Ok(egress) => format!(
+                    "[pool] 账号 {} 出口 {}",
+                    worker.id,
+                    egress_summary(&egress.v4, &egress.v6)
+                ),
+                Err(err) => format!("[pool] 账号 {} 出口探测失败: {err}", worker.id),
+            };
+            eprintln!("{text}");
+            self.console.log("account", text);
         }
     }
 
@@ -927,8 +1245,11 @@ impl Pool {
                 let manual = worker.manual.load(Ordering::Relaxed);
                 let deferred = worker.deferred.load(Ordering::Relaxed);
                 let inner = worker.inner.lock().unwrap();
-                let trace = inner.trace.clone();
-                let (ipv4, ipv6, country, colo, warp) = trace_parts(trace.as_ref());
+                let egress_v4 = inner.egress_v4.clone();
+                let egress_v6 = inner.egress_v6.clone();
+                let (ipv4, ipv6, country, colo, warp) =
+                    egress_parts(egress_v4.as_ref(), egress_v6.as_ref());
+                let trace = preferred_trace(egress_v4.as_ref(), egress_v6.as_ref()).cloned();
                 let health = if !manual {
                     "disabled"
                 } else if draining {
@@ -937,7 +1258,10 @@ impl Pool {
                     "waiting"
                 } else if inner.net.is_none() {
                     "down"
-                } else if warp == "on" || warp == "plus" {
+                } else if warp == "on"
+                    || warp == "plus"
+                    || (warp.is_empty() && worker.warp_ready.load(Ordering::Relaxed))
+                {
                     "healthy"
                 } else if warp.is_empty() {
                     "unknown"
@@ -981,6 +1305,7 @@ impl Pool {
                     uptime_seconds: worker.born.elapsed().as_secs(),
                     last_action: worker.last_action.lock().unwrap().clone(),
                     ip: inner.assigned_v4.to_string(),
+                    assigned_v6: inner.config.ipv6.clone(),
                     trace,
                 }
             })
@@ -999,6 +1324,8 @@ impl Pool {
             restart_batch: self.restart_batch.load(Ordering::Relaxed),
             restart_concurrency: self.restart.concurrency.max(1),
             restart_defer_seconds: self.restart_defer.lock().unwrap().as_secs(),
+            restart_misfire: self.misfire().as_str(),
+            health_seconds: self.health_interval.as_secs(),
             strategy: strategy_name(self.policy.strategy),
             sticky: sticky_name(self.policy.sticky),
             started_at: self.console.started_at(),
@@ -1039,6 +1366,107 @@ impl Pool {
         }
         self.console.log("access", line);
     }
+}
+
+const MAX_ADD_COUNT: usize = 100;
+
+enum AccountClaim {
+    Saved { id: usize, config: WarpConfig },
+    Fresh { id: usize },
+}
+
+impl AccountClaim {
+    fn id(&self) -> usize {
+        match self {
+            Self::Saved { id, .. } | Self::Fresh { id } => *id,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct TemporaryManifest {
+    active: Vec<usize>,
+}
+
+fn account_path(dir: &Path, id: usize) -> PathBuf {
+    dir.join(format!("account-{id}.json"))
+}
+
+fn saved_account_ids(dir: &Path) -> Vec<usize> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix("account-") else {
+            continue;
+        };
+        let Some(number) = rest.strip_suffix(".json") else {
+            continue;
+        };
+        if let Ok(id) = number.parse::<usize>() {
+            if id > 0 {
+                ids.push(id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn read_temporary_active(dir: &Path) -> crate::Result<Vec<usize>> {
+    let path = dir.join("temporary.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = std::fs::read(&path).map_err(|err| crate::Error::Config(err.to_string()))?;
+    let manifest: TemporaryManifest = serde_json::from_slice(&bytes)
+        .map_err(|err| crate::Error::Config(format!("无法读取 {}: {err}", path.display())))?;
+    let mut active = manifest.active;
+    active.sort_unstable();
+    active.dedup();
+    Ok(active)
+}
+
+fn write_temporary_active(dir: &Path, active: &[usize]) -> crate::Result<()> {
+    std::fs::create_dir_all(dir).map_err(|err| crate::Error::Config(err.to_string()))?;
+    let manifest = TemporaryManifest {
+        active: active.to_vec(),
+    };
+    let json = serde_json::to_vec_pretty(&manifest)
+        .map_err(|err| crate::Error::Config(err.to_string()))?;
+    std::fs::write(dir.join("temporary.json"), json)
+        .map_err(|err| crate::Error::Config(err.to_string()))?;
+    Ok(())
+}
+
+fn remember_saved_temporary(dir: &Path, id: usize) -> crate::Result<()> {
+    let mut active = read_temporary_active(dir)?;
+    if !active.contains(&id) {
+        active.push(id);
+        active.sort_unstable();
+    }
+    write_temporary_active(dir, &active)
+}
+
+/// 只把编号移出正在使用的名单，不删除 account-{id}.json。
+fn forget_saved_temporary(dir: &Path, id: usize) -> crate::Result<()> {
+    let mut active = read_temporary_active(dir)?;
+    active.retain(|existing| *existing != id);
+    write_temporary_active(dir, &active)
+}
+
+#[cfg(test)]
+fn spare_account_id(saved: &[usize], running: &[usize], base: &[usize]) -> Option<usize> {
+    saved
+        .iter()
+        .copied()
+        .find(|id| !running.contains(id) && !base.contains(id))
 }
 
 async fn register_with(
@@ -1103,6 +1531,48 @@ pub(crate) fn split_due_restarts(
     (now, later)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RoundAction {
+    Run,
+    Skip,
+    Wait,
+}
+
+/// 到点且上一轮已经把整点拖过去时，skip 不补跑。准时触发和手动执行仍然跑。
+pub(crate) fn round_action(
+    policy: Misfire,
+    already_late: bool,
+    round_due: bool,
+    force: bool,
+) -> RoundAction {
+    if round_due && !force && policy == Misfire::Skip && already_late {
+        RoundAction::Skip
+    } else if round_due || force {
+        RoundAction::Run
+    } else {
+        RoundAction::Wait
+    }
+}
+
+/// 从错过的整点继续加间隔，直到严格晚于 now。
+pub(crate) fn next_future_deadline(
+    deadline: tokio::time::Instant,
+    interval: Duration,
+    now: tokio::time::Instant,
+) -> tokio::time::Instant {
+    if interval.is_zero() || deadline > now {
+        return if deadline > now { deadline } else { now };
+    }
+    let late = now.saturating_duration_since(deadline);
+    let step = interval.as_nanos().max(1);
+    let steps = u32::try_from(late.as_nanos() / step + 1).unwrap_or(u32::MAX);
+    let mut next = deadline + interval.saturating_mul(steps);
+    if next <= now {
+        next = now + interval;
+    }
+    next
+}
+
 pub(crate) fn next_restart_batch(ids: &[usize], index: usize, batch: usize) -> (Vec<usize>, usize) {
     if ids.is_empty() {
         return (Vec::new(), index);
@@ -1139,10 +1609,27 @@ async fn supervise(
     mut jobs: mpsc::UnboundedReceiver<RestartJob>,
 ) {
     loop {
+        if worker.stopped.load(Ordering::Relaxed) {
+            worker.retire();
+            return;
+        }
+        let Some(current) = pool.upgrade() else {
+            return;
+        };
+        let health_every = current.health_interval;
+        drop(current);
+        if worker_needs_warp_check(&worker) {
+            worker.draining.store(true, Ordering::Relaxed);
+            let confirmed = confirm_warp(&pool, &worker).await;
+            worker.draining.store(false, Ordering::Relaxed);
+            if !confirmed {
+                worker.retire();
+            }
+        }
+        let next_health = tokio::time::Instant::now() + health_every;
         if let Some(mut dead) = worker.dead_signal() {
             tokio::select! {
-                _ = wait_true(&mut dead) => worker.clear_net(),
-                _ = worker.rebuild.notified() => worker.clear_net(),
+                biased;
                 job = jobs.recv() => {
                     match job {
                         Some(job) => {
@@ -1153,10 +1640,45 @@ async fn supervise(
                         None => return,
                     }
                 }
+                _ = wait_true(&mut dead) => worker.clear_net(),
+                _ = worker.rebuild.notified() => worker.clear_net(),
+                _ = tokio::time::sleep_until(next_health), if !health_every.is_zero() => {
+                    egress_health(&pool, &worker).await;
+                    continue;
+                }
             }
         }
         if !reconnect_loop(&pool, &worker, &mut jobs).await {
             return;
+        }
+    }
+}
+
+/// 经隧道拉一次出口 trace。请求本身会在 HTTP/2 上产生数据，避免空闲断开。
+async fn egress_health(pool: &Weak<Pool>, worker: &Worker) {
+    let Some(current) = pool.upgrade() else {
+        return;
+    };
+    let timeout = current.health_timeout;
+    let previous = egress_snapshot(worker);
+    match probe_egress(worker, timeout).await {
+        Ok(egress) => {
+            let changed =
+                !same_egress(&previous.0, &egress.v4) || !same_egress(&previous.1, &egress.v6);
+            if changed {
+                let text = format!(
+                    "[pool] 账号 {} 出口 {}",
+                    worker.id,
+                    egress_summary(&egress.v4, &egress.v6)
+                );
+                eprintln!("{text}");
+                current.console.log("account", text);
+            }
+        }
+        Err(err) => {
+            let text = format!("[pool] 账号 {} 出口检查失败: {err}", worker.id);
+            eprintln!("{text}");
+            current.console.log("account", text);
         }
     }
 }
@@ -1168,24 +1690,52 @@ async fn reconnect_loop(
 ) -> bool {
     let mut backoff = Duration::from_secs(1);
     loop {
+        if worker.stopped.load(Ordering::Relaxed) {
+            worker.retire();
+            return false;
+        }
         let Some(current) = pool.upgrade() else {
             return false;
         };
+        let probe_timeout = current.restart.probe_timeout;
+        worker.draining.store(true, Ordering::Relaxed);
+        worker.set_stage("重连");
         let built = current.build_tunnel(worker).await;
-        drop(current);
-        match built {
-            Ok(()) => {
-                spawn_trace(worker);
-                return true;
-            }
-            Err(err) => {
-                eprintln!(
-                    "[pool] 账号 {} 连接失败: {err}，{} 秒后重试",
-                    worker.id,
-                    backoff.as_secs()
-                );
-            }
+        let failure = match built {
+            Err(err) => Some(err.to_string()),
+            Ok(()) => match probe_egress(worker, probe_timeout).await {
+                Ok(egress) if egress_confirmed(&egress) => {
+                    let text = format!(
+                        "[pool] 账号 {} 隧道已重连，出口 {}",
+                        worker.id,
+                        egress_summary(&egress.v4, &egress.v6)
+                    );
+                    worker.draining.store(false, Ordering::Relaxed);
+                    worker.clear_stage();
+                    eprintln!("{text}");
+                    current.console.log("account", text);
+                    return true;
+                }
+                Ok(egress) => {
+                    worker.retire();
+                    Some(egress_summary(&egress.v4, &egress.v6))
+                }
+                Err(err) => {
+                    worker.retire();
+                    Some(err)
+                }
+            },
+        };
+        if let Some(err) = failure {
+            let text = format!(
+                "[pool] 账号 {} 尚未就绪: {err}，{} 秒后重试",
+                worker.id,
+                backoff.as_secs()
+            );
+            eprintln!("{text}");
+            current.console.log("account", text);
         }
+        drop(current);
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {}
             _ = worker.rebuild.notified() => {}
@@ -1205,6 +1755,7 @@ async fn reconnect_loop(
 }
 
 async fn graceful(pool: &Weak<Pool>, worker: &Arc<Worker>, job: &RestartJob) -> Result<(), String> {
+    account_log(pool, format!("[pool] 账号 {} 开始保身份重启", worker.id));
     worker.draining.store(true, Ordering::Relaxed);
     worker.set_stage("排空");
     let result = restart_in_place(pool, worker, job).await;
@@ -1224,43 +1775,50 @@ async fn restart_in_place(
     job: &RestartJob,
 ) -> Result<(), String> {
     let started = tokio::time::Instant::now();
-    while worker.active.load(Ordering::Relaxed) > 0 && started.elapsed() < job.drain_timeout {
+    while worker.active.load(Ordering::Relaxed) > 0 && started.elapsed() < job.force_after {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     worker.set_stage("重连");
-    let mut last = "没有探测结果".to_string();
-    let attempts = job.retries.saturating_add(1);
-    for attempt in 1..=attempts {
-        worker.retire();
-        let Some(current) = pool.upgrade() else {
-            return Err("连接池已关闭".into());
-        };
-        if let Err(err) = current.build_tunnel(worker).await {
-            last = err.to_string();
-            eprintln!(
-                "[pool] 账号 {} 保身份重连失败 ({attempt}/{attempts}): {last}",
-                worker.id
-            );
-            continue;
-        }
-        let Some(net) = worker.net() else {
-            last = "隧道没有就绪".into();
-            continue;
-        };
-        let info = crate::trace::fetch_trace_timeout(&net, job.probe_timeout).await;
-        if info.warp == "on" || info.warp == "plus" {
-            worker.set_trace(info);
-            eprintln!("[pool] 账号 {} 保身份重启完成", worker.id);
-            return Ok(());
-        }
-        last = info
-            .err
-            .clone()
-            .unwrap_or_else(|| format!("warp={}", info.warp));
-        eprintln!("[pool] 账号 {} 重启探测未通过: {last}", worker.id);
-    }
     worker.retire();
-    Err(last)
+    let Some(current) = pool.upgrade() else {
+        return Err("连接池已关闭".into());
+    };
+    if let Err(err) = current.build_tunnel(worker).await {
+        drop(current);
+        worker.retire();
+        return Err(err.to_string());
+    }
+    drop(current);
+    match probe_egress(worker, job.probe_timeout).await {
+        Ok(egress) if egress_confirmed(&egress) => {
+            account_log(
+                pool,
+                format!(
+                    "[pool] 账号 {} 保身份重启完成，出口 {}",
+                    worker.id,
+                    egress_summary(&egress.v4, &egress.v6)
+                ),
+            );
+            Ok(())
+        }
+        Ok(egress) => {
+            let err = egress_summary(&egress.v4, &egress.v6);
+            account_log(
+                pool,
+                format!("[pool] 账号 {} 保身份重启未通过: {err}，将继续重试", worker.id),
+            );
+            worker.retire();
+            Err(err)
+        }
+        Err(err) => {
+            account_log(
+                pool,
+                format!("[pool] 账号 {} 保身份重启未通过: {err}，将继续重试", worker.id),
+            );
+            worker.retire();
+            Err(err)
+        }
+    }
 }
 
 async fn wait_true(rx: &mut watch::Receiver<bool>) {
@@ -1274,13 +1832,107 @@ async fn wait_true(rx: &mut watch::Receiver<bool>) {
     }
 }
 
-fn spawn_trace(worker: &Arc<Worker>) {
-    let worker = worker.clone();
-    tokio::spawn(async move {
-        if let Some(net) = worker.net() {
-            worker.set_trace(crate::trace::fetch_trace(&net).await);
+/// 隧道还在，但还没确认 warp=on / warp=plus。
+fn worker_needs_warp_check(worker: &Worker) -> bool {
+    worker.inner.lock().unwrap().net.is_some() && !worker.warp_ready.load(Ordering::Relaxed)
+}
+
+async fn confirm_warp(pool: &Weak<Pool>, worker: &Worker) -> bool {
+    let Some(current) = pool.upgrade() else {
+        return false;
+    };
+    let timeout = current.restart.probe_timeout;
+    match probe_egress(worker, timeout).await {
+        Ok(egress) if egress_confirmed(&egress) => {
+            let text = format!(
+                "[pool] 账号 {} 出口 {}",
+                worker.id,
+                egress_summary(&egress.v4, &egress.v6)
+            );
+            eprintln!("{text}");
+            current.console.log("account", text);
+            true
         }
-    });
+        Ok(egress) => {
+            let text = format!(
+                "[pool] 账号 {} 出口未确认: {}，准备重连",
+                worker.id,
+                egress_summary(&egress.v4, &egress.v6)
+            );
+            eprintln!("{text}");
+            current.console.log("account", text);
+            false
+        }
+        Err(err) => {
+            let text = format!("[pool] 账号 {} 出口未确认: {err}，准备重连", worker.id);
+            eprintln!("{text}");
+            current.console.log("account", text);
+            false
+        }
+    }
+}
+
+struct Egress {
+    v4: TraceInfo,
+    v6: TraceInfo,
+}
+
+async fn probe_egress(worker: &Worker, timeout: Duration) -> Result<Egress, String> {
+    let Some(net) = worker.net() else {
+        return Err("隧道没有就绪".into());
+    };
+    let (v4, v6) = crate::trace::fetch_egress(&net, timeout).await;
+    let egress = Egress { v4, v6 };
+    worker.set_egress(egress.v4.clone(), egress.v6.clone());
+    Ok(egress)
+}
+
+fn egress_confirmed(egress: &Egress) -> bool {
+    warp_confirmed(&egress.v4) || warp_confirmed(&egress.v6)
+}
+
+fn egress_snapshot(worker: &Worker) -> (Option<TraceInfo>, Option<TraceInfo>) {
+    let inner = worker.inner.lock().unwrap();
+    (inner.egress_v4.clone(), inner.egress_v6.clone())
+}
+
+fn same_egress(previous: &Option<TraceInfo>, next: &TraceInfo) -> bool {
+    match previous {
+        Some(previous) => previous.ip == next.ip && previous.warp == next.warp,
+        None => next.ip.is_empty() && next.warp.is_empty(),
+    }
+}
+
+fn family_label(info: &TraceInfo) -> String {
+    if !info.ip.is_empty() {
+        let warp = if info.warp.is_empty() {
+            "—"
+        } else {
+            info.warp.as_str()
+        };
+        format!("{} warp={warp}", info.ip)
+    } else if let Some(err) = info.err.as_deref().filter(|err| !err.is_empty()) {
+        err.to_string()
+    } else if !info.warp.is_empty() {
+        format!("warp={}", info.warp)
+    } else {
+        "未测到".into()
+    }
+}
+
+fn account_log(pool: &Weak<Pool>, text: String) {
+    eprintln!("{text}");
+    if let Some(current) = pool.upgrade() {
+        current.console.log("account", text);
+    }
+}
+
+fn egress_summary(v4: &TraceInfo, v6: &TraceInfo) -> String {
+    format!("v4={} · v6={}", family_label(v4), family_label(v6))
+}
+
+fn warp_confirmed(info: &crate::trace::TraceInfo) -> bool {
+    info.warp == "on" || info.warp == "plus"
 }
 
 fn strategy_name(strategy: crate::schedule::Strategy) -> &'static str {
@@ -1318,6 +1970,8 @@ pub struct PoolStatus {
     pub restart_batch: usize,
     pub restart_concurrency: usize,
     pub restart_defer_seconds: u64,
+    pub restart_misfire: &'static str,
+    pub health_seconds: u64,
     pub strategy: &'static str,
     pub sticky: &'static str,
     pub started_at: u64,
@@ -1363,33 +2017,55 @@ pub struct AccountStatus {
     pub uptime_seconds: u64,
     pub last_action: String,
     pub ip: String,
+    pub assigned_v6: String,
     pub trace: Option<TraceInfo>,
 }
 
-fn trace_parts(trace: Option<&TraceInfo>) -> (String, String, String, String, String) {
-    let Some(trace) = trace else {
-        return (
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-        );
+fn egress_parts(
+    v4: Option<&TraceInfo>,
+    v6: Option<&TraceInfo>,
+) -> (String, String, String, String, String) {
+    let ipv4 = v4.map(|info| info.ip.clone()).unwrap_or_default();
+    let ipv6 = v6.map(|info| info.ip.clone()).unwrap_or_default();
+    let place = [v4, v6]
+        .into_iter()
+        .flatten()
+        .find(|info| !info.loc.is_empty() || !info.colo.is_empty());
+    let (country, colo) = match place {
+        Some(info) => (info.loc.clone(), info.colo.clone()),
+        None => (String::new(), String::new()),
     };
-    let mut ipv4 = String::new();
-    let mut ipv6 = String::new();
-    if trace.ip.contains(':') {
-        ipv6 = trace.ip.clone();
-    } else if !trace.ip.is_empty() {
-        ipv4 = trace.ip.clone();
+    (ipv4, ipv6, country, colo, warp_label(v4, v6))
+}
+
+fn warp_label(v4: Option<&TraceInfo>, v6: Option<&TraceInfo>) -> String {
+    for info in [v4, v6].into_iter().flatten() {
+        if warp_confirmed(info) {
+            return info.warp.clone();
+        }
     }
-    (
-        ipv4,
-        ipv6,
-        trace.loc.clone(),
-        trace.colo.clone(),
-        trace.warp.clone(),
-    )
+    for info in [v4, v6].into_iter().flatten() {
+        if !info.warp.is_empty() {
+            return info.warp.clone();
+        }
+    }
+    String::new()
+}
+
+fn preferred_trace<'a>(
+    v4: Option<&'a TraceInfo>,
+    v6: Option<&'a TraceInfo>,
+) -> Option<&'a TraceInfo> {
+    if v4.is_some_and(warp_confirmed) {
+        return v4;
+    }
+    if v6.is_some_and(warp_confirmed) {
+        return v6;
+    }
+    if v4.is_some_and(|info| !info.ip.is_empty() || !info.loc.is_empty() || !info.colo.is_empty()) {
+        return v4;
+    }
+    v6.or(v4)
 }
 
 #[cfg(test)]
@@ -1425,5 +2101,136 @@ mod restart_plan_tests {
         let (forced, waiting) = super::split_due_restarts(&ids, active, false);
         assert_eq!(forced, vec![1, 2, 3]);
         assert!(waiting.is_empty());
+    }
+    #[test]
+    fn skip_waits_for_the_next_future_slot_instead_of_catching_up() {
+        use std::time::Duration;
+
+        use super::{next_future_deadline, round_action, Misfire, RoundAction};
+
+        assert_eq!(
+            round_action(Misfire::Skip, false, true, false),
+            RoundAction::Run
+        );
+        assert_eq!(
+            round_action(Misfire::Skip, true, true, false),
+            RoundAction::Skip
+        );
+        assert_eq!(
+            round_action(Misfire::Fire, true, true, false),
+            RoundAction::Run
+        );
+        assert_eq!(
+            round_action(Misfire::Skip, true, true, true),
+            RoundAction::Run
+        );
+        assert_eq!(
+            round_action(Misfire::Skip, true, false, false),
+            RoundAction::Wait
+        );
+
+        let start = tokio::time::Instant::now();
+        let interval = Duration::from_secs(30 * 60);
+        let scheduled = start + interval;
+        assert_eq!(
+            next_future_deadline(
+                scheduled,
+                interval,
+                scheduled + Duration::from_secs(20 * 60)
+            ),
+            scheduled + interval
+        );
+        assert_eq!(
+            next_future_deadline(
+                scheduled,
+                interval,
+                scheduled + Duration::from_secs(40 * 60)
+            ),
+            scheduled + interval * 2
+        );
+        assert_eq!(
+            next_future_deadline(scheduled, interval, scheduled),
+            scheduled + interval
+        );
+        let future = scheduled + interval;
+        assert_eq!(next_future_deadline(future, interval, scheduled), future);
+    }
+
+    #[test]
+    fn misfire_accepts_fire_and_skip_only() {
+        assert_eq!(super::parse_misfire("fire").unwrap(), super::Misfire::Fire);
+        assert_eq!(super::parse_misfire("SKIP").unwrap(), super::Misfire::Skip);
+        assert!(super::parse_misfire("later").is_err());
+    }
+}
+
+#[cfg(test)]
+mod egress_tests {
+    use super::{egress_parts, TraceInfo};
+
+    fn info(ip: &str, warp: &str, loc: &str, colo: &str) -> TraceInfo {
+        TraceInfo {
+            ip: ip.into(),
+            warp: warp.into(),
+            loc: loc.into(),
+            colo: colo.into(),
+            err: None,
+        }
+    }
+
+    #[test]
+    fn place_prefers_ipv4_and_falls_back_to_ipv6() {
+        let v4 = info("1.2.3.4", "on", "US", "SJC");
+        let v6 = info("2a09:bac::1", "on", "JP", "NRT");
+        let (ipv4, ipv6, country, colo, warp) = egress_parts(Some(&v4), Some(&v6));
+        assert_eq!(ipv4, "1.2.3.4");
+        assert_eq!(ipv6, "2a09:bac::1");
+        assert_eq!(country, "US");
+        assert_eq!(colo, "SJC");
+        assert_eq!(warp, "on");
+
+        let failed = TraceInfo {
+            err: Some("trace timeout".into()),
+            ..TraceInfo::default()
+        };
+        let (ipv4, ipv6, country, colo, warp) = egress_parts(Some(&failed), Some(&v6));
+        assert_eq!(ipv4, "");
+        assert_eq!(ipv6, "2a09:bac::1");
+        assert_eq!(country, "JP");
+        assert_eq!(colo, "NRT");
+        assert_eq!(warp, "on");
+    }
+}
+
+#[cfg(test)]
+mod temporary_account_tests {
+    use super::{
+        account_path, forget_saved_temporary, read_temporary_active, remember_saved_temporary,
+        saved_account_ids, spare_account_id,
+    };
+
+    #[test]
+    fn spare_skips_running_and_base_accounts() {
+        let saved = [1usize, 2, 11, 12];
+        assert_eq!(spare_account_id(&saved, &[1, 2, 12], &[1, 2]), Some(11));
+        assert_eq!(spare_account_id(&saved, &[1, 2], &[1, 2, 11, 12]), None);
+        assert_eq!(spare_account_id(&saved, &[], &[]), Some(1));
+    }
+
+    #[test]
+    fn removing_a_temporary_account_keeps_its_config() {
+        let dir = std::env::temp_dir().join(format!("warp-proxy-temporary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = account_path(&dir, 7);
+        std::fs::write(&path, "kept").unwrap();
+        remember_saved_temporary(&dir, 7).unwrap();
+        remember_saved_temporary(&dir, 8).unwrap();
+        assert_eq!(read_temporary_active(&dir).unwrap(), vec![7, 8]);
+        forget_saved_temporary(&dir, 7).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept");
+        assert_eq!(read_temporary_active(&dir).unwrap(), vec![8]);
+        assert_eq!(saved_account_ids(&dir), vec![7]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

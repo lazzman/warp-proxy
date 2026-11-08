@@ -120,9 +120,9 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
   --resolve ipv6_prefer \
   --access-log \
   --restart-interval 30m \
-  --restart-drain 660s \
+  --restart-force-after 660s \
   --restart-probe-timeout 90s \
-  --restart-retries 2
+  --restart-misfire fire
 ```
 
 - `--upstream` / `UPSTREAM_SOCKS5`：一个或多个 SOCKS5 地址，用逗号分隔。可以写主机和端口，也可以带用户名和密码。按账号序号固定分配，只支持 TCP CONNECT。启动前会探测，失败就退出，不会改走直连。注册请求对齐 usque 的请求头和 Go `net/http` 的 HTTP/2 窗口。遇到 HTTP 429、503 或 Cloudflare `1015` 时，按 `Retry-After` 或递增间隔等待后重试，最多 6 次，不会马上退出再打。
@@ -133,7 +133,11 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
 - `--resolve` / `RESOLVE_PREFERENCE`：见「解析」。
 - `--access-log` / `LB_ACCESS_LOG`：把来源、用户、目标、账号和出口写到标准错误。不记录密码。
 - `--restart-*` / `ROTATE_RESTART_*`：保身份重连，见「保身份重启」。它不重新注册。
-- 管理面板就是控制地址本身（stdout 里的 `panelUrl`）。浏览器打开后输入管理密码。总览看入口、流量和定时重启；实例可以筛选、停用、重连、添加临时实例；连接和日志分别看正在转发的会话和最近 300 行。页面放在进程里，不需要另外的脚本。
+- `--health-interval` / `HEALTH_CHECK_INTERVAL`：多久经隧道检查一次出口，默认 `60s`。`0` 关闭。见「出口检查」。
+- `--health-timeout` / `HEALTH_CHECK_TIMEOUT`：单次出口检查的最长时间，默认 `20s`。
+- 管理面板就是控制地址本身（stdout 里的 `panelUrl`）。浏览器打开后输入管理密码。登录成功后密码记在这个浏览器里，下次打开会直接用它认证。总览看入口、流量和定时重启；实例可以筛选、停用、重连、按数量添加临时实例；连接和日志分别看正在转发的会话和最近 300 行。页面放在进程里，不需要另外的脚本。
+
+临时实例的身份同样写在 `STATE_DIR` 的 `account-<编号>.json`，正在使用的编号记在 `temporary.json`。进程重启后加载这些身份，不会重新注册。移除临时实例只把它移出当前进程和这份名单，不删除已保存的身份；之后再添加时优先用回这些身份。
 
 ### 调度
 
@@ -169,19 +173,32 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
 - `ipv4_only`：只使用 IPv4。字面量 IPv6 会被拒绝。
 - `ipv6_only`：只使用 IPv6。字面量 IPv4 会被拒绝。隧道没有 IPv6 地址时解析失败。
 
+### 出口检查
+
+隧道就绪后，每个账号按 `HEALTH_CHECK_INTERVAL` 同时做两次出口检查：IPv4 连 `104.16.124.96`，IPv6 连 `2606:4700::11`，TLS 仍使用 `www.cloudflare.com`。默认 `60s`。这两次请求会在 HTTP/2 上产生数据，避免上游或中间网络因为大约两分钟没有流量就把连接关掉。`0` 关闭。某一族失败只让面板那一列显示「未测到」，不拆隧道；两条都没确认 `warp=on` 或 `warp=plus` 时，初次连接和保身份重连才会重试。出口 IP 或 `warp` 状态变了才记日志。单次检查最长 `HEALTH_CHECK_TIMEOUT`，默认 `20s`。面板上的 IPv4 出口和 IPv6 出口是这两次探测的公网地址，接口地址只在提示里。
+
 ### 保身份重启
 
-这些设置只重连现有隧道，不重新注册，出口身份保持不变。`ROTATE_RESTART_ENABLED=0` 会忽略下面的间隔，等于关闭计划。
+这些设置只重连现有隧道，不重新注册。注册时写入的接口地址保持不变，重连后会重新探测出口。隧道算就绪的条件是 `warp=on` 或 `warp=plus`。没有达到就从 1 秒开始重试，每次加倍，最长 30 秒，直到探测通过。断线后的恢复也走这条路径。`ROTATE_RESTART_ENABLED=0` 会忽略下面的间隔，等于关闭计划。
+
+一轮是定时器到点，或调用立即执行之后的这一次计划。它从按 `ROTATE_RESTART_BATCH` 选出账号开始，到这批里每个账号都有一次结果为止。下一轮的时间在这一轮开始时就按间隔定好。这一轮里每个账号只排空并探测一次。没通过记为本轮失败，并发名额马上释放，账号自己在后台继续重试，不挡住下一轮，也不再占并发名额。
+
+如果这一轮结束时已经过了下次时间，由 `ROTATE_RESTART_MISFIRE` 决定：
+
+- `fire`（默认）：立刻补跑一轮。错过的多个整点合成这一次，不会把错过的轮次全部补完。
+- `skip`：不补跑。下次排到仍在未来的下一个间隔点。已经延后的账号仍按自己的时间再试。
 
 - `ROTATE_RESTART_INTERVAL` / `--restart-interval`：多久开始一轮。默认 `0`，表示不定时重启。
-- `ROTATE_RESTART_BATCH` / `--restart-batch`：每一轮几个账号，默认 1。`0` 表示这一轮包含当前全部账号。下一轮从上次停下的位置继续。
-- `ROTATE_RESTART_CONCURRENCY` / `--restart-concurrency`：同一轮最多同时进行几个，默认 1。小于 1 时仍按 1 处理。
+- `ROTATE_RESTART_BATCH` / `--restart-batch`：这一轮选进几个账号，默认 1。账号按编号轮流，下一轮从上次停下的位置继续。`0` 表示这一轮包含当前全部账号。
+- `ROTATE_RESTART_CONCURRENCY` / `--restart-concurrency`：这一轮里最多同时重连几个，默认 1。小于 1 时仍按 1 处理。选中的账号先排队，拿到名额才开始排空和重连；排队期间隧道仍然接收连接。
 - `ROTATE_RESTART_DEFER` / `--restart-defer`：计划到点时账号还有连接，就延后这段时间再试。到点仍然有连接会继续延后，不进入排空。`0` 表示不延后，到点就排空。手动重启不受这个设置影响。
-- `ROTATE_RESTART_DRAIN_TIMEOUT` / `--restart-drain`：已经开始重启后，最多等待现有连接的时间，默认 `660s`。
-- `ROTATE_RESTART_PROBE_TIMEOUT` / `--restart-probe-timeout`：重连后确认 `warp=on` 或 `warp=plus` 的时间，默认 `90s`。
-- `ROTATE_RESTART_RETRIES` / `--restart-retries`：探测失败后的额外次数，默认 2。每次重启最多尝试 3 次。
+- `ROTATE_RESTART_FORCE_AFTER` / `--restart-force-after`：已经开始重连后，最多再等现有连接这么久，到点就强制重连。默认 `660s`。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 和 `--restart-drain` 仍可用。只写旧名时会提示弃用；新旧同时配置时采用新值，并提示旧名已被忽略。
+- `ROTATE_RESTART_PROBE_TIMEOUT` / `--restart-probe-timeout`：确认 `warp=on` 或 `warp=plus` 的时间，默认 `90s`。
+- `ROTATE_RESTART_MISFIRE` / `--restart-misfire`：上一轮拖过下次时间时怎么处理。`fire` 立刻补跑，`skip` 跳到下一个间隔点。默认 `fire`。
 
-`/api/restart-plan?seconds=1800&batch=2&defer=300` 可以在运行中修改间隔、批量和延后。`seconds=0` 关闭计划。修改后按新间隔重新计时，并取消已经延后的重启。`/api/restart?slot=1` 手动做一次保身份重启。`slot=0` 会按顺序处理全部账号。
+`BATCH` 决定这一轮有谁，`CONCURRENCY` 决定这些账号里同时做几个。每轮只选 1 个时，把并发调大也不会多重启账号。`BATCH=0` 且 `CONCURRENCY=4` 时，每一轮都选中当前全部账号，但同时最多重连 4 个：10 个账号会先跑 4 个，完成一个补上下一个，直到 10 个都有结果。仍有连接的账号按 `ROTATE_RESTART_DEFER` 延后，不占这次的并发名额。
+
+`/api/restart-plan?seconds=1800&batch=2&defer=300&misfire=skip` 可以在运行中修改间隔、批量、延后和错过策略。`seconds=0` 关闭计划。修改间隔、批量或延后后按新间隔重新计时，并取消已经延后的重启。只改 `misfire` 不会重新计时。`/api/restart?slot=1` 手动做一次保身份重启。`slot=0` 会按顺序处理全部账号。
 
 ## Docker
 
@@ -204,6 +221,8 @@ docker logs warp-proxy
 | `MASQUE_HTTP2` | `0` | `1` 改用 HTTP/2。配置了上游时会自动打开 |
 | `UPSTREAM_SOCKS5` | 空 | 上游 SOCKS5，多个用逗号分隔 |
 | `UPSTREAM_PROBE_TIMEOUT` | `8s` | 启动前探测上游的时间 |
+| `HEALTH_CHECK_INTERVAL` | `60s` | 经隧道检查出口的间隔，`0` 关闭。见「出口检查」 |
+| `HEALTH_CHECK_TIMEOUT` | `20s` | 单次出口检查的最长时间 |
 | `SOCKS_USER` / `SOCKS_PASS` | 空 | 入口认证。两个要一起设置 |
 | `CONTROL_PASSWORD` | `admin` | 管理面板和控制接口密码。请求头仍然是 `X-Warp-Token` |
 | `RESOLVE_PREFERENCE` | `auto` | 隧道内目标地址的地址族，见「解析」 |
@@ -213,12 +232,12 @@ docker logs warp-proxy
 | `LB_ACCESS_LOG` | `0` | `1` 把连接记到标准错误，不记录密码 |
 | `ROTATE_RESTART_ENABLED` | `1` | `0` 关闭保身份重启计划 |
 | `ROTATE_RESTART_INTERVAL` | `0` | 保身份重连的间隔，不是 `LB_ROTATE_INTERVAL`。见「保身份重启」 |
-| `ROTATE_RESTART_BATCH` | `1` | 每一轮重启几个账号，`0` 表示全部 |
+| `ROTATE_RESTART_BATCH` | `1` | 这一轮选进几个账号，`0` 表示全部。见「保身份重启」 |
 | `ROTATE_RESTART_DEFER` | `0` | 账号仍有连接时延后多久再试，`0` 表示立即排空 |
-| `ROTATE_RESTART_DRAIN_TIMEOUT` | `660s` | 开始重启后最多等待现有连接的时间 |
+| `ROTATE_RESTART_FORCE_AFTER` | `660s` | 开始重连后最多再等现有连接多久，到点强制重连。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 已弃用 |
 | `ROTATE_RESTART_PROBE_TIMEOUT` | `90s` | 重连后确认 `warp=on` 的时间 |
-| `ROTATE_RESTART_RETRIES` | `2` | 探测失败后的额外次数 |
-| `ROTATE_RESTART_CONCURRENCY` | `1` | 同一轮最多同时重启几个账号 |
+| `ROTATE_RESTART_MISFIRE` | `fire` | 上一轮超过间隔时，`fire` 立刻补跑，`skip` 跳到下一个间隔点 |
+| `ROTATE_RESTART_CONCURRENCY` | `1` | 这一轮里最多同时重连几个。见「保身份重启」 |
 
 时长可以写秒数，也可以写 `30s`、`5m`、`1h`。命令行参数仍然可以覆盖这些环境变量。
 

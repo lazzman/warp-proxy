@@ -4,147 +4,221 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>warp-proxy</title>
+<link rel="stylesheet" href="/assets/bootstrap.min.css">
 <style>
-:root {
-  color-scheme: light dark;
-  --bg: #fafafa;
-  --card: #ffffff;
-  --raised: #f4f4f5;
-  --line: rgba(23,23,23,.08);
-  --text: #171717;
-  --secondary: #525252;
-  --muted: #737373;
-  --accent: #171717;
-  --ok: #3f6212;
-  --warn: #92400e;
-  --bad: #991b1b;
-  --shadow: 0 1px 2px rgba(23,23,23,.04);
-  font-family: ui-sans-serif, system-ui, sans-serif;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #141415;
-    --card: #19191b;
-    --raised: #232325;
-    --line: rgba(237,237,237,.08);
-    --text: #ededed;
-    --secondary: #a1a1a6;
-    --muted: #85858b;
-    --accent: #ededed;
-    --ok: #b5d48a;
-    --warn: #e3b341;
-    --bad: #f0a8a4;
-    --shadow: none;
+  :root, [data-bs-theme="light"] {
+    --paper: #f3f4f2;
+    --panel: #ffffff;
+    --hair: rgba(24, 26, 23, .14);
+    --ink: #1a1c19;
+    --accent: #1d3c31;
+    --alert-wash: #fbf7f2;
   }
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); }
-button, input, select { font: inherit; color: inherit; }
-button { background: var(--card); border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 12px; cursor: pointer; }
-button:hover { background: var(--raised); }
-button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-button.primary { background: var(--accent); color: var(--bg); border-color: transparent; }
-button:disabled { opacity: .45; cursor: default; }
-input, select { height: 32px; border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 0 8px; }
-header { height: 56px; display: flex; align-items: center; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 500; min-width: 132px; }
-.lamp { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
-.lamp.on { background: var(--ok); }
-nav { display: flex; gap: 4px; }
-nav button { border: 0; background: transparent; height: 32px; border-radius: 8px; color: var(--secondary); }
-nav button.on { background: var(--raised); color: var(--text); }
-.tools { margin-left: auto; display: flex; align-items: center; gap: 12px; color: var(--secondary); font-size: 14px; }
-main { max-width: 1440px; margin: 0 auto; padding: 24px; }
-.login { display: flex; gap: 8px; margin-bottom: 24px; }
-.login input { width: 280px; }
-.view { display: none; }
-.view.on { display: block; }
-.lead { font-size: 20px; line-height: 28px; font-weight: 500; margin: 0; }
-.meta { color: var(--secondary); margin: 8px 0 0; font-size: 14px; }
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 24px; }
-.stat, .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
-.stat { padding: 16px 20px; min-height: 92px; }
-.stat span, .quiet { color: var(--muted); font-size: 13px; }
-.stat strong { display: block; margin-top: 8px; font-size: 28px; font-weight: 500; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.panel { margin-top: 16px; padding: 20px; }
-.panel h2 { margin: 0; font-size: 16px; font-weight: 500; }
-.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.spread { justify-content: space-between; }
-.plan-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 16px; margin-top: 16px; }
-.figure { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; font-size: 18px; margin: 4px 0 0; }
-.filters { display: flex; gap: 4px; }
-.filters button.on { background: var(--raised); }
-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
-th { text-align: left; color: var(--muted); font-weight: 400; padding: 8px; border-bottom: 1px solid var(--line); }
-td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; font-variant-numeric: tabular-nums; }
-tr:hover td { background: var(--raised); }
-.num, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.right { text-align: right; }
-.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; background: var(--muted); }
-.dot.healthy { background: var(--ok); }
-.dot.attention, .dot.down, .dot.waiting { background: var(--warn); }
-.dot.maintenance, .dot.disabled { background: var(--bad); }
-.empty { color: var(--secondary); padding: 24px 0; }
-pre { margin: 12px 0 0; max-height: 560px; overflow: auto; background: var(--raised); border-radius: 8px; padding: 12px; font: 12px/20px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
-.err { color: var(--bad); min-height: 20px; margin: 8px 0 0; }
-@media (max-width: 800px) {
-  header { height: auto; flex-wrap: wrap; padding: 12px 16px; gap: 8px; }
-  .tools { margin-left: 0; }
-  main { padding: 16px; }
-  .stats, .plan-grid { grid-template-columns: 1fr 1fr; }
-  .login { flex-direction: column; }
-  .login input { width: 100%; }
-  table { display: block; overflow-x: auto; }
-}
+  [data-bs-theme="dark"] {
+    --paper: #111210;
+    --panel: #181a17;
+    --hair: rgba(236, 237, 230, .16);
+    --ink: #eceee8;
+    --accent: #e7ebe4;
+    --alert-wash: #241f18;
+  }
+  body { background: var(--paper); color: var(--ink); font-weight: 400; }
+  .navbar { min-height: 52px; background: var(--panel) !important; border-bottom-color: var(--hair) !important; }
+  .navbar-brand { font-weight: 600; letter-spacing: -.01em; }
+  #views .nav-link { border-radius: 8px; color: var(--bs-secondary-color); padding: 6px 10px; }
+  #views .nav-link.active { color: var(--ink); background: var(--bs-tertiary-bg); }
+  #online { font-size: 13px; color: var(--bs-secondary-color); }
+  main.container-fluid { padding: 24px 28px 48px; }
+  .lamp { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--bs-secondary-color); flex: none; }
+  .lamp.on, .lamp.healthy { background: #2f7d57; }
+  .lamp.attention, .lamp.waiting, .lamp.down { background: #b86a1a; }
+  .lamp.maintenance, .lamp.disabled { background: #a3453c; }
+  .btn, .form-control, .form-select { border-radius: 8px; }
+  .form-control, .form-select { border-color: var(--hair); }
+  .btn { font-weight: 500; }
+  .btn-sm { padding: 4px 10px; }
+  .btn-primary {
+    --bs-btn-bg: var(--accent);
+    --bs-btn-border-color: var(--accent);
+    --bs-btn-hover-bg: #163028;
+    --bs-btn-hover-border-color: #163028;
+    --bs-btn-active-bg: #12261f;
+    --bs-btn-active-border-color: #12261f;
+    --bs-btn-color: #f4f6f2;
+    --bs-btn-hover-color: #f4f6f2;
+    --bs-btn-active-color: #f4f6f2;
+  }
+  [data-bs-theme="dark"] .btn-primary {
+    --bs-btn-bg: #e7ebe4;
+    --bs-btn-border-color: #e7ebe4;
+    --bs-btn-color: #161815;
+    --bs-btn-hover-bg: #f4f6f2;
+    --bs-btn-hover-border-color: #f4f6f2;
+    --bs-btn-hover-color: #161815;
+    --bs-btn-active-bg: #d5dbd2;
+    --bs-btn-active-border-color: #d5dbd2;
+    --bs-btn-active-color: #161815;
+  }
+  .btn-outline-secondary {
+    --bs-btn-color: var(--ink);
+    --bs-btn-border-color: var(--hair);
+    --bs-btn-hover-bg: var(--bs-tertiary-bg);
+    --bs-btn-hover-color: var(--ink);
+    --bs-btn-hover-border-color: var(--hair);
+    --bs-btn-active-bg: var(--bs-tertiary-bg);
+    --bs-btn-active-color: var(--ink);
+    --bs-btn-active-border-color: var(--hair);
+  }
+  .btn-outline-danger {
+    --bs-btn-color: #8a3b32;
+    --bs-btn-border-color: #e4d2ce;
+    --bs-btn-hover-bg: #f8f1ef;
+    --bs-btn-hover-color: #8a3b32;
+    --bs-btn-hover-border-color: #e4d2ce;
+  }
+  [data-bs-theme="dark"] .btn-outline-danger {
+    --bs-btn-color: #e7b2aa;
+    --bs-btn-border-color: #5a3330;
+    --bs-btn-hover-bg: #2a1c1a;
+    --bs-btn-hover-color: #e7b2aa;
+    --bs-btn-hover-border-color: #5a3330;
+  }
+  .btn.is-on { background: #1c1e1b; color: #f4f5f2; border-color: #1c1e1b; }
+  [data-bs-theme="dark"] .btn.is-on { background: #ecece6; color: #171816; border-color: #ecece6; }
+  .card { border-radius: 12px; border-color: var(--hair); background: var(--panel); box-shadow: none; }
+  .card-body { padding: 20px; }
+  .card h2 { font-size: 15px; font-weight: 600; }
+  #overview > h1 { font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
+  #overview > p { font-size: 13px; margin-bottom: 16px; }
+  .stat .card-body { padding: 16px 18px 14px; }
+  .stat .fs-3 { font-size: 28px; line-height: 1.15; letter-spacing: -.03em; margin: 6px 0 4px; }
+  .figure, .num, .v { font-variant-numeric: tabular-nums; font-weight: 500; }
+  .cluster { display: flex; flex-direction: column; gap: 8px; min-width: min(100%, 280px); padding: 12px 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--paper); }
+  .cluster-label { font-size: 12px; color: var(--bs-secondary-color); }
+  .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
+  .metric { padding: 0 20px 0 0; }
+  .metric + .metric { padding-left: 20px; border-left: 1px solid var(--hair); }
+  .metric .k, .metric .s { font-size: 12px; color: var(--bs-secondary-color); }
+  .metric .v { font-size: 22px; line-height: 1.3; margin-top: 4px; }
+  .metric .s { margin-top: 4px; }
+  .sheet { border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); overflow: auto; }
+  .data-table { font-size: 13px; }
+  .data-table th { font-size: 12px; font-weight: 500; color: var(--bs-secondary-color); }
+  .data-table td, .data-table th { padding: 8px 10px; border-color: var(--hair); }
+  .data-table thead th { background: var(--paper); }
+  .table-hover > tbody > tr:hover > * { background: rgba(24, 26, 23, .03); }
+  [data-bs-theme="dark"] .table-hover > tbody > tr:hover > * { background: rgba(236, 237, 230, .04); }
+  .instance-table th, .instance-table td { white-space: nowrap; vertical-align: middle; }
+  .instance-table th { text-align: start; }
+  .instance-table .col-tight { width: 1%; }
+  .instance-table .font-monospace, .data-table .font-monospace { font-size: 12px; }
+  tr.row-alert td { background: var(--alert-wash); }
+  .table-hover > tbody > tr.row-alert:hover > * { background: #f6f0e8; }
+  [data-bs-theme="dark"] .table-hover > tbody > tr.row-alert:hover > * { background: #2c261e; }
+  .status-cell { display: flex; align-items: center; gap: 8px; }
+  .probe { color: var(--bs-secondary-color); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .clip { max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clip-wide { max-width: 220px; }
+  .row-actions .btn { padding: 2px 8px; }
+  .log {
+    max-height: 36rem;
+    margin: 0;
+    padding: 16px 18px;
+    border: 0;
+    border-radius: 12px;
+    background: #121411;
+    color: #d7d8d4;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .log .t { color: #8d8f89; }
+  :focus-visible { outline: 2px solid #2f7d57; outline-offset: 2px; }
+  #token { width: 160px; }
+  @media (max-width: 768px) {
+    main.container-fluid { padding: 16px 16px 32px; }
+    .metrics { grid-template-columns: 1fr; gap: 12px; }
+    .metric + .metric { padding-left: 0; border-left: 0; padding-top: 12px; border-top: 1px solid var(--hair); }
+  }
 </style>
 </head>
 <body>
-<header>
-  <div class="brand"><span class="lamp" id="lamp"></span>warp-proxy</div>
-  <nav>
-    <button type="button" data-view="overview" class="on">总览</button>
-    <button type="button" data-view="instances">实例</button>
-    <button type="button" data-view="connections">连接</button>
-    <button type="button" data-view="logs">日志</button>
-  </nav>
-  <div class="tools">
-    <span id="online">控制面离线</span>
-    <select id="refresh" aria-label="自动刷新">
-      <option value="1">1 秒</option>
-      <option value="3">3 秒</option>
-      <option value="5" selected>5 秒</option>
-      <option value="10">10 秒</option>
-      <option value="30">30 秒</option>
-    </select>
+<nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom sticky-top">
+  <div class="container-fluid gap-3">
+    <span class="navbar-brand mb-0 h1 fs-6 d-inline-flex align-items-center gap-2"><i class="lamp" id="lamp"></i>warp-proxy</span>
+    <ul class="nav flex-row flex-nowrap" id="views">
+      <li class="nav-item"><button type="button" class="nav-link active" data-view="overview">总览</button></li>
+      <li class="nav-item"><button type="button" class="nav-link" data-view="instances">实例</button></li>
+      <li class="nav-item"><button type="button" class="nav-link" data-view="connections">连接</button></li>
+      <li class="nav-item"><button type="button" class="nav-link" data-view="logs">日志</button></li>
+    </ul>
+    <div class="ms-lg-auto d-flex flex-wrap align-items-center gap-2">
+      <form class="d-flex align-items-center gap-2" id="login">
+        <input id="token" class="form-control form-control-sm" type="password" placeholder="管理密码" autocomplete="current-password" aria-label="管理密码">
+        <button class="btn btn-primary btn-sm" type="submit">连接</button>
+      </form>
+      <span id="online">控制面离线</span>
+      <select id="refresh" class="form-select form-select-sm" style="width: 7rem" aria-label="自动刷新">
+        <option value="1">1 秒</option>
+        <option value="3">3 秒</option>
+        <option value="5" selected>5 秒</option>
+        <option value="10">10 秒</option>
+        <option value="30">30 秒</option>
+      </select>
+    </div>
   </div>
-</header>
-<main>
-  <form class="login" id="login">
-    <input id="token" type="password" placeholder="管理密码" autocomplete="current-password">
-    <button class="primary" type="submit">连接</button>
-  </form>
-  <p class="err" id="error"></p>
-  <section class="view on" id="overview"></section>
-  <section class="view" id="instances"></section>
-  <section class="view" id="connections"></section>
-  <section class="view" id="logs"></section>
+</nav>
+<main class="container-fluid py-3">
+  <div class="alert alert-danger d-none" id="error" role="alert"></div>
+  <section id="overview">
+    <h1 class="h4">还没有状态</h1>
+    <p class="text-body-secondary mb-0">在顶栏输入管理密码并连接。连接后这里显示入口、流量和重启计划。</p>
+  </section>
+  <section id="instances" class="d-none"></section>
+  <section id="connections" class="d-none"></section>
+  <section id="logs" class="d-none"></section>
 </main>
+<script src="/assets/bootstrap.bundle.min.js"></script>
 <script>
-const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0 };
+const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0, temps: [], focusId: "", drafts: {}, busy: false, tempCount: "1" };
 const tokenInput = document.querySelector("#token");
-tokenInput.value = sessionStorage.getItem("warp-token") || "";
+function readCachedToken() {
+  try {
+    const saved = localStorage.getItem("warp-token");
+    if (saved) return saved;
+    const legacy = sessionStorage.getItem("warp-token") || "";
+    if (legacy) localStorage.setItem("warp-token", legacy);
+    return legacy;
+  } catch (_) {
+    return "";
+  }
+}
+function writeCachedToken(token) {
+  try {
+    if (token) localStorage.setItem("warp-token", token);
+    else localStorage.removeItem("warp-token");
+    sessionStorage.removeItem("warp-token");
+  } catch (_) {}
+}
+state.token = readCachedToken().trim();
+tokenInput.value = state.token;
+const theme = () => document.documentElement.setAttribute("data-bs-theme", matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+theme();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", theme);
 
-document.querySelectorAll("nav button").forEach((button) => {
+document.querySelectorAll("#views button").forEach((button) => {
   button.addEventListener("click", () => {
     state.view = button.dataset.view;
-    document.querySelectorAll("nav button").forEach((item) => item.classList.toggle("on", item === button));
-    document.querySelectorAll(".view").forEach((view) => view.classList.toggle("on", view.id === state.view));
+    document.querySelectorAll("#views button").forEach((item) => item.classList.toggle("active", item === button));
+    for (const id of ["overview", "instances", "connections", "logs"]) {
+      document.querySelector("#" + id).classList.toggle("d-none", id !== state.view);
+    }
     refresh();
   });
 });
 document.querySelector("#login").addEventListener("submit", (event) => {
   event.preventDefault();
-  sessionStorage.setItem("warp-token", tokenInput.value.trim());
+  state.token = tokenInput.value.trim();
+  if (!state.token) writeCachedToken("");
   refresh();
 });
 document.querySelector("#refresh").addEventListener("change", schedule);
@@ -156,35 +230,118 @@ function schedule() {
   state.timer = setTimeout(refresh, seconds * 1000);
 }
 async function api(path) {
-  const token = (sessionStorage.getItem("warp-token") || "").trim();
+  const token = (state.token || "").trim();
   const response = await fetch(path, { headers: token ? { "X-Warp-Token": token } : {}, cache: "no-store" });
   const text = await response.text();
   if (!response.ok) throw new Error(text || response.statusText);
   return text ? JSON.parse(text) : {};
 }
-async function refresh() {
+function showError(message) {
   const error = document.querySelector("#error");
+  error.textContent = message || "";
+  error.classList.toggle("d-none", !message);
+}
+function feedbackKey(name, button) {
+  if (button && button.dataset.slot && (name === "restart" || name === "manual")) return "slot:" + button.dataset.slot;
+  return "act:" + name;
+}
+function rowStatus(account) {
+  const live = state.feedback && state.feedback.key === "slot:" + account.id ? state.feedback : null;
+  if (!live) return escapeHtml(account.last_action || "—");
+  const tone = live.error ? "text-danger" : "text-primary";
+  return '<span class="' + tone + '" title="' + escapeHtml(live.text) + '">' + escapeHtml(live.text) + "</span>";
+}
+let feedbackTimer = 0;
+let refreshSeq = 0;
+function scheduleFeedbackClear() {
+  clearTimeout(feedbackTimer);
+  feedbackTimer = setTimeout(() => {
+    feedbackTimer = 0;
+    state.feedback = null;
+    if (!state.busy) render();
+  }, 1200);
+}
+function applyFeedback() {
+  const live = state.feedback;
+  if (!live || String(live.key).indexOf("act:") !== 0) return;
+  const name = live.key.slice(4);
+  document.querySelectorAll('[data-act="' + name + '"]').forEach((button) => {
+    if (!button.dataset.label) button.dataset.label = button.textContent;
+    button.textContent = live.error ? "失败" : live.text;
+    button.title = live.text;
+  });
+}
+function actionText(name, button) {
+  const slot = button && button.dataset.slot;
+  if (name === "restart") return slot ? "重连实例 " + slot : "重连";
+  if (name === "manual") return (button.dataset.on === "1" ? "启用" : "停用") + (slot ? "实例 " + slot : "");
+  if (name === "rotate") return "换出口";
+  if (name === "trace") return "刷新出口";
+  if (name === "plan-now") return "执行重启计划";
+  if (name === "plan-pause") return "暂停计划";
+  if (name === "plan-resume") return "恢复计划";
+  if (name === "add-temp") {
+    const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
+    return count > 1 ? "添加 " + count + " 个临时实例" : "添加临时实例";
+  }
+  if (name === "remove-temp") return "移除临时实例";
+  if (name === "toggle") return button.dataset.on === "1" ? "恢复入口" : "暂停入口";
+  if (name === "pin") return "切换固定实例";
+  if (name === "http2") return button.dataset.on === "1" ? "切换到 HTTP/2" : "切换到 HTTP/3";
+  if (name === "interval") return "设置换出口间隔";
+  return ((button && button.textContent) || "操作").trim();
+}
+function setBusy(on) {
+  state.busy = on;
+  document.querySelectorAll("[data-act]").forEach((item) => { item.disabled = on; });
+}
+async function refresh() {
+  const seq = ++refreshSeq;
   try {
-    state.status = await api("/api/status");
+    const status = await api("/api/status");
+    if (seq !== refreshSeq) return;
+    state.status = status;
     if (state.view === "connections") {
       const page = await api("/api/sessions");
+      if (seq !== refreshSeq) return;
       state.sessions = page.sessions || page || [];
     }
-    if (state.view === "logs") state.logs = await api("/api/logs");
-    error.textContent = "";
-    document.querySelector("#lamp").classList.add("on");
-    document.querySelector("#online").textContent = "控制面在线";
+    if (state.view === "logs") {
+      const logs = await api("/api/logs");
+      if (seq !== refreshSeq) return;
+      state.logs = logs;
+    }
+    writeCachedToken(state.token);
+    showError("");
+    const online = document.querySelector("#online");
+    online.textContent = "控制面在线";
+    document.querySelector("#lamp").className = "lamp on";
     render();
   } catch (err) {
-    document.querySelector("#lamp").classList.remove("on");
-    document.querySelector("#online").textContent = "控制面离线";
-    error.textContent = String(err.message || err).replace(/^Error: /, "");
+    if (seq !== refreshSeq) return;
+    const online = document.querySelector("#online");
+    online.textContent = "控制面离线";
+    document.querySelector("#lamp").className = "lamp";
+    showError(String(err.message || err).replace(/^Error: /, ""));
   }
-  schedule();
+  if (seq === refreshSeq) schedule();
+}
+function capture() {
+  state.temps = [...document.querySelectorAll("[data-temp]:checked")].map((item) => item.dataset.temp);
+  const active = document.activeElement;
+  const tempCount = document.getElementById("temp-count");
+  if (tempCount) state.tempCount = tempCount.value;
+  state.focusId = active && (active.id === "pin" || active.id === "rotate-seconds" || active.id === "temp-count") ? active.id : "";
+  for (const id of ["pin", "rotate-seconds"]) {
+    const node = document.getElementById(id);
+    if (node && active === node) state.drafts[id] = node.value;
+    else delete state.drafts[id];
+  }
 }
 function render() {
   const data = state.status;
   if (!data) return;
+  capture();
   if (state.view === "overview") document.querySelector("#overview").innerHTML = overview(data);
   if (state.view === "instances") document.querySelector("#instances").innerHTML = instances(data);
   if (state.view === "connections") document.querySelector("#connections").innerHTML = connections();
@@ -195,6 +352,10 @@ function render() {
     const next = document.querySelector("#logs pre");
     if (next && (state.stick || atBottom)) next.scrollTop = next.scrollHeight;
   }
+  if (state.focusId) {
+    const node = document.getElementById(state.focusId);
+    if (node) node.focus();
+  }
   bind();
 }
 function overview(data) {
@@ -204,121 +365,193 @@ function overview(data) {
   const mode = data.mixed ? "MIXED" : "SOCKS5";
   const plan = data.plan || {};
   const last = plan.last;
+  const pinValue = state.drafts.pin != null ? state.drafts.pin : String(data.pinned || 0);
+  const rotateValue = state.drafts["rotate-seconds"] != null ? state.drafts["rotate-seconds"] : data.rotate_seconds;
   return `
-    <p class="lead">${escapeHtml(title)}</p>
-    <p class="meta">${escapeHtml(data.listen || "未绑定")} · ${mode} · ${escapeHtml(data.strategy)} · ${escapeHtml(data.sticky)} · 统计自 ${clock(data.started_at)}</p>
-    <div class="stats">
-      <div class="stat"><span>可用实例</span><strong>${data.ready}/${total}</strong></div>
-      <div class="stat"><span>活跃连接</span><strong>${data.active_connections}</strong></div>
-      <div class="stat"><span>累计上行</span><strong>${bytes(data.bytes_up)}</strong></div>
-      <div class="stat"><span>累计下行</span><strong>${bytes(data.bytes_down)}</strong></div>
+    <h1 class="h4 mb-1">${escapeHtml(title)}</h1>
+    <p class="text-body-secondary">${escapeHtml(data.listen || "未绑定")} · ${mode} · ${escapeHtml(data.strategy)} · ${escapeHtml(data.sticky)} · 统计自 ${clock(data.started_at)}</p>
+    <div class="row g-3">
+      ${stat("可用实例", data.ready + "/" + total, "关注 " + data.attention + " · 维护 " + data.maintenance + " · 未知 " + data.unknown)}
+      ${stat("活跃连接", data.active_connections, "只统计还没关闭的转发")}
+      ${stat("累计上行", bytes(data.bytes_up), "含当前连接")}
+      ${stat("累计下行", bytes(data.bytes_down), "含当前连接")}
     </div>
-    <section class="panel">
-      <div class="row spread">
-        <h2>调度</h2>
+    <div class="card mt-3"><div class="card-body">
+      <div class="d-flex flex-wrap justify-content-between align-items-baseline gap-2">
+        <h2 class="h5 mb-0">调度</h2>
+        <div class="text-body-secondary small">${data.enabled ? "入口开启" : "入口已暂停"} · ${data.http2 ? "HTTP/2" : "HTTP/3"} · 固定 ${data.pinned ? data.pinned : "自动"}</div>
       </div>
-      <div class="row" style="margin-top:16px">
-        <button type="button" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
-        <label class="quiet">固定实例 <select id="pin">${["<option value=\"0\">自动</option>"].concat(data.accounts.map((account) => `<option value="${account.id}" ${data.pinned === account.id ? "selected" : ""}>${account.id}</option>`)).join("")}</select></label>
-        <button type="button" data-act="pin">应用</button>
-        <button type="button" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "HTTP/2" : "HTTP/3"}</button>
-        <label class="quiet">换出口 <input id="rotate-seconds" inputmode="numeric" value="${data.rotate_seconds}" style="width:72px"> 秒</label>
-        <button type="button" data-act="interval">设置</button>
-        <button type="button" data-act="rotate">立即换出口</button>
-        <button type="button" data-act="trace">刷新出口</button>
-      </div>
-    </section>
-    <section class="panel">
-      <div class="row spread">
-        <h2>定时重启计划${plan.paused ? " · 已暂停" : ""}</h2>
-        <div class="row">
-          <button type="button" data-act="plan-now">立即执行</button>
-          <button type="button" data-act="${plan.paused ? "plan-resume" : "plan-pause"}">${plan.paused ? "恢复" : "暂停"}</button>
+      <div class="d-flex flex-wrap gap-3 mt-3">
+        <div class="cluster">
+          <div class="cluster-label">入口</div>
+          <div class="d-flex flex-wrap align-items-center gap-2">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
+        <label class="d-flex align-items-center gap-2 mb-0">固定实例
+          <select id="pin" class="form-select form-select-sm" style="width: 7rem">${pinOptions(data, pinValue)}</select>
+        </label>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="pin">应用</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "改用 HTTP/3" : "改用 HTTP/2"}</button>
+          </div>
+        </div>
+        <div class="cluster">
+          <div class="cluster-label">出口</div>
+          <div class="d-flex flex-wrap align-items-center gap-2">
+            <label class="d-flex align-items-center gap-2 mb-0">换出口
+          <input id="rotate-seconds" class="form-control form-control-sm" inputmode="numeric" value="${escapeHtml(rotateValue)}" style="width: 5rem"> 秒
+        </label>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="interval">设置</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="rotate">立即换出口</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">刷新出口</button>
+          </div>
         </div>
       </div>
-      <div class="plan-grid">
-        <div><div class="quiet">下次执行</div><p class="figure" id="next">${nextText(plan.next_at, data.restart_seconds)}</p><div class="quiet">每 ${data.restart_seconds} 秒 · 每轮 ${data.restart_batch || "全部"} · 同时 ${data.restart_concurrency} · 延后 ${data.restart_defer_seconds} 秒</div></div>
-        <div><div class="quiet">上次结果</div><p class="figure">${last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有"}</p><div class="quiet">${last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at) : ""}</div></div>
-        <div><div class="quiet">队列</div><p class="figure">${(plan.ready || []).length} 就绪</p><div class="quiet">${(plan.deferred || []).length} 延后 · ${(plan.retry || []).length} 后续重试</div></div>
+    </div></div>
+    <div class="card mt-3"><div class="card-body">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <h2 class="h5 mb-0">定时重启计划${plan.paused ? " · 已暂停" : ""}</h2>
+        <div class="btn-group btn-group-sm">
+          <button type="button" class="btn btn-outline-secondary" data-act="plan-now">立即执行</button>
+          <button type="button" class="btn btn-outline-secondary" data-act="${plan.paused ? "plan-resume" : "plan-pause"}">${plan.paused ? "恢复" : "暂停"}</button>
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="k">下次执行</div><div class="v" id="next">${nextText(plan.next_at, data.restart_seconds)}</div><div class="s">每 ${data.restart_seconds} 秒 · 每轮 ${data.restart_batch || "全部"} · 同时 ${data.restart_concurrency} · 延后 ${data.restart_defer_seconds} 秒 · 错过 ${data.restart_misfire === "skip" ? "跳过" : "立即补跑"}</div></div>
+        <div class="metric"><div class="k">上次结果</div><div class="v">${last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有"}</div><div class="s">${last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at) : ""}</div></div>
+        <div class="metric"><div class="k">队列</div><div class="v">${(plan.ready || []).length} 就绪</div><div class="s">就绪 ${idList(plan.ready)} · 延后 ${idList(plan.deferred)} · 重试 ${idList(plan.retry)}</div></div>
       </div>
       ${history(plan.history)}
-    </section>
-    <section class="panel">
-      <h2>进行中的任务</h2>
+    </div></div>
+    <div class="card mt-3"><div class="card-body">
+      <h2 class="h5">进行中的任务</h2>
       ${tasks(data.tasks)}
-    </section>`;
+    </div></div>`;
+}
+function stat(label, value, note) {
+  return `<div class="col-6 col-lg-3"><div class="card stat h-100"><div class="card-body"><div class="text-body-secondary small">${label}</div><div class="fs-3 num">${value}</div><div class="text-body-secondary small">${note || ""}</div></div></div></div>`;
+}
+function idList(rows) {
+  return rows && rows.length ? rows.join("、") : "无";
+}
+function interfaceV4(account) {
+  return account.ip && account.ip !== "0.0.0.0" ? account.ip : "未分配";
+}
+function interfaceV6(account) {
+  return account.assigned_v6 || "未分配";
+}
+function egressCell(ip, iface) {
+  const shown = ip || "未测到";
+  const title = "出口 " + shown + " · 接口 " + iface;
+  return '<td class="font-monospace clip clip-wide" title="' + escapeHtml(title) + '">' + escapeHtml(shown) + "</td>";
+}
+function placeText(account) {
+  const place = [account.country, account.colo].filter(Boolean).join(" · ");
+  return place || "还没探测";
+}
+function pinOptions(data, selected) {
+  const options = [{ value: "0", label: "自动" }].concat(data.accounts.map((account) => ({ value: String(account.id), label: String(account.id) })));
+  return options.map((option) => `<option value="${option.value}" ${option.value === String(selected) ? "selected" : ""}>${option.label}</option>`).join("");
 }
 function history(rows) {
-  if (!rows || !rows.length) return `<p class="empty">还没有执行历史</p>`;
-  return `<table><thead><tr><th>时间</th><th class="right">成功</th><th class="right">失败</th><th class="right">延后</th><th class="right">耗时</th></tr></thead><tbody>${rows.slice(0, 10).map((row) => `<tr><td>${clock(row.at)}</td><td class="right mono">${row.success}</td><td class="right mono">${row.failed}</td><td class="right mono">${row.deferred}</td><td class="right mono">${(row.millis / 1000).toFixed(1)} 秒</td></tr>`).join("")}</tbody></table>`;
+  if (!rows || !rows.length) return `<p class="text-body-secondary mt-3 mb-0">还没有执行历史</p>`;
+  return `<div class="table-responsive mt-3"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>时间</th><th class="text-end">成功</th><th class="text-end">失败</th><th class="text-end">延后</th><th class="text-end">耗时</th></tr></thead><tbody>${rows.slice(0, 10).map((row) => `<tr><td>${clock(row.at)}</td><td class="text-end font-monospace">${row.success}</td><td class="text-end font-monospace">${row.failed}</td><td class="text-end font-monospace">${row.deferred}</td><td class="text-end font-monospace">${(row.millis / 1000).toFixed(1)} 秒</td></tr>`).join("")}</tbody></table></div>`;
 }
 function tasks(rows) {
-  if (!rows || !rows.length) return `<p class="empty">没有进行中的任务。完成后会从这里消失</p>`;
-  return `<table><thead><tr><th>实例</th><th>阶段</th><th class="right">剩余连接</th><th class="right">已耗时</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="mono">${row.id}</td><td>${escapeHtml(row.stage)}</td><td class="right mono">${row.active}</td><td class="right mono">${duration(row.elapsed_seconds)}</td></tr>`).join("")}</tbody></table>`;
+  if (!rows || !rows.length) return `<p class="text-body-secondary mb-0">没有进行中的任务。完成后会从这里消失</p>`;
+  return `<div class="table-responsive"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>实例</th><th>阶段</th><th class="text-end">剩余连接</th><th class="text-end">已耗时</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace">${row.id}</td><td>${escapeHtml(row.stage)}</td><td class="text-end font-monospace">${row.active}</td><td class="text-end font-monospace">${duration(row.elapsed_seconds)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function instances(data) {
   const filters = [["all", "全部"], ["attention", "需要关注"], ["busy", "操作中"], ["healthy", "健康"], ["disabled", "已停用"], ["temporary", "临时实例"]];
   const rows = data.accounts.filter((account) => matchFilter(account, data));
   return `
-    <div class="row spread">
-      <div class="filters">${filters.map(([id, label]) => `<button type="button" data-filter="${id}" class="${state.filter === id ? "on" : ""}">${label}</button>`).join("")}</div>
-      <div class="row">
-        <button type="button" data-act="add-temp">添加临时实例</button>
-        <button type="button" data-act="remove-temp">批量移除</button>
-        <button type="button" data-act="refresh">刷新数据</button>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div class="btn-group btn-group-sm" role="group">${filters.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.filter === id ? " is-on" : ""}" data-filter="${id}">${label}</button>`).join("")}</div>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <label class="d-flex align-items-center gap-2 mb-0">数量
+          <input id="temp-count" class="form-control form-control-sm" type="number" min="1" max="100" step="1" value="${state.tempCount || "1"}" style="width: 4.5rem" aria-label="临时实例数量">
+        </label>
+        <div class="btn-group btn-group-sm">
+          <button type="button" class="btn btn-primary" data-act="add-temp">添加临时实例</button>
+          <button type="button" class="btn btn-outline-danger" data-act="remove-temp">批量移除</button>
+          <button type="button" class="btn btn-outline-secondary" data-act="refresh">刷新数据</button>
+        </div>
       </div>
     </div>
-    <table>
-      <thead><tr><th></th><th>实例</th><th>进程</th><th>人工状态</th><th>健康</th><th>WARP</th><th>IPv4 出口</th><th>IPv6 出口</th><th>国家</th><th>PoP</th><th>后端池</th><th class="right">活跃连接</th><th class="right">用户数</th><th class="right">在线时长</th><th>最近操作</th><th></th></tr></thead>
-      <tbody>${rows.map((account) => `<tr>
-        <td>${account.temporary ? `<input type="checkbox" data-temp="${account.id}" aria-label="选择 ${account.id}">` : ""}</td>
-        <td class="mono">${account.id}</td>
-        <td>${account.tunnel ? "运行" : "停止"}</td>
-        <td>${account.manual ? "启用" : "停用"}</td>
-        <td><span class="dot ${account.health}"></span>${healthText(account.health)}</td>
-        <td>${escapeHtml(account.warp || "—")}</td>
-        <td class="mono">${escapeHtml(account.ipv4 || "—")}</td>
-        <td class="mono">${escapeHtml(account.ipv6 || "—")}</td>
-        <td>${escapeHtml(account.country || "—")}</td>
-        <td>${escapeHtml(account.colo || "—")}</td>
-        <td>${account.pooled ? "已入池" : "未入池"}</td>
-        <td class="right mono">${account.active}</td>
-        <td class="right mono">${account.users}</td>
-        <td class="right mono">${duration(account.uptime_seconds)}</td>
-        <td>${escapeHtml(account.last_action || "—")}</td>
-        <td class="row"><button type="button" data-act="restart" data-slot="${account.id}">重连</button><button type="button" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}">${account.manual ? "停用" : "启用"}</button></td>
-      </tr>`).join("") || `<tr><td colspan="16" class="empty">没有符合筛选的实例</td></tr>`}</tbody>
-    </table>`;
+    <div class="sheet table-responsive"><table class="table table-sm table-hover align-middle mb-0 instance-table data-table">
+      <thead><tr><th></th><th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口</th><th>IPv6 出口</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end">用户数</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight"></th></tr></thead>
+      <tbody>${rows.map((account) => `<tr class="${account.health === "down" || account.health === "attention" ? "row-alert" : ""}">
+        <td>${account.temporary ? `<input class="form-check-input" type="checkbox" data-temp="${account.id}" ${state.temps.includes(String(account.id)) ? "checked" : ""} aria-label="选择 ${account.id}">` : ""}</td>
+        <td class="font-monospace">${account.id}</td>
+        <td class="${account.tunnel ? "" : "text-body-secondary"}">${account.tunnel ? "运行" : "停止"}</td>
+        <td class="${account.manual ? "" : "text-body-secondary"}">${account.manual ? "启用" : "停用"}</td>
+        <td><span class="status-cell"><span class="lamp ${account.health}"></span><span>${healthText(account.health)}</span>${account.warp ? '<span class="probe">' + escapeHtml(account.warp) + '</span>' : ""}</span></td>
+                ${egressCell(account.ipv4, interfaceV4(account))}
+        ${egressCell(account.ipv6, interfaceV6(account))}
+        <td>${escapeHtml(placeText(account))}</td>
+        <td class="${account.pooled ? "" : "text-body-secondary"}">${account.pooled ? "已入池" : "未入池"}</td>
+        <td class="text-end font-monospace">${account.active}</td>
+        <td class="text-end font-monospace">${account.users}</td>
+        <td class="text-end font-monospace">${duration(account.uptime_seconds)}</td>
+        <td class="text-end">${rowStatus(account)}</td>
+        <td class="text-nowrap row-actions col-tight"><button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}">重连</button> <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}">${account.manual ? "停用" : "启用"}</button></td>
+      </tr>`).join("") || `<tr><td colspan="14" class="text-body-secondary">没有符合筛选的实例</td></tr>`}</tbody>
+    </table></div>`;
 }
 function connections() {
   const rows = state.sessions;
-  if (!rows.length) return `<section class="panel"><h2>当前活跃连接</h2><p class="empty">没有正在转发的连接。连接关闭后会立即从这里移除</p></section>`;
-  return `<section class="panel"><h2>当前活跃连接</h2><table><thead><tr><th>请求</th><th>协议</th><th>客户端</th><th>用户</th><th>目标</th><th>出口</th><th>地址族</th><th>后端</th><th class="right">已持续</th><th class="right">空闲</th><th class="right">上行</th><th class="right">下行</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="mono">${row.id}</td><td>${escapeHtml(row.protocol)}</td><td class="mono">${escapeHtml(row.client)}</td><td>${escapeHtml(row.user)}</td><td class="mono">${escapeHtml(row.target)}</td><td class="mono">${escapeHtml(row.egress || "—")}</td><td>${escapeHtml(row.family || "—")}</td><td class="mono">${row.account}</td><td class="right mono">${duration(Math.floor(row.age_ms / 1000))}</td><td class="right mono">${duration(Math.floor(row.idle_ms / 1000))}</td><td class="right mono">${bytes(row.up)}</td><td class="right mono">${bytes(row.down)}</td></tr>`).join("")}</tbody></table></section>`;
+  if (!rows.length) return `<div class="card"><div class="card-body"><h2 class="h5">当前活跃连接</h2><p class="text-body-secondary mb-0">没有正在转发的连接。连接关闭后会立即从这里移除</p></div></div>`;
+  return `<div class="card"><div class="card-body"><h2 class="h5">当前活跃连接</h2><div class="sheet table-responsive mt-3"><table class="table table-sm table-hover align-middle mb-0 data-table"><thead><tr><th>请求</th><th>协议</th><th>客户端</th><th>用户</th><th>目标</th><th>出口</th><th>地址族</th><th>后端</th><th class="text-end">已持续</th><th class="text-end">空闲</th><th class="text-end">上行</th><th class="text-end">下行</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace">${row.id}</td><td>${escapeHtml(row.protocol)}</td><td class="font-monospace">${escapeHtml(row.client)}</td><td>${escapeHtml(row.user)}</td><td class="font-monospace clip clip-wide" title="${escapeHtml(row.target)}">${escapeHtml(row.target)}</td><td class="font-monospace">${escapeHtml(row.egress || "—")}</td><td>${escapeHtml(row.family || "—")}</td><td class="font-monospace">${row.account}</td><td class="text-end font-monospace">${duration(Math.floor(row.age_ms / 1000))}</td><td class="text-end font-monospace">${duration(Math.floor(row.idle_ms / 1000))}</td><td class="text-end font-monospace">${bytes(row.up)}</td><td class="text-end font-monospace">${bytes(row.down)}</td></tr>`).join("")}</tbody></table></div></div></div>`;
 }
 function logs() {
   const page = state.logs || { lines: [], ready: 0, attention: 0, maintenance: 0, unknown: 0 };
   const kinds = [["all", "全部"], ["access", "访问"], ["plan", "计划"], ["account", "账号"]];
   const lines = page.lines.filter((line) => state.logKind === "all" || line.kind === state.logKind);
-  return `<section class="panel">
-    <div class="row spread">
-      <h2>控制台日志</h2>
-      <div class="row"><span class="quiet">${lines.length}/${page.lines.length}</span><button type="button" data-act="bottom">回到底部</button><button type="button" data-act="copy">复制日志</button></div>
+  return `<div class="card"><div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <h2 class="h5 mb-0">控制台日志</h2>
+      <div class="d-flex align-items-center gap-2"><span class="text-body-secondary small">${lines.length}/${page.lines.length}</span><button type="button" class="btn btn-outline-secondary btn-sm" data-act="bottom">回到底部</button><button type="button" class="btn btn-outline-secondary btn-sm" data-act="copy">复制日志</button></div>
     </div>
-    <p class="meta">就绪 ${page.ready} · 异常 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</p>
-    <div class="filters">${kinds.map(([id, label]) => `<button type="button" data-log="${id}" class="${state.logKind === id ? "on" : ""}">${label}</button>`).join("")}</div>
-    <pre>${lines.map((line) => escapeHtml(clock(line.at) + "  " + line.text)).join("\n") || "还没有日志"}</pre>
-  </section>`;
+    <p class="text-body-secondary mt-2 mb-2">就绪 ${page.ready} · 异常 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</p>
+    <div class="btn-group btn-group-sm mb-2">${kinds.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.logKind === id ? " is-on" : ""}" data-log="${id}">${label}</button>`).join("")}</div>
+    <pre class="log">${lines.map((line) => '<span class="t">' + escapeHtml(clock(line.at)) + '</span>  ' + escapeHtml(line.text)).join("\n") || "还没有日志"}</pre>
+  </div></div>`;
 }
 function bind() {
   document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; render(); }));
   document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => { state.logKind = button.dataset.log; render(); }));
   document.querySelectorAll("[data-act]").forEach((button) => button.addEventListener("click", () => act(button.dataset.act, button)));
+  if (state.busy) setBusy(true);
+  applyFeedback();
   const box = document.querySelector("#logs pre");
   if (box) box.addEventListener("scroll", () => { state.stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40; });
 }
 async function act(name, button) {
+  if (name === "refresh") return refresh();
+  if (name === "bottom") {
+    const box = document.querySelector("#logs pre");
+    if (box) box.scrollTop = box.scrollHeight;
+    state.stick = true;
+    return;
+  }
+  if (name === "copy") {
+    const box = document.querySelector("#logs pre");
+    if (box) await copyText(box.textContent);
+    state.feedback = { key: "act:copy", text: "已复制", error: false };
+    applyFeedback();
+    scheduleFeedbackClear();
+    return;
+  }
+  if (state.busy) return;
+  clearTimeout(feedbackTimer);
+  const pickedTemps = [...document.querySelectorAll("[data-temp]:checked")].map((item) => item.dataset.temp);
+  const tempCount = document.querySelector("#temp-count");
+  if (tempCount) state.tempCount = tempCount.value;
+  const text = name === "restart" ? "重连" : name === "manual" ? (button.dataset.on === "1" ? "启用" : "停用") : actionText(name, button);
+  const key = feedbackKey(name, button);
+  state.busy = true;
+  state.feedback = { key: key, text: "正在" + text + "…", error: false };
+  showError("");
+  render();
   try {
-    if (name === "refresh") return refresh();
     if (name === "toggle") await api("/api/toggle?on=" + button.dataset.on);
     if (name === "pin") await api("/api/select?slot=" + (document.querySelector("#pin").value || "0"));
     if (name === "http2") await api("/api/http2?on=" + button.dataset.on);
@@ -328,27 +561,42 @@ async function act(name, button) {
     if (name === "plan-now") await api("/api/restart-plan?action=now");
     if (name === "plan-pause") await api("/api/restart-plan?action=pause");
     if (name === "plan-resume") await api("/api/restart-plan?action=resume");
-    if (name === "add-temp") await api("/api/account/add?temporary=1");
+    if (name === "add-temp") {
+      const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
+      state.tempCount = String(count);
+      await api("/api/account/add?temporary=1&count=" + count);
+    }
     if (name === "remove-temp") {
-      const picked = [...document.querySelectorAll("[data-temp]:checked")].map((item) => item.dataset.temp);
-      for (const slot of picked) await api("/api/account/remove?slot=" + slot);
+      for (const slot of pickedTemps) state.status = await api("/api/account/remove?slot=" + slot);
+      state.temps = [];
+      document.querySelectorAll("[data-temp]").forEach((item) => { item.checked = false; });
+      refreshSeq += 1;
+      render();
     }
     if (name === "restart") await api("/api/restart?slot=" + button.dataset.slot);
     if (name === "manual") await api("/api/account/manual?slot=" + button.dataset.slot + "&on=" + button.dataset.on);
-    if (name === "bottom") {
-      const box = document.querySelector("#logs pre");
-      if (box) box.scrollTop = box.scrollHeight;
-      state.stick = true;
-      return;
-    }
-    if (name === "copy") {
-      const box = document.querySelector("#logs pre");
-      if (box) await navigator.clipboard.writeText(box.textContent);
-      return;
-    }
+    state.feedback = { key: key, text: text + "完成", error: false };
     await refresh();
   } catch (err) {
-    document.querySelector("#error").textContent = String(err.message || err);
+    const message = String(err.message || err);
+    state.feedback = { key: key, text: message, error: true };
+    showError(message);
+    render();
+  } finally {
+    setBusy(false);
+    scheduleFeedbackClear();
+  }
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
   }
 }
 function matchFilter(account, data) {

@@ -34,7 +34,7 @@ pub use config::WarpConfig;
 pub use error::{Error, Result};
 pub use keys::DeviceKeypair;
 pub use netstack::{NetHandle, ResolvePreference};
-pub use pool::{Pool, PoolOptions, ProxyAuth, RestartConfig};
+pub use pool::{parse_misfire, Misfire, Pool, PoolOptions, ProxyAuth, RestartConfig};
 pub use register::{RegisterOptions, RegistrationClient};
 pub use schedule::{parse_sticky, parse_strategy, Policy, StickyMode, Strategy};
 pub use tunnel::{Transport, Tunnel};

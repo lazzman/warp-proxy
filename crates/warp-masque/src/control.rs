@@ -58,6 +58,11 @@ async fn handle(mut conn: TcpStream, pool: Arc<Pool>, token: Arc<String>) -> std
     if method == "GET" && is_panel_path(path) {
         return write_html(&mut conn, PANEL_HTML).await;
     }
+    if method == "GET" {
+        if let Some((content_type, body)) = panel_asset(path) {
+            return write_asset(&mut conn, content_type, body).await;
+        }
+    }
     if method == "GET" && path == "/favicon.ico" {
         return write_resp(&mut conn, "204 No Content", "").await;
     }
@@ -112,14 +117,20 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
             let seconds = int_param(query, "seconds");
             let batch = int_param(query, "batch");
             let defer = int_param(query, "defer");
-            if seconds.is_some() || batch.is_some() || defer.is_some() {
+            let misfire_raw = param(query, "misfire");
+            if seconds.is_some() || batch.is_some() || defer.is_some() || misfire_raw.is_some() {
+                let misfire = match misfire_raw.as_deref() {
+                    Some(value) => Some(crate::pool::parse_misfire(value)?),
+                    None => None,
+                };
                 pool.set_restart_plan(
                     seconds.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
                     batch.map(|count| count.max(0) as usize),
                     defer.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
+                    misfire,
                 );
             } else if param(query, "action").is_none() {
-                return Err("需要 seconds、batch、defer 或 action".into());
+                return Err("需要 seconds、batch、defer、misfire 或 action".into());
             }
         }
         "/api/rotate" => pool
@@ -136,7 +147,11 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
                 .await
         }
         "/api/account/add" => {
-            pool.add_account_kind(bool_param(query, "temporary", false))
+            let count = int_param(query, "count").unwrap_or(1);
+            if count < 1 {
+                return Err("添加数量至少为 1".into());
+            }
+            pool.add_accounts(bool_param(query, "temporary", false), count as usize)
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -193,9 +208,38 @@ async fn write_json(conn: &mut TcpStream, status: &str, body: &str) -> std::io::
 
 const PANEL_HTML: &str = include_str!("panel.html");
 
+fn panel_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
+    match path {
+        "/assets/bootstrap.min.css" => Some((
+            "text/css; charset=utf-8",
+            include_bytes!("assets/bootstrap.min.css"),
+        )),
+        "/assets/bootstrap.bundle.min.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_bytes!("assets/bootstrap.bundle.min.js"),
+        )),
+        _ => None,
+    }
+}
+
 /// 管理页面只挂在这两个路径上，避免把接口误当成网页。
 fn is_panel_path(path: &str) -> bool {
     matches!(path, "/" | "/panel" | "/panel/")
+}
+
+async fn write_asset(conn: &mut TcpStream, content_type: &str, body: &[u8]) -> std::io::Result<()> {
+    let head = format!(
+        "HTTP/1.1 200 OK
+Content-Type: {content_type}
+Content-Length: {}
+Cache-Control: public, max-age=86400
+Connection: close
+
+",
+        body.len()
+    );
+    conn.write_all(head.as_bytes()).await?;
+    conn.write_all(body).await
 }
 
 async fn write_html(conn: &mut TcpStream, body: &str) -> std::io::Result<()> {
@@ -224,7 +268,7 @@ async fn write_resp(conn: &mut TcpStream, status: &str, body: &str) -> std::io::
 
 #[cfg(test)]
 mod tests {
-    use super::{is_panel_path, PANEL_HTML};
+    use super::{is_panel_path, panel_asset, PANEL_HTML};
 
     #[test]
     fn panel_paths_are_only_the_html_pages() {
@@ -253,6 +297,15 @@ mod tests {
             assert!(PANEL_HTML.contains(path), "{path}");
         }
         assert!(PANEL_HTML.contains("X-Warp-Token"));
+        assert!(PANEL_HTML.contains("temporary=1&count="));
+        assert!(PANEL_HTML.contains("localStorage"));
+        assert!(PANEL_HTML.contains("warp-token"));
+        assert!(PANEL_HTML.contains("writeCachedToken(state.token)"));
+        assert!(PANEL_HTML.contains("/assets/bootstrap.min.css"));
+        assert!(PANEL_HTML.contains("/assets/bootstrap.bundle.min.js"));
         assert!(!PANEL_HTML.contains("controlToken"));
+        assert!(panel_asset("/assets/bootstrap.min.css").is_some());
+        assert!(panel_asset("/assets/bootstrap.bundle.min.js").is_some());
+        assert!(panel_asset("/api/status").is_none());
     }
 }
