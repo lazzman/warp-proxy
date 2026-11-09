@@ -468,7 +468,7 @@ function overview(data) {
           <input id="restart-threshold" class="form-control form-control-sm" type="number" min="1" step="1" value="${escapeHtml(restartThreshold)}" style="width: 7rem">
         </label>
         <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart-policy">应用策略</button>
-        <span class="text-body-secondary small">每个实例独立计数，到阈值即停止接入并排队。</span>
+        <span class="text-body-secondary small">用户数达阈值后仅允许已统计用户继续连接，排空超时后重启；连接数达阈值后停止新连接。</span>
       </div>
       <div class="metrics">
         <div class="metric"><div class="k">${nextTitle}</div><div class="v" ${thresholdMode ? "" : 'id="next"'}>${nextValue}</div><div class="s">${planInfo}</div></div>

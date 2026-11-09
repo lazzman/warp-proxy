@@ -208,7 +208,12 @@ services:
 - `users`：累计去重用户数，同一用户名的重复连接只算 1 个；没有用户名时用客户端 IP 作为身份，同一 IP 的匿名连接只算 1 个。此项独立于黏性模式，不使用面板原有的「用户数」映射统计。入口只配置一组 `SOCKS_USER` 时，所有认证连接会被视为同一个用户。
 - `connections`：累计成功分配给实例的连接数，每条计 1 次，已关闭的连接也算；不是同时在线的连接数。
 
-达到阈值的**那条连接仍然被接收**，实例随即停止接受后续连接（包括固定实例），进入重启队列。现有连接继续运行，最多等待 `ROTATE_RESTART_FORCE_AFTER` 后强制重连；队列受 `ROTATE_RESTART_CONCURRENCY` 限制，不受定时计划的 `BATCH` / `DEFER` 限制。只有重连成功并确认 WARP 正常后才清零计数、恢复接入；失败则继续后台重试，并保持拒绝新连接。两种模式都使用保身份重启，避免重复注册账号。
+达到阈值的**那条连接仍然被接收**，实例随即进入重启队列：
+
+- `users`：不再接收新用户名或新匿名 IP，但已累计的用户可以继续建立新连接（包括固定实例），不会增加去重用户数。在取得重启并发名额后，继续允许这些用户连接 `ROTATE_RESTART_FORCE_AFTER` 时长，到期停止所有新连接并强制重连；即使这期间暂时没有活跃连接，也会等到超时才重连。等待队列中的时间不计入排空时长。
+- `connections`：达到阈值就停止接收所有新连接。取得重启名额后等待现有连接自然结束，最多等 `ROTATE_RESTART_FORCE_AFTER` 后强制重连。
+
+队列受 `ROTATE_RESTART_CONCURRENCY` 限制，不受定时计划的 `BATCH` / `DEFER` 限制。只有重连成功并确认 WARP 正常后才清零计数、恢复接入；失败后停止所有新连接并继续后台重试。两种模式都使用保身份重启，避免重复注册账号。
 
 示例：`ROTATE_RESTART_MODE=connections` 且 `ROTATE_RESTART_THRESHOLD=1000`，表示每个实例从上次成功启动或重启后累计接入 1000 条连接就排队重启。也可以通过 `--restart-mode users --restart-threshold 100` 启动。运行中在面板选择策略并应用，或访问 `/api/restart-policy?mode=users&threshold=100` 修改；切换模式时从零开始统计，单独降低阈值会立即检查现有计数并按需入队。`mode=scheduled` 恢复原有定时计划。
 
@@ -225,7 +230,7 @@ services:
 - `ROTATE_RESTART_BATCH` / `--restart-batch`：这一轮选进几个账号，默认 1。账号按编号轮流，下一轮从上次停下的位置继续。`0` 表示这一轮包含当前全部账号。
 - `ROTATE_RESTART_CONCURRENCY` / `--restart-concurrency`：这一轮里最多同时重连几个，默认 1。小于 1 时仍按 1 处理。选中的账号先排队，拿到名额才开始排空和重连；排队期间隧道仍然接收连接。
 - `ROTATE_RESTART_DEFER` / `--restart-defer`：计划到点时账号还有连接，就延后这段时间再试。到点仍然有连接会继续延后，不进入排空。`0` 表示不延后，到点就排空。手动重启不受这个设置影响。
-- `ROTATE_RESTART_FORCE_AFTER` / `--restart-force-after`：已经开始重连后，最多再等现有连接这么久，到点就强制重连。默认 `660s`。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 和 `--restart-drain` 仍可用。只写旧名时会提示弃用；新旧同时配置时采用新值，并提示旧名已被忽略。
+- `ROTATE_RESTART_FORCE_AFTER` / `--restart-force-after`：取得重启名额后的排空等待时间。用户阈值模式会完整等待这段时间，以允许已统计用户续连；连接阈值和定时模式在连接排空后可以提前重启。默认 `660s`。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 和 `--restart-drain` 仍可用。只写旧名时会提示弃用；新旧同时配置时采用新值，并提示旧名已被忽略。
 - `ROTATE_RESTART_PROBE_TIMEOUT` / `--restart-probe-timeout`：确认 `warp=on` 或 `warp=plus` 的时间，默认 `90s`。
 - `ROTATE_RESTART_MISFIRE` / `--restart-misfire`：上一轮拖过下次时间时怎么处理。`fire` 立刻补跑，`skip` 跳到下一个间隔点。默认 `fire`。
 
