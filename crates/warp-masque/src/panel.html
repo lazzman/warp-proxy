@@ -102,6 +102,8 @@
   .metric .v { font-size: 22px; line-height: 1.3; margin-top: 4px; }
   .metric .s { margin-top: 4px; }
   .sheet { border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); overflow: auto; }
+  .connections-scroll { max-height: 36rem; }
+  .connections-scroll thead th { position: sticky; top: 0; z-index: 1; }
   .data-table { font-size: 13px; }
   .data-table th { font-size: 12px; font-weight: 500; color: var(--bs-secondary-color); }
   .data-table td, .data-table th { padding: 8px 10px; border-color: var(--hair); }
@@ -350,7 +352,25 @@ function render() {
   capture();
   if (state.view === "overview") document.querySelector("#overview").innerHTML = overview(data);
   if (state.view === "instances") document.querySelector("#instances").innerHTML = instances(data);
-  if (state.view === "connections") document.querySelector("#connections").innerHTML = connections();
+  if (state.view === "connections") {
+    const panel = document.querySelector("#connections");
+    const previous = panel.querySelector(".connections-scroll");
+    const scrollTop = previous ? previous.scrollTop : 0;
+    const scrollLeft = previous ? previous.scrollLeft : 0;
+    const anchor = previous && scrollTop > 0 ? [...previous.querySelectorAll("tbody tr")].find((row) => row.getBoundingClientRect().bottom > previous.getBoundingClientRect().top) : null;
+    const anchorId = anchor && anchor.dataset.session;
+    const anchorOffset = anchor ? anchor.getBoundingClientRect().top - previous.getBoundingClientRect().top : 0;
+    panel.innerHTML = connections();
+    const next = panel.querySelector(".connections-scroll");
+    if (next) {
+      next.scrollTop = scrollTop;
+      next.scrollLeft = scrollLeft;
+      if (anchorId) {
+        const row = [...next.querySelectorAll("tbody tr")].find((item) => item.dataset.session === anchorId);
+        if (row) next.scrollTop += row.getBoundingClientRect().top - next.getBoundingClientRect().top - anchorOffset;
+      }
+    }
+  }
   if (state.view === "logs") {
     const box = document.querySelector("#logs pre");
     const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
@@ -504,8 +524,11 @@ function instances(data) {
 }
 function connections() {
   const rows = state.sessions;
-  if (!rows.length) return `<div class="card"><div class="card-body"><h2 class="h5">当前活跃连接</h2><p class="text-body-secondary mb-0">没有正在转发的连接。连接关闭后会立即从这里移除</p></div></div>`;
-  return `<div class="card"><div class="card-body"><h2 class="h5">当前活跃连接</h2><div class="sheet table-responsive mt-3"><table class="table table-sm table-hover align-middle mb-0 data-table"><thead><tr><th>请求</th><th>协议</th><th>客户端</th><th>用户</th><th>目标</th><th>出口</th><th>地址族</th><th>后端</th><th class="text-end">已持续</th><th class="text-end">空闲</th><th class="text-end">上行</th><th class="text-end">下行</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace">${row.id}</td><td>${escapeHtml(row.protocol)}</td><td class="font-monospace">${escapeHtml(row.client)}</td><td>${escapeHtml(row.user)}</td><td class="font-monospace clip clip-wide" title="${escapeHtml(row.target)}">${escapeHtml(row.target)}</td><td class="font-monospace">${escapeHtml(row.egress || "—")}</td><td>${escapeHtml(row.family || "—")}</td><td class="font-monospace">${row.account}</td><td class="text-end font-monospace">${duration(Math.floor(row.age_ms / 1000))}</td><td class="text-end font-monospace">${duration(Math.floor(row.idle_ms / 1000))}</td><td class="text-end font-monospace">${bytes(row.up)}</td><td class="text-end font-monospace">${bytes(row.down)}</td></tr>`).join("")}</tbody></table></div></div></div>`;
+  if (!rows.length) return `<div class="card"><div class="card-body"><h2 class="h5">最近连接</h2><p class="text-body-secondary mb-0">暂无连接记录。这里最多保留最近 300 条连接，包括已关闭的连接。</p></div></div>`;
+  return `<div class="card"><div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h2 class="h5 mb-0">最近连接</h2><span class="text-body-secondary small">${rows.length} 条 · 最新在前 · 最多 300 条</span></div>
+    <div class="sheet table-responsive connections-scroll mt-3"><table class="table table-sm table-hover align-middle mb-0 data-table"><thead><tr><th>请求</th><th>活跃状态</th><th>协议</th><th>客户端</th><th>用户</th><th>目标</th><th>出口</th><th>地址族</th><th>后端</th><th class="text-end">已持续</th><th class="text-end">空闲</th><th class="text-end">上行</th><th class="text-end">下行</th></tr></thead><tbody>${rows.map((row) => `<tr data-session="${row.id}"><td class="font-monospace">${row.id}</td><td><span class="status-cell"><span class="lamp ${row.active ? "on" : ""}"></span>${row.active ? "活跃" : "已关闭"}</span></td><td>${escapeHtml(row.protocol)}</td><td class="font-monospace">${escapeHtml(row.client)}</td><td>${escapeHtml(row.user)}</td><td class="font-monospace clip clip-wide" title="${escapeHtml(row.target)}">${escapeHtml(row.target)}</td><td class="font-monospace">${escapeHtml(row.egress || "—")}</td><td>${escapeHtml(row.family || "—")}</td><td class="font-monospace">${row.account}</td><td class="text-end font-monospace">${duration(Math.floor(row.age_ms / 1000))}</td><td class="text-end font-monospace">${duration(Math.floor(row.idle_ms / 1000))}</td><td class="text-end font-monospace">${bytes(row.up)}</td><td class="text-end font-monospace">${bytes(row.down)}</td></tr>`).join("")}</tbody></table></div>
+  </div></div>`;
 }
 function paintLog(text) {
   return escapeHtml(text)

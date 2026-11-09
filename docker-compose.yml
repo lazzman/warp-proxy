@@ -5,7 +5,14 @@ services:
     image: ghcr.io/lazzman/warp-proxy:latest
     build: .
     container_name: warp-proxy
+    # 兼容 MicroWARP 持久化配置的文件权限；仅挂载可信的数据目录。
+    user: "0:0"
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "127.0.0.1:1080:1080"
       - "127.0.0.1:47100:47100"

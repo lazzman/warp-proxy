@@ -1,8 +1,8 @@
-//! 面板用的运行时记录：活跃连接、日志环和定时重启计划。
+//! 面板用的运行时记录：连接与最近历史、日志环和定时重启计划。
 //!
 //! 这些状态只活在进程里。临时账号和执行历史不会写入账号文件。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 const LOG_LIMIT: usize = 300;
+const LOG_LINE_LIMIT: usize = 2048;
+const SESSION_LIMIT: usize = 300;
 const HISTORY_LIMIT: usize = 10;
 
 pub fn unix_ms() -> u64 {
@@ -53,6 +55,27 @@ struct LiveSession {
     meter: Arc<TrafficMeter>,
 }
 
+impl LiveSession {
+    fn view(&self, now: u64, active: bool) -> SessionView {
+        let touched = self.meter.touched.load(Ordering::Relaxed);
+        SessionView {
+            id: self.id,
+            protocol: self.protocol.clone(),
+            client: self.client.clone(),
+            user: self.user.clone(),
+            target: self.target.clone(),
+            egress: self.egress.clone(),
+            family: self.family.clone(),
+            account: self.account,
+            age_ms: now.saturating_sub(self.started),
+            idle_ms: now.saturating_sub(touched),
+            up: self.meter.up.load(Ordering::Relaxed),
+            down: self.meter.down.load(Ordering::Relaxed),
+            active,
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct SessionView {
     pub id: u64,
@@ -67,6 +90,7 @@ pub struct SessionView {
     pub idle_ms: u64,
     pub up: u64,
     pub down: u64,
+    pub active: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -129,9 +153,14 @@ impl PlanState {
     }
 }
 
+struct Sessions {
+    active: BTreeMap<u64, LiveSession>,
+    closed: BTreeMap<u64, SessionView>,
+}
+
 struct Inner {
     next_id: AtomicU64,
-    sessions: Mutex<HashMap<u64, LiveSession>>,
+    sessions: Mutex<Sessions>,
     logs: Mutex<VecDeque<LogLine>>,
     up: AtomicU64,
     down: AtomicU64,
@@ -167,7 +196,10 @@ impl Console {
         Self {
             inner: Arc::new(Inner {
                 next_id: AtomicU64::new(1),
-                sessions: Mutex::new(HashMap::new()),
+                sessions: Mutex::new(Sessions {
+                    active: BTreeMap::new(),
+                    closed: BTreeMap::new(),
+                }),
                 logs: Mutex::new(VecDeque::new()),
                 up: AtomicU64::new(0),
                 down: AtomicU64::new(0),
@@ -190,9 +222,10 @@ impl Console {
     }
 
     pub fn totals(&self) -> (u64, u64) {
+        let sessions = self.inner.sessions.lock().unwrap();
         let mut up = self.inner.up.load(Ordering::Relaxed);
         let mut down = self.inner.down.load(Ordering::Relaxed);
-        for session in self.inner.sessions.lock().unwrap().values() {
+        for session in sessions.active.values() {
             up += session.meter.up.load(Ordering::Relaxed);
             down += session.meter.down.load(Ordering::Relaxed);
         }
@@ -201,7 +234,7 @@ impl Console {
 
     pub fn open_session(&self, open: SessionOpen) -> SessionGuard {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        self.inner.sessions.lock().unwrap().insert(
+        self.inner.sessions.lock().unwrap().active.insert(
             id,
             LiveSession {
                 id,
@@ -225,40 +258,46 @@ impl Console {
 
     pub fn sessions(&self) -> Vec<SessionView> {
         let now = unix_ms();
-        let mut rows: Vec<_> = self
-            .inner
-            .sessions
-            .lock()
-            .unwrap()
-            .values()
-            .map(|session| {
-                let touched = session.meter.touched.load(Ordering::Relaxed);
-                SessionView {
-                    id: session.id,
-                    protocol: session.protocol.clone(),
-                    client: session.client.clone(),
-                    user: session.user.clone(),
-                    target: session.target.clone(),
-                    egress: session.egress.clone(),
-                    family: session.family.clone(),
-                    account: session.account,
-                    age_ms: now.saturating_sub(session.started),
-                    idle_ms: now.saturating_sub(touched),
-                    up: session.meter.up.load(Ordering::Relaxed),
-                    down: session.meter.down.load(Ordering::Relaxed),
-                }
-            })
+        let sessions = self.inner.sessions.lock().unwrap();
+        let mut rows: Vec<_> = sessions
+            .active
+            .iter()
+            .rev()
+            .take(SESSION_LIMIT)
+            .map(|(_, session)| session.view(now, true))
+            .chain(
+                sessions
+                    .closed
+                    .iter()
+                    .rev()
+                    .take(SESSION_LIMIT)
+                    .map(|(_, session)| session.clone()),
+            )
             .collect();
-        rows.sort_by_key(|row| row.id);
+        rows.sort_unstable_by(|left, right| right.id.cmp(&left.id));
+        rows.truncate(SESSION_LIMIT);
         rows
     }
 
+    pub fn active_count(&self) -> usize {
+        self.inner.sessions.lock().unwrap().active.len()
+    }
+
     pub fn log(&self, kind: &str, text: impl Into<String>) {
+        let mut text = text.into();
+        if text.len() > LOG_LINE_LIMIT {
+            let mut end = LOG_LINE_LIMIT - "…".len();
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text.push('…');
+        }
         let mut logs = self.inner.logs.lock().unwrap();
         logs.push_back(LogLine {
             at: unix_ms(),
             kind: kind.to_string(),
-            text: text.into(),
+            text,
         });
         while logs.len() > LOG_LIMIT {
             logs.pop_front();
@@ -325,7 +364,7 @@ impl Console {
     }
 }
 
-/// 连接结束时从活跃表移除，并把流量计入累计值。
+/// 连接结束时移入历史记录，并把流量计入累计值。
 pub struct SessionGuard {
     inner: Arc<Inner>,
     id: u64,
@@ -340,7 +379,15 @@ impl SessionGuard {
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        self.inner.sessions.lock().unwrap().remove(&self.id);
+        let mut sessions = self.inner.sessions.lock().unwrap();
+        if let Some(session) = sessions.active.remove(&self.id) {
+            sessions
+                .closed
+                .insert(self.id, session.view(unix_ms(), false));
+            if sessions.closed.len() > SESSION_LIMIT {
+                sessions.closed.pop_first();
+            }
+        }
         self.inner
             .up
             .fetch_add(self.meter.up.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -354,11 +401,8 @@ impl Drop for SessionGuard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn closed_session_leaves_the_table_and_keeps_bytes() {
-        let console = Console::new();
+    fn test_session(console: &Console) -> (SessionGuard, Arc<TrafficMeter>) {
         let meter = Arc::new(TrafficMeter::new());
-        meter.up.store(12, Ordering::Relaxed);
         let guard = console.open_session(SessionOpen {
             protocol: "socks".into(),
             client: "127.0.0.1:1".into(),
@@ -367,13 +411,84 @@ mod tests {
             egress: "1.1.1.1".into(),
             family: "ipv4".into(),
             account: 1,
-            meter,
+            meter: Arc::clone(&meter),
         });
+        (guard, meter)
+    }
+
+    #[test]
+    fn closed_session_stays_in_history_and_keeps_bytes() {
+        let console = Console::new();
+        let (guard, meter) = test_session(&console);
+        meter.up.store(12, Ordering::Relaxed);
+        meter.down.store(3, Ordering::Relaxed);
         assert_eq!(console.sessions().len(), 1);
+        assert!(console.sessions()[0].active);
+        assert_eq!(console.active_count(), 1);
         assert_eq!(guard.id(), 1);
         drop(guard);
-        assert!(console.sessions().is_empty());
-        assert_eq!(console.totals(), (12, 0));
+        assert_eq!(console.active_count(), 0);
+        let closed = console.sessions().remove(0);
+        assert!(!closed.active);
+        assert_eq!((closed.up, closed.down), (12, 3));
+        assert_eq!(console.totals(), (12, 3));
+        meter.up.store(99, Ordering::Relaxed);
+        assert_eq!(console.sessions()[0].up, 12);
+    }
+
+    #[test]
+    fn sessions_show_newest_first_and_keep_at_most_300() {
+        let console = Console::new();
+        let (oldest, _) = test_session(&console);
+        for _ in 0..10_000 {
+            let (guard, meter) = test_session(&console);
+            meter.up.store(1, Ordering::Relaxed);
+            drop(guard);
+        }
+        let rows = console.sessions();
+        assert_eq!(rows.len(), 300);
+        assert_eq!(console.inner.sessions.lock().unwrap().closed.len(), 300);
+        assert_eq!((rows[0].id, rows[299].id), (10_001, 9_702));
+        assert!(rows.iter().all(|row| !row.active));
+        assert_eq!(console.active_count(), 1);
+        assert_eq!(console.totals(), (10_000, 0));
+
+        drop(oldest);
+        let rows = console.sessions();
+        assert_eq!(rows.len(), 300);
+        assert_eq!((rows[0].id, rows[299].id), (10_001, 9_702));
+        assert_eq!(console.active_count(), 0);
+    }
+
+    #[test]
+    fn active_and_closed_sessions_share_newest_first_order() {
+        let console = Console::new();
+        let (oldest, _) = test_session(&console);
+        let (middle, _) = test_session(&console);
+        let (newest, _) = test_session(&console);
+        drop(middle);
+
+        let rows = console.sessions();
+        assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), [3, 2, 1]);
+        assert_eq!(
+            rows.iter().map(|row| row.active).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert_eq!(console.active_count(), 2);
+        drop((oldest, newest));
+    }
+
+    #[test]
+    fn active_count_is_not_limited_by_display_history() {
+        let console = Console::new();
+        let guards: Vec<_> = (0..310).map(|_| test_session(&console).0).collect();
+        assert_eq!(console.active_count(), 310);
+        let rows = console.sessions();
+        assert_eq!(rows.len(), 300);
+        assert_eq!((rows[0].id, rows[299].id), (310, 11));
+        assert!(rows.iter().all(|row| row.active));
+        drop(guards);
+        assert_eq!(console.active_count(), 0);
     }
 
     #[test]
@@ -383,6 +498,11 @@ mod tests {
             console.log("access", format!("line {index}"));
         }
         assert_eq!(console.logs(0, 0, 0, 0).lines.len(), 300);
+        console.log("access", "测".repeat(1000));
+        let lines = console.logs(0, 0, 0, 0).lines;
+        assert_eq!(lines.len(), 300);
+        assert!(lines.last().unwrap().text.len() <= LOG_LINE_LIMIT);
+        assert!(lines.last().unwrap().text.ends_with('…'));
         for _ in 0..12 {
             console.finish_round(1, 0, 0, 10);
         }

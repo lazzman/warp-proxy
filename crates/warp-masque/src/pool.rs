@@ -1408,7 +1408,7 @@ impl Pool {
             strategy: strategy_name(self.policy.strategy),
             sticky: sticky_name(self.policy.sticky),
             started_at: self.console.started_at(),
-            active_connections: self.console.sessions().len(),
+            active_connections: self.console.active_count(),
             bytes_up,
             bytes_down,
             ready: ready_n,
