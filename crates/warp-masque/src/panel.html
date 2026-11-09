@@ -187,7 +187,7 @@
 </main>
 <script src="/assets/bootstrap.bundle.min.js"></script>
 <script>
-const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0, temps: [], focusId: "", drafts: {}, busy: false, tempCount: "1" };
+const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0, temps: [], focusId: "", drafts: {}, restartDraft: null, busy: false, tempCount: "1" };
 const tokenInput = document.querySelector("#token");
 function readCachedToken() {
   try {
@@ -288,6 +288,7 @@ function actionText(name, button) {
   if (name === "plan-now") return "执行重启计划";
   if (name === "plan-pause") return "暂停计划";
   if (name === "plan-resume") return "恢复计划";
+  if (name === "restart-policy") return "更新重启策略";
   if (name === "add-temp") {
     const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
     return count > 1 ? "添加 " + count + " 个临时实例" : "添加临时实例";
@@ -339,7 +340,7 @@ function capture() {
   const active = document.activeElement;
   const tempCount = document.getElementById("temp-count");
   if (tempCount) state.tempCount = tempCount.value;
-  state.focusId = active && (active.id === "pin" || active.id === "rotate-seconds" || active.id === "temp-count") ? active.id : "";
+  state.focusId = active && ["pin", "rotate-seconds", "temp-count", "restart-mode", "restart-threshold"].includes(active.id) ? active.id : "";
   for (const id of ["pin", "rotate-seconds"]) {
     const node = document.getElementById(id);
     if (node && active === node) state.drafts[id] = node.value;
@@ -393,6 +394,18 @@ function overview(data) {
   const last = plan.last;
   const pinValue = state.drafts.pin != null ? state.drafts.pin : String(data.pinned || 0);
   const rotateValue = state.drafts["rotate-seconds"] != null ? state.drafts["rotate-seconds"] : data.rotate_seconds;
+  const restartMode = state.restartDraft ? state.restartDraft.mode : data.restart_mode;
+  const restartThreshold = state.restartDraft ? state.restartDraft.threshold : data.restart_threshold;
+  const thresholdMode = data.restart_mode !== "scheduled";
+  const thresholdLabel = data.restart_mode === "users" ? "累计用户" : "累计连接";
+  const pendingIds = data.accounts.filter((account) => account.restart_pending).map((account) => account.id);
+  const nextTitle = thresholdMode ? "触发条件" : "下次执行";
+  const nextValue = thresholdMode ? thresholdLabel + " ≥ " + data.restart_threshold : nextText(plan.next_at, data.restart_seconds);
+  const planInfo = thresholdMode ? "成功重启后清零 · 同时最多 " + data.restart_concurrency + " 个" : "每 " + data.restart_seconds + " 秒 · 每轮 " + (data.restart_batch || "全部") + " · 同时 " + data.restart_concurrency + " · 延后 " + data.restart_defer_seconds + " 秒 · 错过 " + (data.restart_misfire === "skip" ? "跳过" : "立即补跑");
+  const queueInfo = thresholdMode ? "待重启 " + idList(pendingIds) : "就绪 " + idList(plan.ready) + " · 延后 " + idList(plan.deferred) + " · 重试 " + idList(plan.retry);
+  const resultLabel = thresholdMode ? "当前累计" : "上次结果";
+  const resultValue = thresholdMode ? data.accounts.reduce((total, account) => total + (data.restart_mode === "users" ? account.restart_users : account.restart_connections), 0) : (last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有");
+  const resultNote = thresholdMode ? "所有实例当前累计之和" : (last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at, true) : "");
   return `
     <h1 class="h4 mb-1">${escapeHtml(title)}</h1>
     <p class="text-body-secondary">${escapeHtml(data.listen || "未绑定")} · ${mode} · ${escapeHtml(data.strategy)} · ${escapeHtml(data.sticky)} · 统计自 ${clock(data.started_at)}</p>
@@ -434,18 +447,30 @@ function overview(data) {
     </div></div>
     <div class="card mt-3"><div class="card-body">
       <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-        <h2 class="h5 mb-0">定时重启计划${plan.paused ? " · 已暂停" : ""}</h2>
+        <h2 class="h5 mb-0">保身份重启 · ${thresholdMode ? "阈值触发" : "定时计划"}${!thresholdMode && plan.paused ? " · 已暂停" : ""}</h2>
         <div class="btn-group btn-group-sm">
           <button type="button" class="btn btn-outline-secondary" data-act="plan-now">立即执行</button>
-          <button type="button" class="btn btn-outline-secondary" data-act="${plan.paused ? "plan-resume" : "plan-pause"}">${plan.paused ? "恢复" : "暂停"}</button>
+          ${thresholdMode ? "" : '<button type="button" class="btn btn-outline-secondary" data-act="' + (plan.paused ? "plan-resume" : "plan-pause") + '">' + (plan.paused ? "恢复" : "暂停") + "</button>"}
         </div>
       </div>
-      <div class="metrics">
-        <div class="metric"><div class="k">下次执行</div><div class="v" id="next">${nextText(plan.next_at, data.restart_seconds)}</div><div class="s">每 ${data.restart_seconds} 秒 · 每轮 ${data.restart_batch || "全部"} · 同时 ${data.restart_concurrency} · 延后 ${data.restart_defer_seconds} 秒 · 错过 ${data.restart_misfire === "skip" ? "跳过" : "立即补跑"}</div></div>
-        <div class="metric"><div class="k">上次结果</div><div class="v">${last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有"}</div><div class="s">${last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at, true) : ""}</div></div>
-        <div class="metric"><div class="k">队列</div><div class="v">${(plan.ready || []).length} 就绪</div><div class="s">就绪 ${idList(plan.ready)} · 延后 ${idList(plan.deferred)} · 重试 ${idList(plan.retry)}</div></div>
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+        <label class="d-flex align-items-center gap-2 mb-0">策略
+          <select id="restart-mode" class="form-select form-select-sm" style="width: 10rem">
+            ${[["scheduled", "定时重启"], ["users", "按累计用户数"], ["connections", "按累计连接数"]].map(([value, label]) => '<option value="' + value + '" ' + (restartMode === value ? "selected" : "") + '>' + label + '</option>').join("")}
+          </select>
+        </label>
+        <label class="d-flex align-items-center gap-2 mb-0">阈值
+          <input id="restart-threshold" class="form-control form-control-sm" type="number" min="1" step="1" value="${escapeHtml(restartThreshold)}" style="width: 7rem">
+        </label>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart-policy">应用策略</button>
+        <span class="text-body-secondary small">每个实例独立计数，到阈值即停止接入并排队。</span>
       </div>
-      ${history(plan.history)}
+      <div class="metrics">
+        <div class="metric"><div class="k">${nextTitle}</div><div class="v" ${thresholdMode ? "" : 'id="next"'}>${nextValue}</div><div class="s">${planInfo}</div></div>
+        <div class="metric"><div class="k">${resultLabel}</div><div class="v">${resultValue}</div><div class="s">${resultNote}</div></div>
+        <div class="metric"><div class="k">队列</div><div class="v">${thresholdMode ? pendingIds.length + " 待重启" : (plan.ready || []).length + " 就绪"}</div><div class="s">${queueInfo}</div></div>
+      </div>
+      ${thresholdMode ? "" : history(plan.history)}
     </div></div>
     <div class="card mt-3"><div class="card-body">
       <h2 class="h5">进行中的任务</h2>
@@ -503,7 +528,7 @@ function instances(data) {
       </div>
     </div>
     <div class="sheet table-responsive"><table class="table table-sm table-hover align-middle mb-0 instance-table data-table">
-      <thead><tr><th></th><th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口</th><th>IPv6 出口</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end">用户数</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight"></th></tr></thead>
+      <thead><tr><th></th><th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口</th><th>IPv6 出口</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end" title="当前黏性用户名映射数；实例成功重连后清零">用户数</th><th class="text-end">重启进度</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight"></th></tr></thead>
       <tbody>${rows.map((account) => `<tr class="${account.health === "down" || account.health === "attention" ? "row-alert" : ""}">
         <td>${account.temporary ? `<input class="form-check-input" type="checkbox" data-temp="${account.id}" ${state.temps.includes(String(account.id)) ? "checked" : ""} aria-label="选择 ${account.id}">` : ""}</td>
         <td class="font-monospace">${account.id}</td>
@@ -516,10 +541,11 @@ function instances(data) {
         <td class="${account.pooled ? "" : "text-body-secondary"}">${account.pooled ? "已入池" : "未入池"}</td>
         <td class="text-end font-monospace">${account.active}</td>
         <td class="text-end font-monospace">${account.users}</td>
+        <td class="text-end font-monospace">${data.restart_mode === "scheduled" ? "—" : (data.restart_mode === "users" ? account.restart_users : account.restart_connections) + "/" + data.restart_threshold}</td>
         <td class="text-end font-monospace">${duration(account.uptime_seconds)}</td>
         <td class="text-end">${rowStatus(account)}</td>
         <td class="text-nowrap row-actions col-tight"><button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}">重连</button> <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}">${account.manual ? "停用" : "启用"}</button></td>
-      </tr>`).join("") || `<tr><td colspan="14" class="text-body-secondary">没有符合筛选的实例</td></tr>`}</tbody>
+      </tr>`).join("") || `<tr><td colspan="15" class="text-body-secondary">没有符合筛选的实例</td></tr>`}</tbody>
     </table></div>`;
 }
 function connections() {
@@ -554,6 +580,15 @@ function logs() {
 function bind() {
   document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; render(); }));
   document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => { state.logKind = button.dataset.log; render(); }));
+  for (const id of ["restart-mode", "restart-threshold"]) {
+    const field = document.getElementById(id);
+    if (field) field.addEventListener(id === "restart-mode" ? "change" : "input", () => {
+      state.restartDraft = {
+        mode: document.getElementById("restart-mode").value,
+        threshold: document.getElementById("restart-threshold").value,
+      };
+    });
+  }
   document.querySelectorAll("[data-act]").forEach((button) => button.addEventListener("click", () => act(button.dataset.act, button)));
   if (state.busy) setBusy(true);
   applyFeedback();
@@ -597,6 +632,13 @@ async function act(name, button) {
     if (name === "plan-now") await api("/api/restart-plan?action=now");
     if (name === "plan-pause") await api("/api/restart-plan?action=pause");
     if (name === "plan-resume") await api("/api/restart-plan?action=resume");
+    if (name === "restart-policy") {
+      const mode = document.getElementById("restart-mode").value;
+      const threshold = document.getElementById("restart-threshold").value;
+      if (!/^[0-9]+$/.test(threshold) || (mode !== "scheduled" && Number(threshold) === 0)) throw new Error("阈值必须是正整数");
+      await api("/api/restart-policy?mode=" + encodeURIComponent(mode) + "&threshold=" + encodeURIComponent(threshold));
+      state.restartDraft = null;
+    }
     if (name === "add-temp") {
       const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
       state.tempCount = String(count);

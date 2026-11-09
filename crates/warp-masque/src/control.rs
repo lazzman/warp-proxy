@@ -133,6 +133,23 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
                 return Err("需要 seconds、batch、defer、misfire 或 action".into());
             }
         }
+        "/api/restart-policy" => {
+            let mode = param(query, "mode")
+                .as_deref()
+                .map(crate::pool::parse_restart_mode)
+                .transpose()?;
+            let threshold = param(query, "threshold")
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "阈值必须是非负整数".to_string())
+                })
+                .transpose()?;
+            if mode.is_none() && threshold.is_none() {
+                return Err("需要 mode 或 threshold".into());
+            }
+            pool.set_restart_policy(mode, threshold)?;
+        }
         "/api/rotate" => pool
             .rotate(int_param(query, "slot").unwrap_or(0) as usize)
             .await
@@ -287,6 +304,7 @@ mod tests {
             "/api/select",
             "/api/restart",
             "/api/restart-plan",
+            "/api/restart-policy",
             "/api/rotate",
             "/api/account/add",
             "/api/account/manual",

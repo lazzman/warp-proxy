@@ -3,10 +3,13 @@
 //! 上游 SOCKS5、黏性、保身份重启都发生在这个进程里。账号身份保存在各自的
 //! WarpConfig 中；保身份重启只重连隧道，不重新注册。
 
+use std::collections::hash_map::RandomState;
+use std::collections::HashSet;
+use std::hash::BuildHasher;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +49,8 @@ pub struct ProxyAuth {
 /// 连上隧道之后必须看到 warp=on 或 warp=plus，否则按退避一直重试。
 #[derive(Clone, Debug)]
 pub struct RestartConfig {
+    pub mode: RestartMode,
+    pub threshold: usize,
     pub interval: Duration,
     pub probe_timeout: Duration,
     /// 已经开始重连后，最多再等现有连接这么久，到点就强制重连。
@@ -56,6 +61,49 @@ pub struct RestartConfig {
     pub defer: Duration,
     /// 上一轮拖过下次时间时，立刻补跑或跳到下一个间隔点。
     pub misfire: Misfire,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestartMode {
+    Scheduled,
+    Users,
+    Connections,
+}
+
+impl RestartMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scheduled => "scheduled",
+            Self::Users => "users",
+            Self::Connections => "connections",
+        }
+    }
+}
+
+pub fn parse_restart_mode(value: &str) -> Result<RestartMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "scheduled" => Ok(RestartMode::Scheduled),
+        "users" => Ok(RestartMode::Users),
+        "connections" => Ok(RestartMode::Connections),
+        other => Err(format!(
+            "未知 ROTATE_RESTART_MODE={other}（scheduled|users|connections）"
+        )),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RestartPolicy {
+    mode: RestartMode,
+    threshold: usize,
+}
+
+impl RestartPolicy {
+    fn validate(self) -> Result<(), String> {
+        if self.mode != RestartMode::Scheduled && self.threshold == 0 {
+            return Err("按用户数或连接数重启时，阈值必须大于 0".into());
+        }
+        Ok(())
+    }
 }
 
 /// 一轮超过间隔后怎么处理错过的那次。
@@ -89,6 +137,8 @@ pub fn parse_misfire(value: &str) -> Result<Misfire, String> {
 impl Default for RestartConfig {
     fn default() -> Self {
         Self {
+            mode: RestartMode::Scheduled,
+            threshold: 0,
             interval: Duration::ZERO,
             probe_timeout: Duration::from_secs(15),
             force_after: Duration::from_secs(60),
@@ -155,6 +205,9 @@ pub struct Worker {
     rebuild: Notify,
     restart_tx: mpsc::UnboundedSender<RestartJob>,
     draining: AtomicBool,
+    restart_pending: AtomicBool,
+    usage: Mutex<RestartUsage>,
+    user_hash: RandomState,
     /// 计划重启因为仍有连接而被推迟。
     deferred: AtomicBool,
     active: AtomicUsize,
@@ -171,6 +224,22 @@ pub struct Worker {
     last_action: Mutex<String>,
     upstream: Option<UpstreamProxy>,
     inner: Mutex<WorkerInner>,
+}
+
+#[derive(Default)]
+struct RestartUsage {
+    connections: u64,
+    users: HashSet<u64>,
+}
+
+impl RestartUsage {
+    fn reached(&self, policy: RestartPolicy) -> bool {
+        match policy.mode {
+            RestartMode::Scheduled => false,
+            RestartMode::Users => self.users.len() >= policy.threshold,
+            RestartMode::Connections => self.connections >= policy.threshold as u64,
+        }
+    }
 }
 
 struct WorkerInner {
@@ -195,6 +264,9 @@ impl Worker {
             rebuild: Notify::new(),
             restart_tx,
             draining: AtomicBool::new(false),
+            restart_pending: AtomicBool::new(false),
+            usage: Mutex::new(RestartUsage::default()),
+            user_hash: RandomState::new(),
             deferred: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             manual: AtomicBool::new(true),
@@ -265,6 +337,29 @@ impl Worker {
     fn begin_draining(&self) {
         let _inner = self.inner.lock().unwrap();
         self.draining.store(true, Ordering::Relaxed);
+    }
+
+    fn queue_if_reached(&self, usage: &RestartUsage, policy: RestartPolicy) -> bool {
+        if self.restart_pending.load(Ordering::Relaxed)
+            || self.draining.load(Ordering::Relaxed)
+            || self.stopped.load(Ordering::Relaxed)
+            || !self.manual.load(Ordering::Relaxed)
+            || !usage.reached(policy)
+        {
+            return false;
+        }
+        self.restart_pending.store(true, Ordering::Relaxed);
+        self.draining.store(true, Ordering::Relaxed);
+        self.set_stage("等待重启");
+        self.note("达到阈值，等待重启");
+        true
+    }
+
+    fn reset_usage(&self) {
+        let _inner = self.inner.lock().unwrap();
+        *self.usage.lock().unwrap() = RestartUsage::default();
+        self.restart_pending.store(false, Ordering::Relaxed);
+        self.draining.store(false, Ordering::Relaxed);
     }
 
     fn set_stage(&self, stage: &str) {
@@ -349,6 +444,8 @@ pub struct Pool {
     policy: Policy,
     scheduler: Scheduler,
     restart: RestartConfig,
+    restart_policy: RwLock<RestartPolicy>,
+    threshold_tx: mpsc::UnboundedSender<usize>,
     health_interval: Duration,
     health_timeout: Duration,
     restart_limit: Arc<Semaphore>,
@@ -385,6 +482,11 @@ impl Pool {
 
     /// 按 opts 建池。配置了上游时先探测 SOCKS5 CONNECT，失败则直接返回，不改走直连。
     pub async fn start(configs: Vec<WarpConfig>, opts: PoolOptions) -> crate::Result<Arc<Pool>> {
+        let policy = RestartPolicy {
+            mode: opts.restart.mode,
+            threshold: opts.restart.threshold,
+        };
+        policy.validate().map_err(crate::Error::Config)?;
         if !opts.upstream.is_empty() && !opts.http2 {
             return Err(crate::Error::Config(
                 "上游 SOCKS5 只支持 TCP，必须使用 HTTP/2（--http2）".into(),
@@ -396,6 +498,7 @@ impl Pool {
                 .await
                 .map_err(crate::Error::Config)?;
         }
+        let (threshold_tx, threshold_rx) = mpsc::unbounded_channel();
         let pool = Arc::new(Pool {
             workers: Mutex::new(Vec::new()),
             enabled: AtomicBool::new(true),
@@ -412,6 +515,8 @@ impl Pool {
             policy: opts.policy,
             scheduler: Scheduler::new(),
             restart: opts.restart.clone(),
+            restart_policy: RwLock::new(policy),
+            threshold_tx,
             health_interval: opts.health_interval,
             health_timeout: opts.health_timeout,
             restart_limit: Arc::new(Semaphore::new(opts.restart.concurrency.max(1))),
@@ -458,6 +563,7 @@ impl Pool {
         pool.restore_temporary().await;
         Pool::spawn_rotator(pool.clone());
         Pool::spawn_restarter(pool.clone());
+        Pool::spawn_threshold_restarter(pool.clone(), threshold_rx);
         Ok(pool)
     }
 
@@ -543,7 +649,12 @@ impl Pool {
             let mut deferred: Vec<(usize, tokio::time::Instant)> = Vec::new();
             loop {
                 let Some(pool) = weak.upgrade() else { return };
-                let interval = *pool.restart_interval.lock().unwrap();
+                let interval = if pool.restart_policy.read().unwrap().mode == RestartMode::Scheduled
+                {
+                    *pool.restart_interval.lock().unwrap()
+                } else {
+                    Duration::ZERO
+                };
                 let wake = Arc::clone(&pool.restart_wake);
                 if interval.is_zero() {
                     round_at = None;
@@ -723,6 +834,22 @@ impl Pool {
         });
     }
 
+    fn spawn_threshold_restarter(pool: Arc<Pool>, mut rx: mpsc::UnboundedReceiver<usize>) {
+        let weak = Arc::downgrade(&pool);
+        drop(pool);
+        tokio::spawn(async move {
+            while let Some(id) = rx.recv().await {
+                let Some(pool) = weak.upgrade() else { return };
+                tokio::spawn(async move {
+                    if let Err(err) = pool.restart_one_pending(id).await {
+                        pool.console
+                            .log("plan", format!("账号 {id} 阈值重启失败: {err}"));
+                    }
+                });
+            }
+        });
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
     }
@@ -755,7 +882,7 @@ impl Pool {
         let pin = self.pinned.load(Ordering::Relaxed);
         if pin != 0 {
             if let Some(worker) = workers.iter().find(|worker| worker.id == pin) {
-                if let Some(lease) = self.lease(worker.clone()) {
+                if let Some(lease) = self.lease(worker.clone(), username, client_ip) {
                     return Ok(lease);
                 }
             }
@@ -779,7 +906,8 @@ impl Pool {
             .into_iter()
             .find(|worker| worker.id == id)
             .ok_or(PickFail::NoWorker)?;
-        self.lease(worker).ok_or(PickFail::NoWorker)
+        self.lease(worker, username, client_ip)
+            .ok_or(PickFail::NoWorker)
     }
 
     /// 兼容旧调用：匿名轮询，不计入活跃连接。
@@ -790,7 +918,13 @@ impl Pool {
         Some(net)
     }
 
-    fn lease(&self, worker: Arc<Worker>) -> Option<ConnLease> {
+    fn lease(
+        &self,
+        worker: Arc<Worker>,
+        username: Option<&str>,
+        client_ip: &str,
+    ) -> Option<ConnLease> {
+        let policy = self.restart_policy.read().unwrap();
         let inner = worker.inner.lock().unwrap();
         if !worker.manual.load(Ordering::Relaxed)
             || worker.stopped.load(Ordering::Relaxed)
@@ -809,7 +943,23 @@ impl Pool {
             &assigned_v6,
         );
         worker.active.fetch_add(1, Ordering::Relaxed);
+        let queued = {
+            let mut usage = worker.usage.lock().unwrap();
+            usage.connections = usage.connections.saturating_add(1);
+            if policy.mode == RestartMode::Users {
+                let (kind, user) = match username.filter(|user| !user.is_empty()) {
+                    Some(user) => ("user", user),
+                    None => ("ip", client_ip),
+                };
+                usage.users.insert(worker.user_hash.hash_one((kind, user)));
+            }
+            worker.queue_if_reached(&usage, *policy)
+        };
         drop(inner);
+        drop(policy);
+        if queued {
+            self.queue_threshold_restart(worker.id);
+        }
         Some(ConnLease {
             worker_id: worker.id,
             egress: shown.fallback,
@@ -842,6 +992,14 @@ impl Pool {
     }
 
     pub async fn restart_one(&self, id: usize) -> Result<(), String> {
+        self.restart_one_inner(id, false).await
+    }
+
+    async fn restart_one_pending(&self, id: usize) -> Result<(), String> {
+        self.restart_one_inner(id, true).await
+    }
+
+    async fn restart_one_inner(&self, id: usize, only_pending: bool) -> Result<(), String> {
         let permit = self
             .restart_limit
             .clone()
@@ -853,6 +1011,9 @@ impl Pool {
             .into_iter()
             .find(|worker| worker.id == id)
             .ok_or_else(|| format!("没有账号 {id}"))?;
+        if only_pending && !worker.restart_pending.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         worker.deferred.store(false, Ordering::Relaxed);
         let (reply_tx, reply_rx) = oneshot::channel();
         worker
@@ -866,6 +1027,57 @@ impl Pool {
         let result = reply_rx.await.map_err(|_| "重启任务中断".to_string())?;
         drop(permit);
         result
+    }
+
+    fn queue_threshold_restart(&self, id: usize) {
+        let text = format!("[pool] 账号 {id} 达到重启阈值，停止接收新连接并进入重启队列");
+        eprintln!("{text}");
+        self.console.log("plan", text);
+        let _ = self.threshold_tx.send(id);
+    }
+
+    fn finish_reconnect(&self, worker: &Worker) {
+        self.scheduler.forget_users(worker.id);
+        worker.reset_usage();
+    }
+
+    pub fn set_restart_policy(
+        &self,
+        mode: Option<RestartMode>,
+        threshold: Option<usize>,
+    ) -> Result<(), String> {
+        let mut policy = self.restart_policy.write().unwrap();
+        let next = RestartPolicy {
+            mode: mode.unwrap_or(policy.mode),
+            threshold: threshold.unwrap_or(policy.threshold),
+        };
+        next.validate()?;
+        if next == *policy {
+            return Ok(());
+        }
+        let changed_mode = next.mode != policy.mode;
+        *policy = next;
+        for worker in self.snapshot() {
+            let inner = worker.inner.lock().unwrap();
+            let mut usage = worker.usage.lock().unwrap();
+            if changed_mode && !worker.restart_pending.load(Ordering::Relaxed) {
+                *usage = RestartUsage::default();
+            }
+            if changed_mode && worker.deferred.swap(false, Ordering::Relaxed) {
+                worker.clear_stage();
+            }
+            let queued = inner.net.is_some() && worker.queue_if_reached(&usage, next);
+            drop(usage);
+            drop(inner);
+            if queued {
+                self.queue_threshold_restart(worker.id);
+            }
+        }
+        drop(policy);
+        if changed_mode {
+            self.wake(WakeReason::Plan);
+        }
+        Ok(())
     }
 
     pub async fn rotate(&self, id: usize) -> crate::Result<()> {
@@ -1308,6 +1520,7 @@ impl Pool {
 
     pub fn status(&self) -> PoolStatus {
         let pinned = self.pinned.load(Ordering::Relaxed);
+        let policy = *self.restart_policy.read().unwrap();
         let users = self.scheduler.user_counts();
         let now_ms = crate::console::unix_ms();
         let mut ready_n = 0usize;
@@ -1324,6 +1537,7 @@ impl Pool {
                 let manual = worker.manual.load(Ordering::Relaxed);
                 let deferred = worker.deferred.load(Ordering::Relaxed);
                 let inner = worker.inner.lock().unwrap();
+                let usage = worker.usage.lock().unwrap();
                 let egress_v4 = inner.egress_v4.clone();
                 let egress_v6 = inner.egress_v6.clone();
                 let (ipv4, ipv6, country, colo, warp) =
@@ -1381,6 +1595,9 @@ impl Pool {
                     colo,
                     pooled: ready,
                     users: users.get(&worker.id).copied().unwrap_or(0),
+                    restart_users: usage.users.len(),
+                    restart_connections: usage.connections,
+                    restart_pending: worker.restart_pending.load(Ordering::Relaxed),
                     uptime_seconds: worker.born.elapsed().as_secs(),
                     last_action: worker.last_action.lock().unwrap().clone(),
                     ip: inner.assigned_v4.to_string(),
@@ -1400,6 +1617,8 @@ impl Pool {
             listen: self.listen.lock().unwrap().clone(),
             rotate_seconds: self.rotate_secs.load(Ordering::Relaxed),
             restart_seconds: self.restart_interval.lock().unwrap().as_secs(),
+            restart_mode: policy.mode.as_str(),
+            restart_threshold: policy.threshold,
             restart_batch: self.restart_batch.load(Ordering::Relaxed),
             restart_concurrency: self.restart.concurrency.max(1),
             restart_defer_seconds: self.restart_defer.lock().unwrap().as_secs(),
@@ -1789,7 +2008,7 @@ async fn reconnect_loop(
                         worker.id,
                         egress_summary(&egress.v4, &egress.v6)
                     );
-                    worker.draining.store(false, Ordering::Relaxed);
+                    current.finish_reconnect(worker);
                     worker.clear_stage();
                     eprintln!("{text}");
                     current.console.log("account", text);
@@ -1838,7 +2057,13 @@ async fn graceful(pool: &Weak<Pool>, worker: &Arc<Worker>, job: &RestartJob) -> 
     worker.begin_draining();
     worker.set_stage("排空");
     let result = restart_in_place(pool, worker, job).await;
-    worker.draining.store(false, Ordering::Relaxed);
+    if result.is_ok() {
+        if let Some(current) = pool.upgrade() {
+            current.finish_reconnect(worker);
+        } else {
+            worker.reset_usage();
+        }
+    }
     worker.clear_stage();
     worker.note(if result.is_ok() {
         "保身份重启"
@@ -2120,6 +2345,8 @@ pub struct PoolStatus {
     pub listen: String,
     pub rotate_seconds: u64,
     pub restart_seconds: u64,
+    pub restart_mode: &'static str,
+    pub restart_threshold: usize,
     pub restart_batch: usize,
     pub restart_concurrency: usize,
     pub restart_defer_seconds: u64,
@@ -2167,6 +2394,9 @@ pub struct AccountStatus {
     pub colo: String,
     pub pooled: bool,
     pub users: usize,
+    pub restart_users: usize,
+    pub restart_connections: u64,
+    pub restart_pending: bool,
     pub uptime_seconds: u64,
     pub last_action: String,
     pub ip: String,
@@ -2219,6 +2449,343 @@ fn preferred_trace<'a>(
         return v4;
     }
     v6.or(v4)
+}
+
+#[cfg(test)]
+mod restart_threshold_tests {
+    use super::{parse_restart_mode, Pool, PoolOptions, RestartMode, WarpConfig, Worker};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    async fn mock_pool(
+        mode: RestartMode,
+        threshold: usize,
+        concurrency: usize,
+    ) -> (
+        Arc<Pool>,
+        Vec<Arc<Worker>>,
+        Vec<mpsc::UnboundedReceiver<super::RestartJob>>,
+    ) {
+        let mut options = PoolOptions::basic(true);
+        options.restart.mode = mode;
+        options.restart.threshold = threshold;
+        options.restart.concurrency = concurrency;
+        let pool = Pool::start(Vec::new(), options).await.unwrap();
+        let mut workers = Vec::new();
+        let mut receivers = Vec::new();
+        for id in 1..=2 {
+            let (worker, jobs) = Worker::new(id, WarpConfig::default(), None);
+            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+            pool.workers.lock().unwrap().push(worker.clone());
+            workers.push(worker);
+            receivers.push(jobs);
+        }
+        (pool, workers, receivers)
+    }
+
+    #[test]
+    fn rejects_invalid_modes_and_zero_thresholds() {
+        assert_eq!(parse_restart_mode("USERS").unwrap(), RestartMode::Users);
+        assert_eq!(
+            parse_restart_mode("connections").unwrap(),
+            RestartMode::Connections
+        );
+        assert!(parse_restart_mode("unknown").is_err());
+        let invalid = super::RestartPolicy {
+            mode: RestartMode::Users,
+            threshold: 0,
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn successful_reconnect_clears_only_its_sticky_user_count() {
+        let mut options = PoolOptions::basic(true);
+        options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
+        let pool = Pool::start(Vec::new(), options).await.unwrap();
+        let mut workers = Vec::new();
+        for id in 1..=2 {
+            let (worker, _jobs) = Worker::new(id, WarpConfig::default(), None);
+            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+            pool.workers.lock().unwrap().push(worker.clone());
+            workers.push(worker);
+        }
+
+        let alice = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        let bob = pool.checkout(Some("bob"), "192.0.2.2").unwrap();
+        assert_eq!(alice.worker_id, 1);
+        assert_eq!(bob.worker_id, 2);
+        assert_eq!(pool.status().accounts[0].users, 1);
+        assert_eq!(pool.status().accounts[1].users, 1);
+
+        workers[0].begin_draining();
+        pool.finish_reconnect(&workers[0]);
+        assert_eq!(pool.status().accounts[0].users, 0);
+        assert_eq!(pool.status().accounts[1].users, 1);
+        assert_eq!(
+            pool.checkout(Some("bob"), "192.0.2.3").unwrap().worker_id,
+            2
+        );
+
+        workers[1].begin_draining();
+        pool.finish_reconnect(&workers[1]);
+        assert_eq!(pool.status().accounts[1].users, 0);
+    }
+
+    #[tokio::test]
+    async fn failed_reconnect_preserves_sticky_user_count_until_recovery() {
+        let mut options = PoolOptions::basic(true);
+        options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
+        let pool = Pool::start(Vec::new(), options).await.unwrap();
+        let (worker, _jobs) = Worker::new(1, WarpConfig::default(), None);
+        worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+        pool.workers.lock().unwrap().push(worker.clone());
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        drop(lease);
+
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let job = super::RestartJob {
+            reply,
+            probe_timeout: Duration::ZERO,
+            force_after: Duration::ZERO,
+        };
+        assert!(super::graceful(&Arc::downgrade(&pool), &worker, &job)
+            .await
+            .is_err());
+        assert_eq!(pool.status().accounts[0].users, 1);
+        pool.finish_reconnect(&worker);
+        assert_eq!(pool.status().accounts[0].users, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn threshold_restart_clears_instance_users_and_recounts_in_both_modes() {
+        for mode in [RestartMode::Users, RestartMode::Connections] {
+            let mut options = PoolOptions::basic(true);
+            options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
+            options.restart.mode = mode;
+            options.restart.threshold = 2;
+            let pool = Pool::start(Vec::new(), options).await.unwrap();
+            let (worker, mut jobs) = Worker::new(1, WarpConfig::default(), None);
+            let (other_worker, _other_jobs) = Worker::new(2, WarpConfig::default(), None);
+            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+            other_worker.inner.lock().unwrap().net =
+                Some(crate::netstack::NetHandle::test_handle());
+            pool.workers
+                .lock()
+                .unwrap()
+                .extend([worker.clone(), other_worker]);
+
+            let first = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+            let other = pool.checkout(Some("outside"), "192.0.2.2").unwrap();
+            assert_eq!(other.worker_id, 2);
+            let second_user = if mode == RestartMode::Users {
+                "bob"
+            } else {
+                "alice"
+            };
+            let second = pool.checkout(Some(second_user), "192.0.2.3").unwrap();
+            let before = &pool.status().accounts[0];
+            assert_eq!(before.users, if mode == RestartMode::Users { 2 } else { 1 });
+            assert_eq!(before.restart_connections, 2);
+            assert_eq!(
+                before.restart_users,
+                if mode == RestartMode::Users { 2 } else { 0 }
+            );
+            assert!(before.restart_pending);
+            assert!(before.draining);
+            assert_eq!(pool.status().accounts[1].users, 1);
+
+            let job = tokio::time::timeout(Duration::from_secs(1), jobs.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(pool.checkout(Some("alice"), "192.0.2.4").is_err());
+            drop((first, second));
+
+            pool.finish_reconnect(&worker);
+            let _ = job.reply.send(Ok(()));
+            let after = &pool.status().accounts[0];
+            assert_eq!(after.users, 0);
+            assert_eq!(after.restart_users, 0);
+            assert_eq!(after.restart_connections, 0);
+            assert!(!after.restart_pending);
+            assert!(!after.draining);
+            assert_eq!(pool.status().accounts[1].users, 1);
+            assert_eq!(pool.status().accounts[1].restart_connections, 1);
+
+            let fresh = pool.checkout(Some("alice"), "192.0.2.5").unwrap();
+            assert_eq!(fresh.worker_id, 1);
+            let after_new_connection = &pool.status().accounts[0];
+            assert_eq!(after_new_connection.users, 1);
+            assert_eq!(after_new_connection.restart_connections, 1);
+            assert_eq!(
+                after_new_connection.restart_users,
+                if mode == RestartMode::Users { 1 } else { 0 }
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn threshold_restart_failure_keeps_instance_user_count() {
+        for mode in [RestartMode::Users, RestartMode::Connections] {
+            let mut options = PoolOptions::basic(true);
+            options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
+            options.restart.mode = mode;
+            options.restart.threshold = 1;
+            let pool = Pool::start(Vec::new(), options).await.unwrap();
+            let (worker, mut jobs) = Worker::new(1, WarpConfig::default(), None);
+            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+            pool.workers.lock().unwrap().push(worker.clone());
+
+            let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+            let job = tokio::time::timeout(Duration::from_secs(1), jobs.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(lease);
+            let result = super::graceful(&Arc::downgrade(&pool), &worker, &job).await;
+            assert!(result.is_err());
+            let _ = job.reply.send(result);
+
+            let failed = &pool.status().accounts[0];
+            assert_eq!(failed.users, 1);
+            assert_eq!(failed.restart_connections, 1);
+            assert_eq!(
+                failed.restart_users,
+                usize::from(mode == RestartMode::Users)
+            );
+            assert!(failed.restart_pending);
+            assert!(failed.draining);
+            assert!(pool.checkout(Some("alice"), "192.0.2.1").is_err());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connection_limit_stops_new_leases_without_dropping_active_ones() {
+        let (pool, workers, mut receivers) = mock_pool(RestartMode::Connections, 2, 1).await;
+        let first = pool.checkout(None, "192.0.2.1").unwrap();
+        assert_eq!(first.worker_id, 1);
+        assert_eq!(workers[0].usage.lock().unwrap().connections, 1);
+        let second = pool.checkout(None, "192.0.2.2").unwrap();
+        assert_eq!(second.worker_id, 2);
+        let third = pool.checkout(None, "192.0.2.3").unwrap();
+        assert_eq!(third.worker_id, 1);
+        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 2);
+        let job = tokio::time::timeout(Duration::from_secs(1), receivers[0].recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(receivers[1].try_recv().is_err());
+        assert_eq!(pool.checkout(None, "192.0.2.4").unwrap().worker_id, 2);
+        assert!(workers[1].restart_pending.load(Ordering::Relaxed));
+        assert!(pool.checkout(None, "192.0.2.5").is_err());
+        assert!(receivers[1].try_recv().is_err());
+        drop(first);
+        drop(third);
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 0);
+        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
+        let _ = job.reply.send(Ok(()));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receivers[1].recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        pool.finish_reconnect(&workers[0]);
+        assert_eq!(workers[0].usage.lock().unwrap().connections, 0);
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        drop(second);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn user_limit_counts_distinct_names_and_anonymous_ips() {
+        let (pool, workers, mut receivers) = mock_pool(RestartMode::Users, 3, 1).await;
+        pool.select(1);
+        let first = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        let repeat = pool.checkout(Some("alice"), "192.0.2.2").unwrap();
+        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 1);
+        assert!(!workers[0].draining.load(Ordering::Relaxed));
+        let second = pool.checkout(None, "192.0.2.1").unwrap();
+        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 2);
+        let repeat_anonymous = pool.checkout(None, "192.0.2.1").unwrap();
+        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 2);
+        let third = pool.checkout(None, "192.0.2.3").unwrap();
+        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 3);
+        assert!(workers[0].draining.load(Ordering::Relaxed));
+        assert_eq!(
+            pool.checkout(Some("alice"), "192.0.2.1").unwrap().worker_id,
+            2
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receivers[0].recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        pool.finish_reconnect(&workers[0]);
+        assert!(workers[0].usage.lock().unwrap().users.is_empty());
+        drop((first, repeat, second, repeat_anonymous, third));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_checkout_never_exceeds_threshold() {
+        let (pool, workers, _receivers) = mock_pool(RestartMode::Connections, 10, 1).await;
+        workers[1].manual.store(false, Ordering::Relaxed);
+        let mut tasks = Vec::new();
+        for _ in 0..100 {
+            let pool = pool.clone();
+            tasks.push(tokio::spawn(async move {
+                pool.checkout(None, "192.0.2.1").is_ok()
+            }));
+        }
+        let mut accepted = 0;
+        for task in tasks {
+            accepted += usize::from(task.await.unwrap());
+        }
+        assert_eq!(accepted, 10);
+        assert_eq!(workers[0].usage.lock().unwrap().connections, 10);
+        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn updating_threshold_checks_existing_counts() {
+        let (pool, workers, mut receivers) = mock_pool(RestartMode::Connections, 5, 1).await;
+        pool.select(1);
+        let lease = pool.checkout(None, "192.0.2.1").unwrap();
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        pool.set_restart_policy(None, Some(1)).unwrap();
+        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receivers[0].recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn failed_restart_retains_counts_and_blocks_new_leases() {
+        let (pool, workers, _receivers) = mock_pool(RestartMode::Connections, 1, 1).await;
+        let worker = &workers[0];
+        worker.usage.lock().unwrap().connections = 1;
+        worker.begin_draining();
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        let job = super::RestartJob {
+            reply,
+            probe_timeout: Duration::ZERO,
+            force_after: Duration::ZERO,
+        };
+        assert!(super::graceful(&Arc::downgrade(&pool), worker, &job)
+            .await
+            .is_err());
+        assert!(worker.draining.load(Ordering::Relaxed));
+        assert_eq!(worker.usage.lock().unwrap().connections, 1);
+        assert_eq!(pool.checkout(None, "192.0.2.1").unwrap().worker_id, 2);
+    }
 }
 
 #[cfg(test)]

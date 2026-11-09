@@ -87,10 +87,7 @@ impl Scheduler {
     }
 
     pub fn forget(&self, worker_id: usize) {
-        self.sticky_map
-            .lock()
-            .unwrap()
-            .retain(|_, id| *id != worker_id);
+        self.forget_users(worker_id);
         self.rotate_order
             .lock()
             .unwrap()
@@ -99,6 +96,13 @@ impl Scheduler {
         if *target == Some(worker_id) {
             *target = None;
         }
+    }
+
+    pub fn forget_users(&self, worker_id: usize) {
+        self.sticky_map
+            .lock()
+            .unwrap()
+            .retain(|_, id| *id != worker_id);
     }
 
     pub fn pick(

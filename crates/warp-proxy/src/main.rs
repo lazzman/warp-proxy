@@ -14,9 +14,9 @@ use anyhow::Context;
 use tokio::net::TcpListener;
 
 use warp_masque::{
-    control, parse_misfire, parse_sticky, parse_strategy, socks, Misfire, Policy, Pool,
-    PoolOptions, ProxyAuth, RegistrationClient, ResolvePreference, RestartConfig, UpstreamProxy,
-    UpstreamSet, WarpConfig,
+    control, parse_misfire, parse_restart_mode, parse_sticky, parse_strategy, socks, Misfire,
+    Policy, Pool, PoolOptions, ProxyAuth, RegistrationClient, ResolvePreference, RestartConfig,
+    RestartMode, UpstreamProxy, UpstreamSet, WarpConfig,
 };
 
 struct Args {
@@ -33,6 +33,8 @@ struct Args {
     sticky: String,
     lb_rotate: Duration,
     restart_interval: Duration,
+    restart_mode: RestartMode,
+    restart_threshold: usize,
     restart_force_after: Duration,
     restart_misfire: Misfire,
     restart_probe: Duration,
@@ -66,6 +68,11 @@ fn parse_args() -> anyhow::Result<Args> {
         sticky: env_string("LB_STICKY_MODE").unwrap_or_else(|| "username-round".into()),
         lb_rotate: env_duration("LB_ROTATE_INTERVAL", Duration::from_secs(300))?,
         restart_interval: env_duration("ROTATE_RESTART_INTERVAL", Duration::ZERO)?,
+        restart_mode: parse_restart_mode(
+            &env_string("ROTATE_RESTART_MODE").unwrap_or_else(|| "scheduled".into()),
+        )
+        .map_err(anyhow::Error::msg)?,
+        restart_threshold: env_usize("ROTATE_RESTART_THRESHOLD", 0),
         restart_force_after: Duration::from_secs(600),
         restart_misfire: parse_misfire(
             &env_string("ROTATE_RESTART_MISFIRE").unwrap_or_else(|| "fire".into()),
@@ -122,6 +129,15 @@ fn parse_args() -> anyhow::Result<Args> {
             "--lb-rotate" => args.lb_rotate = parse_duration(&next_value(&mut it, &arg)?)?,
             "--restart-interval" => {
                 args.restart_interval = parse_duration(&next_value(&mut it, &arg)?)?
+            }
+            "--restart-mode" => {
+                args.restart_mode =
+                    parse_restart_mode(&next_value(&mut it, &arg)?).map_err(anyhow::Error::msg)?
+            }
+            "--restart-threshold" => {
+                args.restart_threshold = next_value(&mut it, &arg)?
+                    .parse()
+                    .context("--restart-threshold")?
             }
             "--restart-force-after" => {
                 remember_force_after_flag(
@@ -203,6 +219,9 @@ fn parse_args() -> anyhow::Result<Args> {
     args.accounts = args.accounts.max(1);
     if env_flag_off("ROTATE_RESTART_ENABLED") {
         args.restart_interval = Duration::ZERO;
+    }
+    if args.restart_mode != RestartMode::Scheduled && args.restart_threshold == 0 {
+        anyhow::bail!("阈值重启模式需要 ROTATE_RESTART_THRESHOLD 或 --restart-threshold 大于 0");
     }
     Ok(args)
 }
@@ -341,6 +360,8 @@ async fn main() -> anyhow::Result<()> {
         mixed: args.mixed,
         access_log: args.access_log,
         restart: RestartConfig {
+            mode: args.restart_mode,
+            threshold: args.restart_threshold,
             interval: args.restart_interval,
             probe_timeout: args.restart_probe,
             misfire: args.restart_misfire,
