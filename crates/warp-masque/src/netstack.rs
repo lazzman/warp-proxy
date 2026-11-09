@@ -153,6 +153,12 @@ pub struct NetHandle {
 }
 
 impl NetHandle {
+    #[cfg(test)]
+    pub(crate) fn test_handle() -> Self {
+        let (cmd, _receiver) = smpsc::channel();
+        Self { cmd }
+    }
+
     /// Resolve a hostname to an IP address through the tunnel.
     pub async fn resolve(&self, name: &str) -> Result<IpAddr, String> {
         let (reply, rx) = oneshot::channel();

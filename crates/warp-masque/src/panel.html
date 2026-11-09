@@ -416,7 +416,7 @@ function overview(data) {
       </div>
       <div class="metrics">
         <div class="metric"><div class="k">下次执行</div><div class="v" id="next">${nextText(plan.next_at, data.restart_seconds)}</div><div class="s">每 ${data.restart_seconds} 秒 · 每轮 ${data.restart_batch || "全部"} · 同时 ${data.restart_concurrency} · 延后 ${data.restart_defer_seconds} 秒 · 错过 ${data.restart_misfire === "skip" ? "跳过" : "立即补跑"}</div></div>
-        <div class="metric"><div class="k">上次结果</div><div class="v">${last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有"}</div><div class="s">${last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at) : ""}</div></div>
+        <div class="metric"><div class="k">上次结果</div><div class="v">${last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有"}</div><div class="s">${last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at, true) : ""}</div></div>
         <div class="metric"><div class="k">队列</div><div class="v">${(plan.ready || []).length} 就绪</div><div class="s">就绪 ${idList(plan.ready)} · 延后 ${idList(plan.deferred)} · 重试 ${idList(plan.retry)}</div></div>
       </div>
       ${history(plan.history)}
@@ -453,7 +453,7 @@ function pinOptions(data, selected) {
 }
 function history(rows) {
   if (!rows || !rows.length) return `<p class="text-body-secondary mt-3 mb-0">还没有执行历史</p>`;
-  return `<div class="table-responsive mt-3"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>时间</th><th class="text-end">成功</th><th class="text-end">失败</th><th class="text-end">延后</th><th class="text-end">耗时</th></tr></thead><tbody>${rows.slice(0, 10).map((row) => `<tr><td>${clock(row.at)}</td><td class="text-end font-monospace">${row.success}</td><td class="text-end font-monospace">${row.failed}</td><td class="text-end font-monospace">${row.deferred}</td><td class="text-end font-monospace">${(row.millis / 1000).toFixed(1)} 秒</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-responsive mt-3"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>时间</th><th class="text-end">成功</th><th class="text-end">失败</th><th class="text-end">延后</th><th class="text-end">耗时</th></tr></thead><tbody>${rows.slice(0, 10).map((row) => `<tr><td>${clock(row.at, true)}</td><td class="text-end font-monospace">${row.success}</td><td class="text-end font-monospace">${row.failed}</td><td class="text-end font-monospace">${row.deferred}</td><td class="text-end font-monospace">${(row.millis / 1000).toFixed(1)} 秒</td></tr>`).join("")}</tbody></table></div>`;
 }
 function tasks(rows) {
   if (!rows || !rows.length) return `<p class="text-body-secondary mb-0">没有进行中的任务。完成后会从这里消失</p>`;
@@ -615,13 +615,15 @@ function nextText(at, seconds) {
   if (!seconds) return "未设置";
   if (!at) return "等待计时";
   const left = Math.max(0, Math.round((at - Date.now()) / 1000));
-  return clock(at) + " · " + duration(left);
+  return clock(at, true) + " · " + duration(left);
 }
-function clock(ms) {
+function clock(ms, withDate) {
   if (!ms) return "—";
   const date = new Date(ms);
   const pad = (n) => String(n).padStart(2, "0");
-  return pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+  const time = pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+  if (!withDate) return time;
+  return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " " + time;
 }
 function duration(seconds) {
   seconds = Math.max(0, seconds | 0);

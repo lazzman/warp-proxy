@@ -254,8 +254,14 @@ impl Worker {
 
     fn is_ready(&self) -> bool {
         self.manual.load(Ordering::Relaxed)
+            && !self.stopped.load(Ordering::Relaxed)
             && !self.draining.load(Ordering::Relaxed)
             && self.inner.lock().unwrap().net.is_some()
+    }
+
+    fn begin_draining(&self) {
+        let _inner = self.inner.lock().unwrap();
+        self.draining.store(true, Ordering::Relaxed);
     }
 
     fn set_stage(&self, stage: &str) {
@@ -506,24 +512,29 @@ impl Pool {
                 let wake = Arc::clone(&pool.restart_wake);
                 if interval.is_zero() {
                     round_at = None;
-                    deferred.clear();
                     pool.console.set_next(None);
-                    pool.console.clear_queues();
-                    drop(pool);
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
-                        _ = wake.notified() => {}
+                    if deferred.is_empty() && !pool.restart_now.load(Ordering::Relaxed) {
+                        pool.console.clear_queues();
+                        drop(pool);
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                            _ = wake.notified() => {}
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 let now = tokio::time::Instant::now();
-                if round_at.is_none() {
+                if round_at.is_none() && !interval.is_zero() {
                     round_at = Some(now + interval);
                 }
                 // 开始等待前就已经过点，说明上一轮把这次整点拖过去了。
                 let already_late = round_at.is_some_and(|at| at <= now);
                 publish_next(&pool, round_at);
-                let next = earliest_restart(round_at.unwrap_or(now), &deferred);
+                let next = if pool.restart_now.load(Ordering::Relaxed) {
+                    now
+                } else {
+                    earliest_restart(round_at, &deferred).unwrap_or(now)
+                };
                 let wait = next.saturating_duration_since(now);
                 drop(pool);
                 tokio::select! {
@@ -539,17 +550,6 @@ impl Pool {
                     }
                 }
                 let Some(pool) = weak.upgrade() else { return };
-                if pool.restart_interval.lock().unwrap().is_zero() {
-                    round_at = None;
-                    deferred.clear();
-                    pool.console.set_next(None);
-                    pool.console.clear_queues();
-                    for worker in pool.snapshot() {
-                        worker.deferred.store(false, Ordering::Relaxed);
-                        worker.clear_stage();
-                    }
-                    continue;
-                }
                 let now = tokio::time::Instant::now();
                 let defer_for = *pool.restart_defer.lock().unwrap();
                 let force = pool.restart_now.swap(false, Ordering::Relaxed);
@@ -595,7 +595,9 @@ impl Pool {
                         let (chosen, next_index) = next_restart_batch(&ids, index, batch);
                         index = next_index;
                         for id in chosen {
-                            if !due.contains(&id) {
+                            if !due.contains(&id)
+                                && !deferred.iter().any(|(pending, _)| *pending == id)
+                            {
                                 due.push(id);
                             }
                         }
@@ -607,6 +609,8 @@ impl Pool {
                 }
                 publish_next(&pool, round_at);
                 if due.is_empty() {
+                    let pending: Vec<usize> = deferred.iter().map(|(id, _)| *id).collect();
+                    pool.console.set_queues(&[], &pending);
                     continue;
                 }
                 let workers = pool.snapshot();
@@ -618,7 +622,6 @@ impl Pool {
                         .unwrap_or(0)
                 };
                 let (restart_now, later) = split_due_restarts(&due, active, !defer_for.is_zero());
-                pool.console.set_queues(&restart_now, &later);
                 for id in &later {
                     if let Some(worker) = workers.iter().find(|worker| worker.id == *id) {
                         worker.deferred.store(true, Ordering::Relaxed);
@@ -634,6 +637,8 @@ impl Pool {
                     eprintln!("{text}");
                     pool.console.log("plan", text);
                 }
+                let pending: Vec<usize> = deferred.iter().map(|(id, _)| *id).collect();
+                pool.console.set_queues(&restart_now, &pending);
                 if restart_now.is_empty() {
                     continue;
                 }
@@ -714,11 +719,10 @@ impl Pool {
         let workers = self.snapshot();
         let pin = self.pinned.load(Ordering::Relaxed);
         if pin != 0 {
-            if let Some(worker) = workers
-                .iter()
-                .find(|worker| worker.id == pin && worker.is_ready())
-            {
-                return Ok(self.lease(worker.clone()));
+            if let Some(worker) = workers.iter().find(|worker| worker.id == pin) {
+                if let Some(lease) = self.lease(worker.clone()) {
+                    return Ok(lease);
+                }
             }
         }
         let eligible: Vec<usize> = workers
@@ -740,10 +744,7 @@ impl Pool {
             .into_iter()
             .find(|worker| worker.id == id)
             .ok_or(PickFail::NoWorker)?;
-        if !worker.is_ready() {
-            return Err(PickFail::NoWorker);
-        }
-        Ok(self.lease(worker))
+        self.lease(worker).ok_or(PickFail::NoWorker)
     }
 
     /// 兼容旧调用：匿名轮询，不计入活跃连接。
@@ -754,9 +755,15 @@ impl Pool {
         Some(net)
     }
 
-    fn lease(&self, worker: Arc<Worker>) -> ConnLease {
-        worker.active.fetch_add(1, Ordering::Relaxed);
+    fn lease(&self, worker: Arc<Worker>) -> Option<ConnLease> {
         let inner = worker.inner.lock().unwrap();
+        if !worker.manual.load(Ordering::Relaxed)
+            || worker.stopped.load(Ordering::Relaxed)
+            || worker.draining.load(Ordering::Relaxed)
+        {
+            return None;
+        }
+        let net = inner.net.clone()?;
         let egress = inner
             .egress_v4
             .as_ref()
@@ -770,14 +777,14 @@ impl Pool {
                     .filter(|ip| !ip.is_empty())
             })
             .unwrap_or_else(|| inner.assigned_v4.to_string());
-        let net = inner.net.clone().expect("只租借已经就绪的账号");
+        worker.active.fetch_add(1, Ordering::Relaxed);
         drop(inner);
-        ConnLease {
+        Some(ConnLease {
             worker_id: worker.id,
             egress,
             net,
             worker,
-        }
+        })
     }
 
     pub fn reconnect(&self, id: usize) {
@@ -930,7 +937,10 @@ impl Pool {
     }
 
     fn wake(&self, reason: WakeReason) {
-        *self.wake_reason.lock().unwrap() = reason;
+        let mut pending = self.wake_reason.lock().unwrap();
+        if *pending != WakeReason::Plan || reason == WakeReason::Plan {
+            *pending = reason;
+        }
         self.restart_wake.notify_one();
     }
 
@@ -1493,12 +1503,12 @@ fn publish_next(pool: &Pool, round_at: Option<tokio::time::Instant>) {
 }
 
 fn earliest_restart(
-    round_at: tokio::time::Instant,
+    round_at: Option<tokio::time::Instant>,
     deferred: &[(usize, tokio::time::Instant)],
-) -> tokio::time::Instant {
-    deferred
-        .iter()
-        .fold(round_at, |soon, (_, at)| soon.min(*at))
+) -> Option<tokio::time::Instant> {
+    deferred.iter().fold(round_at, |soon, (_, at)| {
+        Some(soon.map_or(*at, |previous| previous.min(*at)))
+    })
 }
 
 fn schedule_defer(
@@ -1507,7 +1517,7 @@ fn schedule_defer(
     at: tokio::time::Instant,
 ) {
     if let Some(slot) = deferred.iter_mut().find(|(existing, _)| *existing == id) {
-        slot.1 = at;
+        slot.1 = slot.1.min(at);
     } else {
         deferred.push((id, at));
     }
@@ -1619,7 +1629,7 @@ async fn supervise(
         let health_every = current.health_interval;
         drop(current);
         if worker_needs_warp_check(&worker) {
-            worker.draining.store(true, Ordering::Relaxed);
+            worker.begin_draining();
             let confirmed = confirm_warp(&pool, &worker).await;
             worker.draining.store(false, Ordering::Relaxed);
             if !confirmed {
@@ -1698,7 +1708,7 @@ async fn reconnect_loop(
             return false;
         };
         let probe_timeout = current.restart.probe_timeout;
-        worker.draining.store(true, Ordering::Relaxed);
+        worker.begin_draining();
         worker.set_stage("重连");
         let built = current.build_tunnel(worker).await;
         let failure = match built {
@@ -1756,7 +1766,7 @@ async fn reconnect_loop(
 
 async fn graceful(pool: &Weak<Pool>, worker: &Arc<Worker>, job: &RestartJob) -> Result<(), String> {
     account_log(pool, format!("[pool] 账号 {} 开始保身份重启", worker.id));
-    worker.draining.store(true, Ordering::Relaxed);
+    worker.begin_draining();
     worker.set_stage("排空");
     let result = restart_in_place(pool, worker, job).await;
     worker.draining.store(false, Ordering::Relaxed);
@@ -1774,10 +1784,7 @@ async fn restart_in_place(
     worker: &Arc<Worker>,
     job: &RestartJob,
 ) -> Result<(), String> {
-    let started = tokio::time::Instant::now();
-    while worker.active.load(Ordering::Relaxed) > 0 && started.elapsed() < job.force_after {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    wait_for_drain(worker, job.force_after).await;
     worker.set_stage("重连");
     worker.retire();
     let Some(current) = pool.upgrade() else {
@@ -1805,7 +1812,10 @@ async fn restart_in_place(
             let err = egress_summary(&egress.v4, &egress.v6);
             account_log(
                 pool,
-                format!("[pool] 账号 {} 保身份重启未通过: {err}，将继续重试", worker.id),
+                format!(
+                    "[pool] 账号 {} 保身份重启未通过: {err}，将继续重试",
+                    worker.id
+                ),
             );
             worker.retire();
             Err(err)
@@ -1813,11 +1823,21 @@ async fn restart_in_place(
         Err(err) => {
             account_log(
                 pool,
-                format!("[pool] 账号 {} 保身份重启未通过: {err}，将继续重试", worker.id),
+                format!(
+                    "[pool] 账号 {} 保身份重启未通过: {err}，将继续重试",
+                    worker.id
+                ),
             );
             worker.retire();
             Err(err)
         }
+    }
+}
+
+async fn wait_for_drain(worker: &Worker, force_after: Duration) {
+    let started = tokio::time::Instant::now();
+    while worker.active.load(Ordering::Relaxed) > 0 && started.elapsed() < force_after {
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
@@ -2071,6 +2091,266 @@ fn preferred_trace<'a>(
 #[cfg(test)]
 mod restart_plan_tests {
     use super::next_restart_batch;
+    use super::{Pool, PoolOptions, RestartConfig, WarpConfig, Worker};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    async fn mock_pool(
+        interval: Duration,
+        defer: Duration,
+    ) -> (
+        Arc<Pool>,
+        Arc<Worker>,
+        mpsc::UnboundedReceiver<tokio::time::Instant>,
+    ) {
+        let mut options = PoolOptions::basic(true);
+        options.restart = RestartConfig {
+            interval,
+            defer,
+            ..RestartConfig::default()
+        };
+        let pool = Pool::start(Vec::new(), options).await.unwrap();
+        let (worker, mut jobs) = Worker::new(1, WarpConfig::default(), None);
+        pool.workers.lock().unwrap().push(worker.clone());
+        let (sender, receiver) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(job) = jobs.recv().await {
+                let _ = sender.send(tokio::time::Instant::now());
+                let _ = job.reply.send(Ok(()));
+            }
+        });
+        tokio::task::yield_now().await;
+        (pool, worker, receiver)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn manual_round_runs_when_periodic_restart_is_disabled() {
+        let (pool, _, mut jobs) = mock_pool(Duration::ZERO, Duration::ZERO).await;
+        pool.run_plan_now();
+        assert!(tokio::time::timeout(Duration::from_secs(1), jobs.recv())
+            .await
+            .unwrap()
+            .is_some());
+        assert!(pool.status().plan.next_at.is_none());
+        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::task::yield_now().await;
+        assert!(jobs.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn manual_round_keeps_retrying_deferred_accounts_with_periodic_restart_disabled() {
+        let (pool, worker, mut jobs) = mock_pool(Duration::ZERO, Duration::from_secs(5)).await;
+        worker.active.store(1, Ordering::Relaxed);
+        pool.run_plan_now();
+        tokio::task::yield_now().await;
+        assert!(worker.deferred.load(Ordering::Relaxed));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+        assert!(jobs.try_recv().is_err());
+        worker.active.store(0, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert!(jobs.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(tokio::time::timeout(Duration::from_secs(1), jobs.recv())
+            .await
+            .unwrap()
+            .is_some());
+        assert!(pool.status().plan.next_at.is_none());
+        tokio::time::advance(Duration::from_secs(15)).await;
+        tokio::task::yield_now().await;
+        assert!(jobs.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn new_round_does_not_overwrite_pending_defer_deadline() {
+        let started = tokio::time::Instant::now();
+        let (_pool, worker, mut jobs) =
+            mock_pool(Duration::from_secs(40), Duration::from_secs(70)).await;
+        worker.active.store(1, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(40)).await;
+        tokio::task::yield_now().await;
+        assert!(worker.deferred.load(Ordering::Relaxed));
+        tokio::time::advance(Duration::from_secs(40)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(20)).await;
+        worker.active.store(0, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(jobs.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let executed = tokio::time::timeout(Duration::from_secs(1), jobs.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(executed.duration_since(started), Duration::from_secs(110));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn busy_account_is_deferred_again_at_its_deadline() {
+        let (_pool, worker, mut jobs) =
+            mock_pool(Duration::from_secs(40), Duration::from_secs(70)).await;
+        worker.active.store(1, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(40)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(40)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert!(worker.deferred.load(Ordering::Relaxed));
+        worker.active.store(0, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(10)).await;
+        tokio::task::yield_now().await;
+        assert!(jobs.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(59)).await;
+        assert!(jobs.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(tokio::time::timeout(Duration::from_secs(1), jobs.recv())
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_prevents_new_leases_but_keeps_existing_sessions() {
+        let (pool, worker, _) = mock_pool(Duration::ZERO, Duration::ZERO).await;
+        worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+        let existing = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        assert_eq!(worker.active.load(Ordering::Relaxed), 1);
+        worker.begin_draining();
+        assert!(pool.checkout(Some("alice"), "192.0.2.1").is_err());
+        assert!(pool.checkout(None, "192.0.2.2").is_err());
+        assert_eq!(worker.active.load(Ordering::Relaxed), 1);
+        drop(existing);
+        assert_eq!(worker.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_checkout_cannot_admit_connections_after_draining() {
+        let (pool, worker, _) = mock_pool(Duration::ZERO, Duration::ZERO).await;
+        worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let pool = pool.clone();
+            tasks.push(tokio::spawn(async move {
+                for _ in 0..1000 {
+                    if let Ok(lease) = pool.checkout(None, "192.0.2.1") {
+                        tokio::task::yield_now().await;
+                        drop(lease);
+                    }
+                }
+            }));
+        }
+        tokio::task::yield_now().await;
+        worker.begin_draining();
+        for _ in 0..100 {
+            assert!(pool.checkout(None, "192.0.2.1").is_err());
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert_eq!(worker.active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn draining_sticky_account_fails_closed_without_blocking_other_accounts() {
+        let mut options = PoolOptions::basic(true);
+        options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
+        let pool = Pool::start(Vec::new(), options).await.unwrap();
+        let mut workers = Vec::new();
+        for id in 1..=2 {
+            let (worker, _) = Worker::new(id, WarpConfig::default(), None);
+            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+            pool.workers.lock().unwrap().push(worker.clone());
+            workers.push(worker);
+        }
+        let alice = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        let chosen = alice.worker_id;
+        workers[chosen - 1].begin_draining();
+        assert!(matches!(
+            pool.checkout(Some("alice"), "192.0.2.2"),
+            Err(crate::schedule::PickFail::StickyDown)
+        ));
+        let other = pool.checkout(None, "192.0.2.3").unwrap();
+        assert_ne!(other.worker_id, chosen);
+        drop(alice);
+        assert_eq!(workers[chosen - 1].active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scheduled_batch_honors_restart_concurrency() {
+        let mut options = PoolOptions::basic(true);
+        options.restart.batch = 0;
+        options.restart.concurrency = 2;
+        let pool = Pool::start(Vec::new(), options).await.unwrap();
+        let mut receivers = Vec::new();
+        for id in 1..=3 {
+            let (worker, jobs) = Worker::new(id, WarpConfig::default(), None);
+            pool.workers.lock().unwrap().push(worker);
+            receivers.push(jobs);
+        }
+        pool.run_plan_now();
+        let mut running = Vec::new();
+        for _ in 0..30 {
+            for receiver in &mut receivers {
+                if let Ok(job) = receiver.try_recv() {
+                    running.push(job);
+                }
+            }
+            if running.len() == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(running.len(), 2);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(receivers
+            .iter_mut()
+            .all(|receiver| receiver.try_recv().is_err()));
+        running.pop().unwrap().reply.send(Ok(())).unwrap();
+
+        let mut third = None;
+        for _ in 0..30 {
+            for receiver in &mut receivers {
+                if let Ok(job) = receiver.try_recv() {
+                    third = Some(job);
+                }
+            }
+            if third.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(third.is_some());
+        running.pop().unwrap().reply.send(Ok(())).unwrap();
+        third.unwrap().reply.send(Ok(())).unwrap();
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_waits_for_active_connections_but_respects_force_after() {
+        let (worker, _) = Worker::new(1, WarpConfig::default(), None);
+        worker.active.store(1, Ordering::Relaxed);
+        let waiting = worker.clone();
+        let deadline = tokio::spawn(async move {
+            super::wait_for_drain(&waiting, Duration::from_secs(3)).await;
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(!deadline.is_finished());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        deadline.await.unwrap();
+
+        let waiting = worker.clone();
+        let idle = tokio::spawn(async move {
+            super::wait_for_drain(&waiting, Duration::from_secs(30)).await;
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        worker.active.store(0, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_millis(200)).await;
+        idle.await.unwrap();
+    }
 
     #[test]
     fn batches_walk_the_pool_without_repeating_inside_a_round() {

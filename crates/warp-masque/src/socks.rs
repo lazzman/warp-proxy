@@ -88,11 +88,10 @@ pub async fn serve_pool(listener: TcpListener, pool: Arc<Pool>) {
 }
 
 async fn handle_client(client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) {
-    let client_addr = peer.to_string();
     if pool.mixed() {
         let mut first = [0u8; 1];
         if client.peek(&mut first).await.is_ok() && first[0] != VER {
-            let record = crate::http_proxy::handle(client, pool.clone(), &client_addr).await;
+            let record = crate::http_proxy::handle(client, pool.clone(), peer).await;
             pool.record_access(access_line(&record));
             return;
         }

@@ -3,6 +3,7 @@
 //! 支持 `CONNECT`（HTTPS）和绝对 URL 形式的普通 HTTP。认证与 SOCKS 共用同一组
 //! 用户名密码；未配置密码时，请求里的 Basic 用户名只用于黏性，不拒绝匿名。
 
+use std::net::SocketAddr;
 use std::time::Instant;
 
 use base64::Engine;
@@ -14,13 +15,34 @@ use crate::schedule::PickFail;
 use crate::socks::{self, AccessRecord};
 use std::sync::Arc;
 
+fn sticky_client_ip(peer: SocketAddr) -> String {
+    peer.ip().to_string()
+}
+
+#[cfg(test)]
+mod sticky_tests {
+    use super::sticky_client_ip;
+
+    #[test]
+    fn client_port_does_not_change_ip_hash_key() {
+        for (first, second, expected) in [
+            ("198.51.100.7:12001", "198.51.100.7:62000", "198.51.100.7"),
+            ("[2001:db8::7]:12001", "[2001:db8::7]:62000", "2001:db8::7"),
+        ] {
+            assert_eq!(sticky_client_ip(first.parse().unwrap()), expected);
+            assert_eq!(sticky_client_ip(second.parse().unwrap()), expected);
+        }
+    }
+}
+
 /// 处理一条已经判定为 HTTP 的连接。`client` 尚未被读取。
-pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -> AccessRecord {
+pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) -> AccessRecord {
     let started = Instant::now();
+    let client_ip = sticky_client_ip(peer);
     let mut record = AccessRecord {
         id: 0,
         proto: "http",
-        client: client_addr.to_string(),
+        client: peer.to_string(),
         user: "-".into(),
         target: "-".into(),
         account: "-".into(),
@@ -64,7 +86,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -
             return record;
         };
         record.target = format!("{host}:{port}");
-        let lease = match pool.checkout(username.as_deref(), client_addr) {
+        let lease = match pool.checkout(username.as_deref(), &client_ip) {
             Ok(lease) => lease,
             Err(fail) => {
                 let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
@@ -110,7 +132,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, client_addr: &str) -
             return record;
         };
         record.target = format!("{}:{}", forward.host, forward.port);
-        let lease = match pool.checkout(username.as_deref(), client_addr) {
+        let lease = match pool.checkout(username.as_deref(), &client_ip) {
             Ok(lease) => lease,
             Err(fail) => {
                 let _ = write_simple(&mut client, "502 Bad Gateway", "").await;

@@ -198,7 +198,7 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
 
 `BATCH` 决定这一轮有谁，`CONCURRENCY` 决定这些账号里同时做几个。每轮只选 1 个时，把并发调大也不会多重启账号。`BATCH=0` 且 `CONCURRENCY=4` 时，每一轮都选中当前全部账号，但同时最多重连 4 个：10 个账号会先跑 4 个，完成一个补上下一个，直到 10 个都有结果。仍有连接的账号按 `ROTATE_RESTART_DEFER` 延后，不占这次的并发名额。
 
-`/api/restart-plan?seconds=1800&batch=2&defer=300&misfire=skip` 可以在运行中修改间隔、批量、延后和错过策略。`seconds=0` 关闭计划。修改间隔、批量或延后后按新间隔重新计时，并取消已经延后的重启。只改 `misfire` 不会重新计时。`/api/restart?slot=1` 手动做一次保身份重启。`slot=0` 会按顺序处理全部账号。
+`/api/restart-plan?seconds=1800&batch=2&defer=300&misfire=skip` 可以在运行中修改间隔、批量、延后和错过策略。`seconds=0` 关闭计划。修改间隔、批量或延后后按新间隔重新计时，并取消已经延后的重启。只改 `misfire` 不会重新计时。`/api/restart-plan?action=now` 即使关闭定时计划也会执行一轮，并继续处理这轮的延后账号；后续轮次不会覆盖已有账号的延后截止时间。`/api/restart?slot=1` 手动做一次保身份重启。`slot=0` 会按顺序处理全部账号。
 
 ## Docker
 
