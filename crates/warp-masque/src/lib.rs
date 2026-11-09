@@ -20,6 +20,7 @@ pub mod error;
 pub mod h2tunnel;
 mod http_proxy;
 pub mod keys;
+pub mod migration;
 pub mod netstack;
 pub mod pool;
 pub mod register;

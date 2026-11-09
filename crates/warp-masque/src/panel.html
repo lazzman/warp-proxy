@@ -129,9 +129,15 @@
     background: #121411;
     color: #d7d8d4;
     font-size: 12.5px;
-    line-height: 1.6;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .log .t { color: #8d8f89; }
+  .log .tag { color: #c8c9c3; }
+  .log .sep { color: #6e706a; }
+  .log .ok { color: #8fbf9f; }
+  .log .bad { color: #d7a08a; }
   :focus-visible { outline: 2px solid #2f7d57; outline-offset: 2px; }
   #token { width: 160px; }
   @media (max-width: 768px) {
@@ -501,6 +507,13 @@ function connections() {
   if (!rows.length) return `<div class="card"><div class="card-body"><h2 class="h5">当前活跃连接</h2><p class="text-body-secondary mb-0">没有正在转发的连接。连接关闭后会立即从这里移除</p></div></div>`;
   return `<div class="card"><div class="card-body"><h2 class="h5">当前活跃连接</h2><div class="sheet table-responsive mt-3"><table class="table table-sm table-hover align-middle mb-0 data-table"><thead><tr><th>请求</th><th>协议</th><th>客户端</th><th>用户</th><th>目标</th><th>出口</th><th>地址族</th><th>后端</th><th class="text-end">已持续</th><th class="text-end">空闲</th><th class="text-end">上行</th><th class="text-end">下行</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace">${row.id}</td><td>${escapeHtml(row.protocol)}</td><td class="font-monospace">${escapeHtml(row.client)}</td><td>${escapeHtml(row.user)}</td><td class="font-monospace clip clip-wide" title="${escapeHtml(row.target)}">${escapeHtml(row.target)}</td><td class="font-monospace">${escapeHtml(row.egress || "—")}</td><td>${escapeHtml(row.family || "—")}</td><td class="font-monospace">${row.account}</td><td class="text-end font-monospace">${duration(Math.floor(row.age_ms / 1000))}</td><td class="text-end font-monospace">${duration(Math.floor(row.idle_ms / 1000))}</td><td class="text-end font-monospace">${bytes(row.up)}</td><td class="text-end font-monospace">${bytes(row.down)}</td></tr>`).join("")}</tbody></table></div></div></div>`;
 }
+function paintLog(text) {
+  return escapeHtml(text)
+    .replace(/^\[([^\]]+)\]/, '<span class="tag">[$1]</span>')
+    .replace(/↗/g, '<span class="ok">↗</span>')
+    .replace(/×/g, '<span class="bad">×</span>')
+    .replace(/ \| /g, ' <span class="sep">|</span> ');
+}
 function logs() {
   const page = state.logs || { lines: [], ready: 0, attention: 0, maintenance: 0, unknown: 0 };
   const kinds = [["all", "全部"], ["access", "访问"], ["plan", "计划"], ["account", "账号"]];
@@ -512,7 +525,7 @@ function logs() {
     </div>
     <p class="text-body-secondary mt-2 mb-2">就绪 ${page.ready} · 异常 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</p>
     <div class="btn-group btn-group-sm mb-2">${kinds.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.logKind === id ? " is-on" : ""}" data-log="${id}">${label}</button>`).join("")}</div>
-    <pre class="log">${lines.map((line) => '<span class="t">' + escapeHtml(clock(line.at)) + '</span>  ' + escapeHtml(line.text)).join("\n") || "还没有日志"}</pre>
+    <pre class="log">${lines.map((line) => '<span class="t">' + escapeHtml(clock(line.at)) + '</span>  ' + paintLog(line.text)).join("\n") || "还没有日志"}</pre>
   </div></div>`;
 }
 function bind() {

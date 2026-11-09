@@ -131,13 +131,33 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
 - `--sticky` / `LB_STICKY_MODE`：见「黏性」。
 - `--lb-rotate` / `LB_ROTATE_INTERVAL`：只在 `rotate` 策略下使用，见「调度」。
 - `--resolve` / `RESOLVE_PREFERENCE`：见「解析」。
-- `--access-log` / `LB_ACCESS_LOG`：把来源、用户、目标、账号和出口写到标准错误。不记录密码。
+- `--access-log` / `LB_ACCESS_LOG`：把来源、用户、目标、账号和出口写到标准错误。一行里用 `|` 分开，成功是 `↗`，失败是 `×`。不记录密码。
 - `--restart-*` / `ROTATE_RESTART_*`：保身份重连，见「保身份重启」。它不重新注册。
 - `--health-interval` / `HEALTH_CHECK_INTERVAL`：多久经隧道检查一次出口，默认 `60s`。`0` 关闭。见「出口检查」。
 - `--health-timeout` / `HEALTH_CHECK_TIMEOUT`：单次出口检查的最长时间，默认 `20s`。
 - 管理面板就是控制地址本身（stdout 里的 `panelUrl`）。浏览器打开后输入管理密码。登录成功后密码记在这个浏览器里，下次打开会直接用它认证。总览看入口、流量和定时重启；实例可以筛选、停用、重连、按数量添加临时实例；连接和日志分别看正在转发的会话和最近 300 行。页面放在进程里，不需要另外的脚本。
 
-临时实例的身份同样写在 `STATE_DIR` 的 `account-<编号>.json`，正在使用的编号记在 `temporary.json`。进程重启后加载这些身份，不会重新注册。移除临时实例只把它移出当前进程和这份名单，不删除已保存的身份；之后再添加时优先用回这些身份。
+临时实例的身份同样写在 `STATE_DIR` 的 `account-<编号>.json`，待恢复的编号记在 `temporary.json`。守护进程启动时最多自动加载 `INSTANCE_COUNT` 个账号，超额身份会保留等待空位；手动在面板添加账号仍可超过这个数量。移除临时实例只把它移出当前进程和这份名单，不删除已保存的身份；之后再添加时优先用回这些身份。
+
+### 从 MicroWARP 迁移账号
+
+MicroWARP 的账号配置位于 `instances/0/masque-config.json`、`instances/1/masque-config.json` 等目录中，与本项目使用相同的 JSON 格式。设置了 `STATE_DIR` 后，启动时自动检查 `STATE_DIR/instances`；运行时默认每 `60s` 再扫描一次。也可使用 `MICROWARP_DIR` / `--microwarp-dir` 指定独立的 MicroWARP 数据目录（既支持包含 `instances` 的根目录，也支持直接指向 `instances` 目录）。`MICROWARP_SCAN_INTERVAL` / `--microwarp-scan-interval` 配置扫描周期，`0` 表示只在启动时迁移。
+
+迁移会将账号复制为 `STATE_DIR/account-<编号>.json`，不修改 MicroWARP 的原始文件。编号从 1 开始分配，遇到已有账号会自动跳过已占用编号；按配置中的设备 `id` 去重，不会重复注册或覆盖已保存的身份。启动时仅加载前 `INSTANCE_COUNT` 个基础实例；其余导入账号加入 `temporary.json`，不自动超额启动。运行中检测到新配置时也会先持久化并标记完成，只有运行实例数低于上限时才自动加入连接池。超额账号仍可通过管理面板手动添加，或调高 `INSTANCE_COUNT` 后重启使用。
+
+完成记录保存在 `STATE_DIR/microwarp-migrations.json`，同一来源、同一设备身份只迁移一次；即使移除运行中的实例，也不会在后续扫描中反复添加。缺失或尚未写完的配置会跳过并在后续扫描重试。修改已迁移设备的 JSON 内容不会覆盖已有账号；如果该目录换成新的设备 `id`，会按新增身份处理。迁移记录和账号文件应一起保留在持久化卷中。
+
+Docker 中建议将原 MicroWARP 的 `instances` 目录**只读**挂载到 `/var/lib/warp-proxy/instances`：
+
+```yaml
+services:
+  warp-proxy:
+    volumes:
+      - warp-proxy-state:/var/lib/warp-proxy
+      - /你的路径/lb-microwarp/instances:/var/lib/warp-proxy/instances:ro
+```
+
+也可以挂到其他只读路径，再通过 `MICROWARP_DIR` 指定。必须同时保留可写的 `STATE_DIR` 用于保存导入账号和迁移记录。
 
 ### 调度
 
@@ -213,10 +233,12 @@ docker logs warp-proxy
 
 | 变量 | 默认 | 作用 |
 | :--- | :--- | :--- |
-| `INSTANCE_COUNT` | 容器 `1`，本机二进制 `2` | 账号数量 |
+| `INSTANCE_COUNT` | 容器 `1`，本机二进制 `2` | 启动及运行时自动恢复实例的数量上限；手动添加可超出 |
 | `BIND_ADDR` / `BIND_PORT` | 容器 `0.0.0.0:1080` | 代理监听地址。可以只写主机，端口用 `BIND_PORT` |
 | `CONTROL_ADDR` / `CONTROL_PORT` | 容器 `0.0.0.0:47100` | 管理面板和控制接口 |
 | `STATE_DIR` | 容器 `/var/lib/warp-proxy` | 账号身份目录 |
+| `MICROWARP_DIR` | `STATE_DIR/instances` | MicroWARP 的 `instances` 或其上一级目录，启动和运行时自动迁移 |
+| `MICROWARP_SCAN_INTERVAL` | `60s` | 运行时检测新增配置的间隔，`0` 关闭运行时扫描（启动扫描仍执行） |
 | `PROXY_MODE` | `socks5` | `mixed` 或 `http` 时同一端口同时接受 HTTP 代理 |
 | `MASQUE_HTTP2` | `0` | `1` 改用 HTTP/2。配置了上游时会自动打开 |
 | `UPSTREAM_SOCKS5` | 空 | 上游 SOCKS5，多个用逗号分隔 |

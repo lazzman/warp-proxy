@@ -17,6 +17,9 @@ services:
       CONTROL_PORT: "47100"
       CONTROL_PASSWORD: "admin"
       STATE_DIR: /var/lib/warp-proxy
+      # 可选：挂载到其他目录时，用 MICROWARP_DIR 指定 MicroWARP 的数据目录。
+      # MICROWARP_DIR: /mnt/microwarp/instances
+      # MICROWARP_SCAN_INTERVAL: 60s
       PROXY_MODE: mixed
       MASQUE_HTTP2: "0"
       RESOLVE_PREFERENCE: auto
@@ -37,6 +40,8 @@ services:
       HEALTH_CHECK_TIMEOUT: 20s
     volumes:
       - warp-proxy-state:/var/lib/warp-proxy
+      # 将原 MicroWARP 的 instances 目录只读挂载后，启动及运行时自动迁移新增账号。
+      # - /你的路径/lb-microwarp/instances:/var/lib/warp-proxy/instances:ro
 
 volumes:
   warp-proxy-state:

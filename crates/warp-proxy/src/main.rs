@@ -24,6 +24,8 @@ struct Args {
     socks: String,
     control: String,
     state_dir: Option<PathBuf>,
+    microwarp_dir: Option<PathBuf>,
+    microwarp_scan_interval: Duration,
     http2: bool,
     upstream: String,
     access_log: bool,
@@ -55,6 +57,8 @@ fn parse_args() -> anyhow::Result<Args> {
         socks: env_string("BIND_ADDR").unwrap_or_else(|| "127.0.0.1".into()),
         control: env_string("CONTROL_ADDR").unwrap_or_else(|| "127.0.0.1".into()),
         state_dir: env_string("STATE_DIR").map(PathBuf::from),
+        microwarp_dir: env_string("MICROWARP_DIR").map(PathBuf::from),
+        microwarp_scan_interval: env_duration("MICROWARP_SCAN_INTERVAL", Duration::from_secs(60))?,
         http2: env_bool("MASQUE_HTTP2", false),
         upstream: env_string("UPSTREAM_SOCKS5").unwrap_or_default(),
         access_log: env_bool("LB_ACCESS_LOG", false),
@@ -103,6 +107,12 @@ fn parse_args() -> anyhow::Result<Args> {
             "--socks" => args.socks = next_value(&mut it, &arg)?,
             "--control" => args.control = next_value(&mut it, &arg)?,
             "--state-dir" => args.state_dir = Some(PathBuf::from(next_value(&mut it, &arg)?)),
+            "--microwarp-dir" => {
+                args.microwarp_dir = Some(PathBuf::from(next_value(&mut it, &arg)?))
+            }
+            "--microwarp-scan-interval" => {
+                args.microwarp_scan_interval = parse_duration(&next_value(&mut it, &arg)?)?
+            }
             "--http2" => args.http2 = true,
             "--upstream" => args.upstream = next_value(&mut it, &arg)?,
             "--access-log" => args.access_log = true,
@@ -281,6 +291,18 @@ fn next_value(it: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Resu
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = parse_args()?;
+    if args.microwarp_dir.is_some() && args.state_dir.is_none() {
+        anyhow::bail!("使用 MICROWARP_DIR/--microwarp-dir 时必须设置 STATE_DIR/--state-dir");
+    }
+    let microwarp_source = args.state_dir.as_ref().map(|state_dir| {
+        args.microwarp_dir
+            .clone()
+            .unwrap_or_else(|| state_dir.join("instances"))
+    });
+    if let (Some(state_dir), Some(source)) = (&args.state_dir, &microwarp_source) {
+        warp_masque::migration::migrate_microwarp(state_dir, source, args.accounts)
+            .with_context(|| format!("迁移 MicroWARP 目录 {}", source.display()))?;
+    }
     let upstream = UpstreamSet::parse(&args.upstream)
         .map_err(anyhow::Error::msg)
         .context("解析 UPSTREAM_SOCKS5")?;
@@ -331,6 +353,7 @@ async fn main() -> anyhow::Result<()> {
         health_timeout: args.health_timeout,
         device_name: "warp-proxy".into(),
         state_dir: args.state_dir.clone(),
+        auto_restore_limit: Some(args.accounts),
     };
     let pool = Pool::start(configs, options).await.context("启动连接池")?;
 
@@ -365,6 +388,24 @@ async fn main() -> anyhow::Result<()> {
         args.http2,
         args.mixed
     );
+
+    if let Some(source) = microwarp_source.filter(|_| !args.microwarp_scan_interval.is_zero()) {
+        let pool = pool.clone();
+        let interval = args.microwarp_scan_interval;
+        tokio::spawn(async move {
+            let mut timer =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+            loop {
+                timer.tick().await;
+                if let Err(err) = pool.scan_microwarp(&source).await {
+                    eprintln!(
+                        "[migration] 扫描 {} 失败，稍后重试: {err}",
+                        source.display()
+                    );
+                }
+            }
+        });
+    }
 
     tokio::spawn(control::serve(control_listener, pool.clone(), token));
     tokio::spawn(socks::serve_pool(socks_listener, pool));

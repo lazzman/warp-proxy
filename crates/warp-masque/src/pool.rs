@@ -118,6 +118,8 @@ pub struct PoolOptions {
     pub health_timeout: Duration,
     pub device_name: String,
     pub state_dir: Option<PathBuf>,
+    /// 自动恢复实例的数量上限；手动添加账号不受影响。
+    pub auto_restore_limit: Option<usize>,
 }
 
 impl PoolOptions {
@@ -136,6 +138,7 @@ impl PoolOptions {
             health_timeout: Duration::from_secs(20),
             device_name: "warp-proxy".into(),
             state_dir: None,
+            auto_restore_limit: None,
         }
     }
 }
@@ -282,7 +285,10 @@ impl Worker {
 /// 已经分配到某个账号的入口连接。丢弃时减少该账号的活跃计数。
 pub struct ConnLease {
     pub worker_id: usize,
+    /// 地址族还没确定时的出口，优先 IPv4。
     pub egress: String,
+    egress_v4: String,
+    egress_v6: String,
     net: NetHandle,
     worker: Arc<Worker>,
 }
@@ -290,6 +296,33 @@ pub struct ConnLease {
 impl ConnLease {
     pub fn net(&self) -> &NetHandle {
         &self.net
+    }
+
+    /// 按这次连接实际走到的地址族选择出口。
+    pub fn egress_for(&self, family: &str) -> &str {
+        egress_for_family(family, &self.egress_v4, &self.egress_v6, &self.egress)
+    }
+
+    pub(crate) fn egress_v4(&self) -> &str {
+        &self.egress_v4
+    }
+
+    pub(crate) fn egress_v6(&self) -> &str {
+        &self.egress_v6
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_lease(fallback: &str, v4: &str, v6: &str) -> ConnLease {
+    let (worker, _restart) = Worker::new(1, WarpConfig::default(), None);
+    worker.active.fetch_add(1, Ordering::Relaxed);
+    ConnLease {
+        worker_id: 1,
+        egress: fallback.to_string(),
+        egress_v4: v4.to_string(),
+        egress_v6: v6.to_string(),
+        net: NetHandle::test_handle(),
+        worker,
     }
 }
 
@@ -334,6 +367,7 @@ pub struct Pool {
     console: Console,
     listen: Mutex<String>,
     state_dir: Option<PathBuf>,
+    auto_restore_limit: Option<usize>,
     /// 启动时由 INSTANCE_COUNT 加载的账号。这些身份不会被临时实例重复占用。
     base_ids: Mutex<Vec<usize>>,
     /// 正在添加、尚未进入 workers 的编号，避免并发添加用到同一个已保存身份。
@@ -392,6 +426,7 @@ impl Pool {
             console: Console::new(),
             listen: Mutex::new(String::new()),
             state_dir: opts.state_dir.clone(),
+            auto_restore_limit: opts.auto_restore_limit,
             base_ids: Mutex::new(Vec::new()),
             reserved_ids: Mutex::new(Vec::new()),
         });
@@ -764,24 +799,22 @@ impl Pool {
             return None;
         }
         let net = inner.net.clone()?;
-        let egress = inner
-            .egress_v4
-            .as_ref()
-            .map(|trace| trace.ip.clone())
-            .filter(|ip| !ip.is_empty())
-            .or_else(|| {
-                inner
-                    .egress_v6
-                    .as_ref()
-                    .map(|trace| trace.ip.clone())
-                    .filter(|ip| !ip.is_empty())
-            })
-            .unwrap_or_else(|| inner.assigned_v4.to_string());
+        let assigned_v6 = crate::tunnel::parse_assigned_v6(&inner.config.ipv6)
+            .map(|ip| ip.to_string())
+            .unwrap_or_default();
+        let shown = shown_egress(
+            &observed_ip(&inner.egress_v4),
+            &observed_ip(&inner.egress_v6),
+            &inner.assigned_v4.to_string(),
+            &assigned_v6,
+        );
         worker.active.fetch_add(1, Ordering::Relaxed);
         drop(inner);
         Some(ConnLease {
             worker_id: worker.id,
-            egress,
+            egress: shown.fallback,
+            egress_v4: shown.v4,
+            egress_v6: shown.v6,
             net,
             worker,
         })
@@ -1109,12 +1142,29 @@ impl Pool {
             }
         };
         for id in active {
-            if self.snapshot().iter().any(|worker| worker.id == id) {
+            let should_load = {
+                let mut reserved = self.reserved_ids.lock().unwrap();
+                let workers = self.workers.lock().unwrap();
+                let at_limit = self
+                    .auto_restore_limit
+                    .is_some_and(|limit| workers.len().saturating_add(reserved.len()) >= limit);
+                if reserved.contains(&id)
+                    || workers.iter().any(|worker| worker.id == id)
+                    || at_limit
+                {
+                    false
+                } else {
+                    reserved.push(id);
+                    true
+                }
+            };
+            if !should_load {
                 continue;
             }
             let config = match WarpConfig::load(account_path(&dir, id)) {
                 Ok(config) => config,
                 Err(err) => {
+                    self.release_reserved(id);
                     eprintln!("[pool] 临时账号 {id} 的配置还在，但暂时无法加载: {err}");
                     continue;
                 }
@@ -1129,9 +1179,28 @@ impl Pool {
                 )
                 .await
             {
+                self.release_reserved(id);
                 eprintln!("[pool] 加载临时账号 {id} 失败: {err}");
             }
         }
+    }
+
+    /// 运行时导入新发现的 MicroWARP 身份，并启动迁移名单中的实例。
+    pub async fn scan_microwarp(self: &Arc<Self>, source_dir: &Path) -> crate::Result<usize> {
+        let Some(dir) = &self.state_dir else {
+            return Err(crate::Error::Config("迁移 MicroWARP 需要 STATE_DIR".into()));
+        };
+        let base_count = self.base_ids.lock().unwrap().len();
+        let imported = {
+            let reserved = self.reserved_ids.lock().unwrap();
+            crate::migration::migrate_excluding(dir, source_dir, base_count, &reserved)?
+        };
+        self.restore_temporary().await;
+        if imported > 0 {
+            self.console
+                .log("account", format!("已迁移 {imported} 个 MicroWARP 账号"));
+        }
+        Ok(imported)
     }
 
     fn find_spare(&self, reserved: &[usize]) -> Option<(usize, WarpConfig)> {
@@ -1398,11 +1467,11 @@ struct TemporaryManifest {
     active: Vec<usize>,
 }
 
-fn account_path(dir: &Path, id: usize) -> PathBuf {
+pub(crate) fn account_path(dir: &Path, id: usize) -> PathBuf {
     dir.join(format!("account-{id}.json"))
 }
 
-fn saved_account_ids(dir: &Path) -> Vec<usize> {
+pub(crate) fn saved_account_ids(dir: &Path) -> Vec<usize> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -1429,7 +1498,7 @@ fn saved_account_ids(dir: &Path) -> Vec<usize> {
     ids
 }
 
-fn read_temporary_active(dir: &Path) -> crate::Result<Vec<usize>> {
+pub(crate) fn read_temporary_active(dir: &Path) -> crate::Result<Vec<usize>> {
     let path = dir.join("temporary.json");
     if !path.exists() {
         return Ok(Vec::new());
@@ -1448,14 +1517,13 @@ fn write_temporary_active(dir: &Path, active: &[usize]) -> crate::Result<()> {
     let manifest = TemporaryManifest {
         active: active.to_vec(),
     };
-    let json = serde_json::to_vec_pretty(&manifest)
-        .map_err(|err| crate::Error::Config(err.to_string()))?;
-    std::fs::write(dir.join("temporary.json"), json)
-        .map_err(|err| crate::Error::Config(err.to_string()))?;
-    Ok(())
+    crate::migration::write_json_atomic(&dir.join("temporary.json"), &manifest)
 }
 
-fn remember_saved_temporary(dir: &Path, id: usize) -> crate::Result<()> {
+static TEMPORARY_MANIFEST_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) fn remember_saved_temporary(dir: &Path, id: usize) -> crate::Result<()> {
+    let _guard = TEMPORARY_MANIFEST_LOCK.lock().unwrap();
     let mut active = read_temporary_active(dir)?;
     if !active.contains(&id) {
         active.push(id);
@@ -1466,6 +1534,7 @@ fn remember_saved_temporary(dir: &Path, id: usize) -> crate::Result<()> {
 
 /// 只把编号移出正在使用的名单，不删除 account-{id}.json。
 fn forget_saved_temporary(dir: &Path, id: usize) -> crate::Result<()> {
+    let _guard = TEMPORARY_MANIFEST_LOCK.lock().unwrap();
     let mut active = read_temporary_active(dir)?;
     active.retain(|existing| *existing != id);
     write_temporary_active(dir, &active)
@@ -1949,6 +2018,70 @@ fn account_log(pool: &Weak<Pool>, text: String) {
 
 fn egress_summary(v4: &TraceInfo, v6: &TraceInfo) -> String {
     format!("v4={} · v6={}", family_label(v4), family_label(v6))
+}
+
+fn observed_ip(info: &Option<TraceInfo>) -> String {
+    info.as_ref()
+        .map(|trace| trace.ip.clone())
+        .filter(|ip| !ip.is_empty())
+        .unwrap_or_default()
+}
+
+struct ShownEgress {
+    fallback: String,
+    v4: String,
+    v6: String,
+}
+
+/// 租约上记下两族出口。地址族未知时的 fallback 仍优先 IPv4；
+/// IPv6 连接只用 IPv6 探测结果，没有时才用隧道分配的 IPv6。
+fn shown_egress(
+    v4_trace: &str,
+    v6_trace: &str,
+    assigned_v4: &str,
+    assigned_v6: &str,
+) -> ShownEgress {
+    let v4 = if v4_trace.is_empty() {
+        String::new()
+    } else {
+        v4_trace.to_string()
+    };
+    let v6 = if !v6_trace.is_empty() {
+        v6_trace.to_string()
+    } else {
+        assigned_v6.to_string()
+    };
+    let fallback = if !v4.is_empty() {
+        v4.clone()
+    } else if !v6_trace.is_empty() {
+        v6_trace.to_string()
+    } else {
+        assigned_v4.to_string()
+    };
+    ShownEgress { fallback, v4, v6 }
+}
+
+/// 连接走哪一族，访问日志就展示哪一族的出口。IPv6 没有测到时不回退到 IPv4。
+pub(crate) fn egress_for_family<'a>(
+    family: &str,
+    v4: &'a str,
+    v6: &'a str,
+    fallback: &'a str,
+) -> &'a str {
+    let chosen = match family {
+        "ipv6" => v6,
+        "ipv4" => v4,
+        _ => fallback,
+    };
+    if !chosen.is_empty() {
+        chosen
+    } else if family == "ipv6" {
+        "-"
+    } else if !fallback.is_empty() {
+        fallback
+    } else {
+        "-"
+    }
 }
 
 fn warp_confirmed(info: &crate::trace::TraceInfo) -> bool {
@@ -2446,7 +2579,7 @@ mod restart_plan_tests {
 
 #[cfg(test)]
 mod egress_tests {
-    use super::{egress_parts, TraceInfo};
+    use super::{egress_for_family, egress_parts, shown_egress, TraceInfo};
 
     fn info(ip: &str, warp: &str, loc: &str, colo: &str) -> TraceInfo {
         TraceInfo {
@@ -2480,13 +2613,61 @@ mod egress_tests {
         assert_eq!(colo, "NRT");
         assert_eq!(warp, "on");
     }
+
+    #[test]
+    fn access_log_uses_the_family_that_was_connected() {
+        assert_eq!(
+            egress_for_family("ipv6", "104.28.233.73", "2a09:bac::1", "104.28.233.73"),
+            "2a09:bac::1"
+        );
+        assert_eq!(
+            egress_for_family("ipv4", "104.28.233.73", "2a09:bac::1", "104.28.233.73"),
+            "104.28.233.73"
+        );
+        assert_eq!(
+            egress_for_family("ipv6", "104.28.233.73", "", "104.28.233.73"),
+            "-"
+        );
+    }
+
+    #[test]
+    fn lease_keeps_ipv6_even_when_the_fallback_is_ipv4() {
+        let shown = shown_egress(
+            "104.28.233.73",
+            "2a09:bac::1",
+            "172.16.0.2",
+            "2606:4700:110::1",
+        );
+        assert_eq!(shown.fallback, "104.28.233.73");
+        assert_eq!(
+            egress_for_family("ipv6", &shown.v4, &shown.v6, &shown.fallback),
+            "2a09:bac::1"
+        );
+        assert_eq!(
+            egress_for_family("ipv4", &shown.v4, &shown.v6, &shown.fallback),
+            "104.28.233.73"
+        );
+
+        let assigned = shown_egress("", "", "172.16.0.2", "2606:4700:110::1");
+        assert_eq!(assigned.fallback, "172.16.0.2");
+        assert_eq!(
+            egress_for_family("ipv6", &assigned.v4, &assigned.v6, &assigned.fallback),
+            "2606:4700:110::1"
+        );
+
+        let missing = shown_egress("104.28.233.73", "", "172.16.0.2", "");
+        assert_eq!(
+            egress_for_family("ipv6", &missing.v4, &missing.v6, &missing.fallback),
+            "-"
+        );
+    }
 }
 
 #[cfg(test)]
 mod temporary_account_tests {
     use super::{
         account_path, forget_saved_temporary, read_temporary_active, remember_saved_temporary,
-        saved_account_ids, spare_account_id,
+        saved_account_ids, spare_account_id, Pool, PoolOptions, WarpConfig,
     };
 
     #[test]
@@ -2512,5 +2693,58 @@ mod temporary_account_tests {
         assert_eq!(read_temporary_active(&dir).unwrap(), vec![8]);
         assert_eq!(saved_account_ids(&dir), vec![7]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn imported_accounts_wait_when_instance_count_is_reached() {
+        let dir = std::env::temp_dir().join(format!(
+            "warp-proxy-import-limit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state_dir = dir.join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let base_config = WarpConfig {
+            id: "base".into(),
+            ..WarpConfig::default()
+        };
+        base_config.save(account_path(&state_dir, 1)).unwrap();
+        WarpConfig {
+            id: "previously-imported".into(),
+            ..WarpConfig::default()
+        }
+        .save(account_path(&state_dir, 2))
+        .unwrap();
+        remember_saved_temporary(&state_dir, 2).unwrap();
+        let imported_config = WarpConfig {
+            id: "microwarp-device".into(),
+            private_key: "key".into(),
+            ..WarpConfig::default()
+        };
+        let source_dir = dir.join("microwarp/instances/0");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        imported_config
+            .save(source_dir.join("masque-config.json"))
+            .unwrap();
+
+        let mut options = PoolOptions::basic(true);
+        options.state_dir = Some(state_dir.clone());
+        options.auto_restore_limit = Some(1);
+        let pool = Pool::start(vec![base_config], options).await.unwrap();
+        assert_eq!(pool.status().accounts.len(), 1);
+        assert_eq!(
+            pool.scan_microwarp(&dir.join("microwarp")).await.unwrap(),
+            1
+        );
+        assert_eq!(pool.status().accounts.len(), 1);
+        assert_eq!(read_temporary_active(&state_dir).unwrap(), vec![2, 3]);
+        assert!(account_path(&state_dir, 3).is_file());
+
+        pool.restore_temporary().await;
+        assert_eq!(pool.status().accounts.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

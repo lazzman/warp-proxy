@@ -36,22 +36,78 @@ pub(crate) struct AccessRecord {
     pub millis: u64,
 }
 
+/// 连接成功后写入实际地址族和对应出口。访问日志与活跃连接都读这份记录。
+pub(crate) fn note_connected(
+    record: &mut AccessRecord,
+    family: &str,
+    lease: &crate::pool::ConnLease,
+) {
+    record.family = family.to_string();
+    record.egress = crate::pool::egress_for_family(
+        family,
+        lease.egress_v4(),
+        lease.egress_v6(),
+        &record.egress,
+    )
+    .to_string();
+}
+
+fn session_open(
+    record: &AccessRecord,
+    meter: Arc<crate::console::TrafficMeter>,
+) -> crate::console::SessionOpen {
+    crate::console::SessionOpen {
+        protocol: record.proto.to_string(),
+        client: record.client.clone(),
+        user: record.user.clone(),
+        target: record.target.clone(),
+        egress: record.egress.clone(),
+        family: record.family.clone(),
+        account: record.account.parse().unwrap_or(0),
+        meter,
+    }
+}
+
+/// 一行访问日志。字段用 `|` 隔开，成功是 `↗`，其余是 `×`。没有会话编号时请求记为 `-`。
 pub(crate) fn access_line(record: &AccessRecord) -> String {
+    let family = if record.family.is_empty() {
+        "-"
+    } else {
+        record.family.as_str()
+    };
+    let id = if record.id == 0 {
+        "-".to_string()
+    } else {
+        record.id.to_string()
+    };
+    let proto = match record.proto {
+        "http" => "HTTP",
+        "socks" => "SOCKS",
+        other => other,
+    };
     format!(
-        "[access] 请求={} 协议={} 地址族={} 结果={} 客户端={} 用户={} 目标={} 账号={} 出口={} 上行={} 下行={} 耗时毫秒={}",
-        record.id,
-        record.proto,
-        if record.family.is_empty() { "-" } else { record.family.as_str() },
+        "[access] {} {} | 请求={} | 结果={} | 客户端={} | 用户={} | 目标={} | 账号={} | 地址族={} | 出口={} | 上行={} | 下行={} | 耗时毫秒={}",
+        access_mark(&record.result),
+        proto,
+        id,
         record.result,
         record.client,
         record.user,
         record.target,
         record.account,
+        family,
         record.egress,
         record.up,
         record.down,
         record.millis
     )
+}
+
+fn access_mark(result: &str) -> &'static str {
+    match result {
+        "ok" | "direct" => "↗",
+        _ => "×",
+    }
 }
 
 /// 在 listener 上提供 SOCKS5，全部 CONNECT 走同一个 netstack。
@@ -178,7 +234,7 @@ async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -
     record.egress = lease.egress.clone();
     match connect_target(&mut client, lease.net(), &request.host, request.port).await {
         Ok((conn, family)) => {
-            record.family = family.into();
+            note_connected(&mut record, family, &lease);
             if client.write_all(&reply(0x00)).await.is_err() {
                 record.result = "write-failed".into();
             } else {
@@ -242,17 +298,7 @@ pub(crate) async fn relay_session(
     record: &mut AccessRecord,
 ) -> (u64, u64) {
     let meter = std::sync::Arc::new(crate::console::TrafficMeter::new());
-    let account = record.account.parse().unwrap_or(0);
-    let guard = pool.track_session(crate::console::SessionOpen {
-        protocol: record.proto.to_string(),
-        client: record.client.clone(),
-        user: record.user.clone(),
-        target: record.target.clone(),
-        egress: record.egress.clone(),
-        family: record.family.clone(),
-        account,
-        meter: meter.clone(),
-    });
+    let guard = pool.track_session(session_open(record, Arc::clone(&meter)));
     record.id = guard.id();
     let counts = relay_counted(client, conn, meter).await;
     drop(guard);
@@ -451,4 +497,75 @@ fn is_loopback_host(host: &str) -> bool {
     host.parse::<IpAddr>()
         .map(|ip| ip.is_loopback())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(egress: &str) -> AccessRecord {
+        AccessRecord {
+            id: 7,
+            proto: "http",
+            client: "172.29.0.1:59868".into(),
+            user: "grok".into(),
+            target: "accounts.x.ai:443".into(),
+            account: "1".into(),
+            egress: egress.into(),
+            family: String::new(),
+            result: "ok".into(),
+            up: 1,
+            down: 2,
+            millis: 3,
+        }
+    }
+
+    fn shows(family: &str, v4: &str, v6: &str) -> (String, String, String) {
+        let mut row = record(v4);
+        let lease = crate::pool::test_lease(v4, v4, v6);
+        note_connected(&mut row, family, &lease);
+        let line = access_line(&row);
+        let console = crate::console::Console::new();
+        let meter = Arc::new(crate::console::TrafficMeter::new());
+        let _guard = console.open_session(session_open(&row, meter));
+        let live = console.sessions().remove(0);
+        (line, live.family, live.egress)
+    }
+
+    #[test]
+    fn log_and_live_session_use_the_connected_family() {
+        let (line, family, egress) = shows("ipv6", "104.28.233.73", "2a09:bac::1");
+        assert!(line.contains("[access] ↗ HTTP | "), "{line}");
+        assert!(line.contains("地址族=ipv6 | 出口=2a09:bac::1 | "), "{line}");
+        assert!(!line.contains("104.28.233.73"), "{line}");
+        assert_eq!(family, "ipv6");
+        assert_eq!(egress, "2a09:bac::1");
+
+        let (line, family, egress) = shows("ipv4", "104.28.233.73", "2a09:bac::1");
+        assert!(line.contains("地址族=ipv4"), "{line}");
+        assert!(line.contains("出口=104.28.233.73 "), "{line}");
+        assert!(!line.contains("2a09:bac::1"), "{line}");
+        assert_eq!(family, "ipv4");
+        assert_eq!(egress, "104.28.233.73");
+
+        let (line, family, egress) = shows("ipv6", "104.28.233.73", "");
+        assert!(line.contains("地址族=ipv6"), "{line}");
+        assert!(line.contains("出口=- "), "{line}");
+        assert!(!line.contains("104.28.233.73"), "{line}");
+        assert_eq!(family, "ipv6");
+        assert_eq!(egress, "-");
+    }
+
+    #[test]
+    fn failed_access_line_marks_the_miss_and_hides_a_zero_id() {
+        let mut row = record("-");
+        row.id = 0;
+        row.result = "bad-request".into();
+        let line = access_line(&row);
+        assert!(
+            line.starts_with("[access] × HTTP | 请求=- | 结果=bad-request | "),
+            "{line}"
+        );
+        assert!(line.contains("地址族=- | 出口=- | "), "{line}");
+    }
 }

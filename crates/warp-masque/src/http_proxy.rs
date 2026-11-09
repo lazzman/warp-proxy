@@ -99,7 +99,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
         record.egress = lease.egress.clone();
         let conn = match open_tunnel(lease.net(), &host, port).await {
             Ok((conn, family)) => {
-                record.family = family.into();
+                socks::note_connected(&mut record, family, &lease);
                 conn
             }
             Err(result) => {
@@ -145,7 +145,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
         record.egress = lease.egress.clone();
         let mut conn = match open_tunnel(lease.net(), &forward.host, forward.port).await {
             Ok((conn, family)) => {
-                record.family = family.into();
+                socks::note_connected(&mut record, family, &lease);
                 conn
             }
             Err(result) => {
