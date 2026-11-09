@@ -50,9 +50,11 @@ non-standard `cf-connect-ip` token.
 cargo run -p warp-proxy -- --accounts 2 --socks 127.0.0.1:1080 --control 127.0.0.1:47100
 ```
 
-It registers (or, with `--state-dir DIR`, loads) N accounts, starts the SOCKS5
-load-balancer + control API, and prints one JSON line to **stdout** so a parent
-process can wire itself up:
+启动后立即监听管理页面和代理端口，并向 **stdout** 输出一行 JSON，方便父进程发现入口。
+账号从 `--state-dir DIR` 加载，缺失时在后台注册；最多同时准备 4 个账号，
+每次最多并发连接 4 条 WARP 隧道。管理页面不等待账号注册或连接，
+登录后可以看到账号准备进度、连接中状态和失败日志。失败的账号会在后台退避重试，
+已连接的账号可以直接提供代理服务；在没有可用账号前，代理端口虽然已监听，但不能转发。
 
 ```json
 {"socksPort":1080,"controlUrl":"http://127.0.0.1:47100","controlToken":"…","panelUrl":"http://127.0.0.1:47100/"}
@@ -105,7 +107,7 @@ the same actions, plus live connections and the log ring. The panel password is
 
 ## 入口、上游和调度
 
-命令行参数会覆盖同名配置对应的环境变量。配置了上游时会自动改走 HTTP/2，启动前先做 SOCKS5 CONNECT 探测，失败就退出，不会改走直连。
+命令行参数会覆盖同名配置对应的环境变量。配置了上游时会自动改走 HTTP/2；管理页面启动后会后台探测 SOCKS5 CONNECT，失败仅记录错误，不阻塞其他节点。每个节点仍然必须经过对应上游，连接失败会独立重试，不会改走直连。
 
 ```sh
 cargo run -p warp-proxy -- --http2 --accounts 2 \
@@ -123,7 +125,7 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
   --restart-misfire fire
 ```
 
-- `--upstream` / `UPSTREAM_SOCKS5`：一个或多个 SOCKS5 地址，用逗号分隔。可以写主机和端口，也可以带用户名和密码。按账号序号固定分配，只支持 TCP CONNECT。启动前会探测，失败就退出，不会改走直连。注册请求对齐 usque 的请求头和 Go `net/http` 的 HTTP/2 窗口。遇到 HTTP 429、503 或 Cloudflare `1015` 时，按 `Retry-After` 或递增间隔等待后重试，最多 6 次，不会马上退出再打。
+- `--upstream` / `UPSTREAM_SOCKS5`：一个或多个 SOCKS5 地址，用逗号分隔。可以写主机和端口，也可以带用户名和密码。按账号序号固定分配，只支持 TCP CONNECT。后台探测失败只记录错误；节点通过自己的上游连接，失败则重试，不会改走直连。注册请求对齐 usque 的请求头和 Go `net/http` 的 HTTP/2 窗口。遇到 HTTP 429、503 或 Cloudflare `1015` 时，按 `Retry-After` 或递增间隔等待后重试，最多 6 次，不会马上退出再打。
 - `--proxy-mode` / `PROXY_MODE`：默认 `socks5`。`mixed` 和 `http` 都表示同一端口同时接受 SOCKS5 和 HTTP 代理。未配置入口密码时允许匿名；客户端如果带了用户名，会用于黏性。
 - `--strategy` / `LB_STRATEGY`：见「调度」。
 - `--sticky` / `LB_STICKY_MODE`：见「黏性」。

@@ -8,10 +8,13 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use warp_masque::{
     control, parse_misfire, parse_restart_mode, parse_sticky, parse_strategy, socks, Misfire,
@@ -50,6 +53,8 @@ struct Args {
     health_interval: Duration,
     health_timeout: Duration,
 }
+
+const REGISTRATION_CONCURRENCY: usize = 4;
 
 fn parse_args() -> anyhow::Result<Args> {
     let env_force_after = env_string("ROTATE_RESTART_FORCE_AFTER");
@@ -318,10 +323,6 @@ async fn main() -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| state_dir.join("instances"))
     });
-    if let (Some(state_dir), Some(source)) = (&args.state_dir, &microwarp_source) {
-        warp_masque::migration::migrate_microwarp(state_dir, source, args.accounts)
-            .with_context(|| format!("迁移 MicroWARP 目录 {}", source.display()))?;
-    }
     let upstream = UpstreamSet::parse(&args.upstream)
         .map_err(anyhow::Error::msg)
         .context("解析 UPSTREAM_SOCKS5")?;
@@ -329,18 +330,6 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("[warp-proxy] 检测到上游 SOCKS5，自动启用 HTTP/2");
         args.http2 = true;
     }
-    if !upstream.is_empty() {
-        let target = SocketAddr::from((Ipv4Addr::new(162, 159, 198, 2), 443));
-        upstream
-            .probe(target, args.upstream_probe)
-            .await
-            .map_err(anyhow::Error::msg)
-            .context("上游 SOCKS5 探测失败，已拒绝直连")?;
-    }
-
-    let configs = load_or_register(args.state_dir.as_deref(), args.accounts, &upstream)
-        .await
-        .context("准备账号")?;
     let auth = match (args.socks_user.clone(), args.socks_pass.clone()) {
         (Some(username), Some(password)) => Some(ProxyAuth { username, password }),
         (None, None) => None,
@@ -348,7 +337,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let options = PoolOptions {
         http2: args.http2,
-        upstream,
+        upstream: upstream.clone(),
         upstream_probe_timeout: args.upstream_probe,
         policy: Policy {
             strategy: parse_strategy(&args.strategy).map_err(anyhow::Error::msg)?,
@@ -376,15 +365,15 @@ async fn main() -> anyhow::Result<()> {
         state_dir: args.state_dir.clone(),
         auto_restore_limit: Some(args.accounts),
     };
-    let pool = Pool::start(configs, options).await.context("启动连接池")?;
+    let pool = Pool::start_deferred(options, args.accounts).context("启动连接池")?;
 
     let token = args.control_password.clone();
-    let socks_listener = TcpListener::bind(&args.socks)
-        .await
-        .with_context(|| format!("绑定代理 {}", args.socks))?;
     let control_listener = TcpListener::bind(&args.control)
         .await
         .with_context(|| format!("绑定控制接口 {}", args.control))?;
+    let socks_listener = TcpListener::bind(&args.socks)
+        .await
+        .with_context(|| format!("绑定代理 {}", args.socks))?;
     let socks_addr = socks_listener.local_addr()?;
     pool.set_listen(socks_addr.to_string());
     let socks_port = socks_addr.port();
@@ -410,63 +399,142 @@ async fn main() -> anyhow::Result<()> {
         args.mixed
     );
 
-    if let Some(source) = microwarp_source.filter(|_| !args.microwarp_scan_interval.is_zero()) {
-        let pool = pool.clone();
-        let interval = args.microwarp_scan_interval;
-        tokio::spawn(async move {
-            let mut timer =
-                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
-            loop {
-                timer.tick().await;
-                if let Err(err) = pool.scan_microwarp(&source).await {
-                    eprintln!(
-                        "[migration] 扫描 {} 失败，稍后重试: {err}",
-                        source.display()
-                    );
-                }
-            }
-        });
-    }
-
     tokio::spawn(control::serve(control_listener, pool.clone(), token));
-    tokio::spawn(socks::serve_pool(socks_listener, pool));
+    tokio::spawn(socks::serve_pool(socks_listener, pool.clone()));
+    tokio::spawn(initialize_accounts(
+        pool,
+        args.accounts,
+        args.state_dir,
+        microwarp_source,
+        args.microwarp_scan_interval,
+        upstream,
+        args.upstream_probe,
+    ));
     shutdown_signal().await;
     eprintln!("[warp-proxy] 正在退出");
     Ok(())
 }
 
-async fn load_or_register(
-    state_dir: Option<&std::path::Path>,
+async fn initialize_accounts(
+    pool: Arc<Pool>,
     count: usize,
-    upstream: &UpstreamSet,
-) -> anyhow::Result<Vec<WarpConfig>> {
-    let mut out = Vec::with_capacity(count);
-    for index in 1..=count {
-        let opts = warp_masque::RegisterOptions {
-            device_name: Some(format!("warp-proxy-{index}")),
-            ..Default::default()
-        };
-        if let Some(dir) = state_dir {
-            let path = dir.join(format!("account-{index}.json"));
-            if path.exists() {
-                eprintln!("[warp-proxy] 加载账号 {index}: {}", path.display());
-                out.push(
-                    WarpConfig::load(&path).with_context(|| format!("加载 {}", path.display()))?,
-                );
-                continue;
-            }
-            eprintln!("[warp-proxy] 注册账号 {index}");
-            let cfg = register_one(upstream.for_index(index - 1).as_ref(), &opts).await?;
-            std::fs::create_dir_all(dir).ok();
-            cfg.save(&path)
-                .with_context(|| format!("保存 {}", path.display()))?;
-            out.push(cfg);
-        } else {
-            eprintln!("[warp-proxy] 注册临时账号 {index}");
-            out.push(register_one(upstream.for_index(index - 1).as_ref(), &opts).await?);
+    state_dir: Option<PathBuf>,
+    microwarp_source: Option<PathBuf>,
+    microwarp_scan_interval: Duration,
+    upstream: UpstreamSet,
+    upstream_probe_timeout: Duration,
+) {
+    if let Some(source) = &microwarp_source {
+        let source = source.clone();
+        let pool_for_migration = pool.clone();
+        let migration =
+            tokio::task::spawn_blocking(move || pool_for_migration.import_microwarp(&source)).await;
+        match migration {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => pool.log_initialization(format!("迁移失败: {err}")),
+            Err(err) => pool.log_initialization(format!("迁移任务异常: {err}")),
         }
     }
-    Ok(out)
+    if !upstream.is_empty() {
+        let target = SocketAddr::from((Ipv4Addr::new(162, 159, 198, 2), 443));
+        let probe_set = upstream.clone();
+        let probe_pool = Arc::downgrade(&pool);
+        tokio::spawn(async move {
+            if let Err(err) = probe_set.probe(target, upstream_probe_timeout).await {
+                if let Some(pool) = probe_pool.upgrade() {
+                    pool.log_initialization(format!("上游 SOCKS5 探测失败，节点将自行重试: {err}"));
+                }
+            }
+        });
+    }
+    if let Some(source) = microwarp_source
+        .as_ref()
+        .filter(|_| !microwarp_scan_interval.is_zero())
+    {
+        let source = source.clone();
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval_at(
+                tokio::time::Instant::now() + microwarp_scan_interval,
+                microwarp_scan_interval,
+            );
+            loop {
+                timer.tick().await;
+                if let Err(err) = pool.scan_microwarp(&source).await {
+                    pool.log_initialization(format!("扫描 {} 失败: {err}", source.display()));
+                }
+            }
+        });
+    }
+
+    let register_limit = Arc::new(Semaphore::new(REGISTRATION_CONCURRENCY));
+    let mut registrations = JoinSet::new();
+    for index in 1..=count {
+        let state_dir = state_dir.clone();
+        let upstream = upstream.for_index(index - 1);
+        let register_limit = register_limit.clone();
+        let pool = Arc::downgrade(&pool);
+        registrations.spawn(async move {
+            let mut previous_error = String::new();
+            loop {
+                let permit = register_limit.acquire().await.expect("注册信号量未关闭");
+                let result =
+                    load_or_register_one(state_dir.as_deref(), index, upstream.as_ref()).await;
+                drop(permit);
+                match result {
+                    Ok(config) => return (index, config),
+                    Err(err) => {
+                        let message = format!("{err:#}");
+                        if message != previous_error {
+                            if let Some(pool) = pool.upgrade() {
+                                pool.log_initialization(format!(
+                                    "账号 {index} 准备失败，30 秒后重试: {message}"
+                                ));
+                            }
+                            previous_error = message;
+                        }
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
+                }
+            }
+        });
+    }
+    while let Some(result) = registrations.join_next().await {
+        match result {
+            Ok((id, config)) => {
+                if let Err(err) = pool.attach_base_account(id, config).await {
+                    pool.log_initialization(format!("账号 {id} 加入连接池失败: {err}"));
+                }
+            }
+            Err(err) => pool.log_initialization(format!("准备账号任务异常退出: {err}")),
+        }
+    }
+    pool.finish_initialization().await;
+}
+
+async fn load_or_register_one(
+    state_dir: Option<&std::path::Path>,
+    index: usize,
+    upstream: Option<&UpstreamProxy>,
+) -> anyhow::Result<WarpConfig> {
+    let opts = warp_masque::RegisterOptions {
+        device_name: Some(format!("warp-proxy-{index}")),
+        ..Default::default()
+    };
+    if let Some(dir) = state_dir {
+        let path = dir.join(format!("account-{index}.json"));
+        if path.exists() {
+            return WarpConfig::load(&path).with_context(|| format!("加载 {}", path.display()));
+        }
+        let config = register_one(upstream, &opts).await?;
+        std::fs::create_dir_all(dir).ok();
+        config
+            .save(&path)
+            .with_context(|| format!("保存 {}", path.display()))?;
+        Ok(config)
+    } else {
+        register_one(upstream, &opts).await
+    }
 }
 
 async fn register_one(
@@ -574,6 +642,49 @@ fn parse_duration(value: &str) -> anyhow::Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn prepares_saved_accounts_without_waiting_for_tunnels() {
+        let dir = std::env::temp_dir().join(format!(
+            "warp-proxy-async-start-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for id in 1..=2 {
+            WarpConfig {
+                id: format!("saved-{id}"),
+                ..WarpConfig::default()
+            }
+            .save(dir.join(format!("account-{id}.json")))
+            .unwrap();
+        }
+        let mut options = PoolOptions::basic(false);
+        options.state_dir = Some(dir.clone());
+        let pool = Pool::start_deferred(options, 2).unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            initialize_accounts(
+                pool.clone(),
+                2,
+                Some(dir.clone()),
+                None,
+                Duration::ZERO,
+                UpstreamSet::default(),
+                Duration::from_secs(1),
+            ),
+        )
+        .await
+        .unwrap();
+        let status = pool.status();
+        assert!(!status.initializing);
+        assert_eq!(status.accounts.len(), 2);
+        assert!(status.accounts.iter().all(|account| !account.ready));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn parses_duration_units() {

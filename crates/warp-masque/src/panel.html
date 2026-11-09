@@ -31,7 +31,7 @@
   main.container-fluid { padding: 24px 28px 48px; }
   .lamp { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--bs-secondary-color); flex: none; }
   .lamp.on, .lamp.healthy { background: #2f7d57; }
-  .lamp.attention, .lamp.waiting, .lamp.down { background: #b86a1a; }
+  .lamp.attention, .lamp.waiting, .lamp.down, .lamp.connecting, .lamp.retrying { background: #b86a1a; }
   .lamp.maintenance, .lamp.disabled { background: #a3453c; }
   .btn, .form-control, .form-select { border-radius: 8px; }
   .form-control, .form-select { border-color: var(--hair); }
@@ -323,7 +323,7 @@ async function refresh() {
     writeCachedToken(state.token);
     showError("");
     const online = document.querySelector("#online");
-    online.textContent = "控制面在线";
+    online.textContent = status.initializing ? "正在准备账号" : "控制面在线";
     document.querySelector("#lamp").className = "lamp on";
     render();
   } catch (err) {
@@ -388,7 +388,12 @@ function render() {
 function overview(data) {
   const total = data.accounts.length;
   const bad = data.attention + data.unknown;
-  const title = data.ready === total && total > 0 ? "全部实例运行正常" : (bad ? bad + " 个实例需要关注" : "没有可调度的实例");
+  const connecting = data.accounts.some((account) => account.health === "connecting" || account.health === "retrying");
+  const title = data.initializing
+    ? "正在准备账号（" + total + "/" + data.expected_accounts + "）"
+    : connecting ? "正在连接实例（已就绪 " + data.ready + "/" + total + "）"
+    : data.ready === total && total > 0 ? "全部实例运行正常"
+    : (bad ? bad + " 个实例需要关注" : "没有可调度的实例");
   const mode = data.mixed ? "MIXED" : "SOCKS5";
   const plan = data.plan || {};
   const last = plan.last;
@@ -529,10 +534,10 @@ function instances(data) {
     </div>
     <div class="sheet table-responsive"><table class="table table-sm table-hover align-middle mb-0 instance-table data-table">
       <thead><tr><th></th><th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口</th><th>IPv6 出口</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end" title="当前黏性用户名映射数；实例成功重连后清零">用户数</th><th class="text-end">重启进度</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight"></th></tr></thead>
-      <tbody>${rows.map((account) => `<tr class="${account.health === "down" || account.health === "attention" ? "row-alert" : ""}">
+      <tbody>${rows.map((account) => `<tr class="${["down", "attention", "retrying"].includes(account.health) ? "row-alert" : ""}">
         <td>${account.temporary ? `<input class="form-check-input" type="checkbox" data-temp="${account.id}" ${state.temps.includes(String(account.id)) ? "checked" : ""} aria-label="选择 ${account.id}">` : ""}</td>
         <td class="font-monospace">${account.id}</td>
-        <td class="${account.tunnel ? "" : "text-body-secondary"}">${account.tunnel ? "运行" : "停止"}</td>
+        <td class="${account.tunnel ? "" : "text-body-secondary"}">${account.health === "connecting" ? "启动中" : (account.health === "retrying" ? "重试中" : (account.tunnel ? "运行" : "停止"))}</td>
         <td class="${account.manual ? "" : "text-body-secondary"}">${account.manual ? "启用" : "停用"}</td>
         <td><span class="status-cell"><span class="lamp ${account.health}"></span><span>${healthText(account.health)}</span>${account.warp ? '<span class="probe">' + escapeHtml(account.warp) + '</span>' : ""}</span></td>
                 ${egressCell(account.ipv4, interfaceV4(account))}
@@ -679,7 +684,7 @@ async function copyText(text) {
 }
 function matchFilter(account, data) {
   const busy = (data.tasks || []).some((task) => task.id === account.id) || account.draining || account.deferred;
-  if (state.filter === "attention") return account.health === "attention" || account.health === "down" || account.health === "unknown";
+  if (state.filter === "attention") return account.health === "attention" || account.health === "down" || account.health === "unknown" || account.health === "connecting" || account.health === "retrying";
   if (state.filter === "busy") return busy;
   if (state.filter === "healthy") return account.health === "healthy";
   if (state.filter === "disabled") return !account.manual;
@@ -687,7 +692,7 @@ function matchFilter(account, data) {
   return true;
 }
 function healthText(health) {
-  return { healthy: "健康", attention: "需关注", down: "中断", waiting: "等待空闲", maintenance: "维护", disabled: "已停用", unknown: "未知" }[health] || health;
+  return { healthy: "健康", attention: "需关注", down: "中断", connecting: "连接中", retrying: "失败重试", waiting: "等待空闲", maintenance: "维护", disabled: "已停用", unknown: "未知" }[health] || health;
 }
 function nextText(at, seconds) {
   if (!seconds) return "未设置";

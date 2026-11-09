@@ -26,6 +26,7 @@ use crate::upstream::{UpstreamProxy, UpstreamSet};
 use crate::{DeviceKeypair, WarpConfig};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+const CONNECT_CONCURRENCY: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WakeReason {
@@ -34,6 +35,133 @@ enum WakeReason {
     Plan,
     /// 暂停、恢复或立即执行，不重置倒计时。
     Control,
+}
+
+#[cfg(test)]
+mod deferred_start_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn request(addr: SocketAddr, path: &str, token: Option<&str>) -> String {
+        let mut connection = TcpStream::connect(addr).await.unwrap();
+        let token = token
+            .map(|token| format!("X-Warp-Token: {token}\r\n"))
+            .unwrap_or_default();
+        connection
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{token}\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            connection.read_to_string(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn panel_and_status_work_while_connections_are_waiting() {
+        let pool = Pool::start_deferred(PoolOptions::basic(false), 2).unwrap();
+        let permit = pool
+            .connect_limit
+            .acquire_many(CONNECT_CONCURRENCY as u32)
+            .await
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(crate::control::serve(
+            listener,
+            pool.clone(),
+            "secret".into(),
+        ));
+
+        assert!(request(addr, "/", None)
+            .await
+            .contains("<title>warp-proxy</title>"));
+        let status = request(addr, "/api/status", Some("secret")).await;
+        assert!(status.contains("\"initializing\":true"));
+        assert!(status.contains("\"expected_accounts\":2"));
+
+        pool.attach_base_account(1, WarpConfig::default())
+            .await
+            .unwrap();
+        let current = pool.status();
+        assert_eq!(current.accounts.len(), 1);
+        assert_eq!(current.accounts[0].health, "connecting");
+        assert!(!current.accounts[0].ready);
+        let status = request(addr, "/api/status", Some("secret")).await;
+        assert!(status.contains("\"health\":\"connecting\""));
+
+        server.abort();
+        drop(permit);
+        drop(pool);
+    }
+
+    #[tokio::test]
+    async fn pending_base_accounts_keep_their_restore_slots() {
+        let dir = std::env::temp_dir().join(format!(
+            "warp-proxy-pending-base-{}-{}",
+            std::process::id(),
+            crate::console::unix_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        WarpConfig::default().save(account_path(&dir, 3)).unwrap();
+        remember_saved_temporary(&dir, 3).unwrap();
+
+        let mut options = PoolOptions::basic(false);
+        options.state_dir = Some(dir.clone());
+        options.auto_restore_limit = Some(2);
+        let pool = Pool::start_deferred(options, 2).unwrap();
+        pool.restore_temporary().await;
+        assert!(pool.status().accounts.is_empty());
+        pool.finish_initialization().await;
+        assert!(pool.status().accounts.is_empty());
+        pool.restore_temporary().await;
+        assert_eq!(pool.status().accounts.len(), 1);
+
+        drop(pool);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn initial_connection_failure_shows_retrying_status() {
+        let pool = Pool::start_deferred(PoolOptions::basic(false), 1).unwrap();
+        pool.attach_base_account(1, WarpConfig::default())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if pool.status().accounts[0].health == "retrying" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!pool.status().accounts[0].ready);
+    }
+
+    #[tokio::test]
+    async fn background_accounts_keep_numeric_order() {
+        let pool = Pool::start_deferred(PoolOptions::basic(false), 3).unwrap();
+        for id in [3, 1, 2] {
+            pool.attach_base_account(id, WarpConfig::default())
+                .await
+                .unwrap();
+        }
+        let ids: Vec<_> = pool
+            .status()
+            .accounts
+            .iter()
+            .map(|account| account.id)
+            .collect();
+        assert_eq!(ids, [1, 2, 3]);
+    }
 }
 const MIN_ROTATE_SECS: u64 = 60;
 
@@ -430,6 +558,8 @@ impl Drop for ConnLease {
 /// 账号池和入口调度状态。
 pub struct Pool {
     workers: Mutex<Vec<Arc<Worker>>>,
+    initializing: AtomicBool,
+    expected_accounts: usize,
     enabled: AtomicBool,
     pinned: AtomicUsize,
     http2: AtomicBool,
@@ -449,6 +579,7 @@ pub struct Pool {
     health_interval: Duration,
     health_timeout: Duration,
     restart_limit: Arc<Semaphore>,
+    connect_limit: Semaphore,
     /// 运行中可改的保身份重启间隔。0 表示关闭计划。
     restart_interval: Mutex<Duration>,
     /// 错过整点时补跑或跳过。见 Misfire。
@@ -498,43 +629,7 @@ impl Pool {
                 .await
                 .map_err(crate::Error::Config)?;
         }
-        let (threshold_tx, threshold_rx) = mpsc::unbounded_channel();
-        let pool = Arc::new(Pool {
-            workers: Mutex::new(Vec::new()),
-            enabled: AtomicBool::new(true),
-            pinned: AtomicUsize::new(0),
-            http2: AtomicBool::new(opts.http2),
-            next_id: AtomicUsize::new(1),
-            rotate_secs: AtomicU64::new(0),
-            device_name: opts.device_name,
-            upstream: opts.upstream,
-            resolve: opts.resolve,
-            auth: opts.auth,
-            mixed: opts.mixed,
-            access_log: opts.access_log,
-            policy: opts.policy,
-            scheduler: Scheduler::new(),
-            restart: opts.restart.clone(),
-            restart_policy: RwLock::new(policy),
-            threshold_tx,
-            health_interval: opts.health_interval,
-            health_timeout: opts.health_timeout,
-            restart_limit: Arc::new(Semaphore::new(opts.restart.concurrency.max(1))),
-            restart_interval: Mutex::new(opts.restart.interval),
-            restart_misfire: AtomicU8::new(opts.restart.misfire as u8),
-            restart_batch: AtomicUsize::new(opts.restart.batch),
-            restart_defer: Mutex::new(opts.restart.defer),
-            restart_wake: Arc::new(Notify::new()),
-            restart_paused: AtomicBool::new(false),
-            restart_now: AtomicBool::new(false),
-            wake_reason: Mutex::new(WakeReason::None),
-            console: Console::new(),
-            listen: Mutex::new(String::new()),
-            state_dir: opts.state_dir.clone(),
-            auto_restore_limit: opts.auto_restore_limit,
-            base_ids: Mutex::new(Vec::new()),
-            reserved_ids: Mutex::new(Vec::new()),
-        });
+        let (pool, threshold_rx) = Self::create(opts, configs.len())?;
         for cfg in configs {
             let id = pool.next_id.fetch_add(1, Ordering::Relaxed);
             let upstream = pool.upstream.for_index(id.saturating_sub(1));
@@ -561,10 +656,114 @@ impl Pool {
             *pool.base_ids.lock().unwrap() = ids;
         }
         pool.restore_temporary().await;
+        Self::spawn_tasks(&pool, threshold_rx);
+        Ok(pool)
+    }
+
+    /// 先建立可用的控制面，账号可随后逐个加载并在后台并发拨号。
+    pub fn start_deferred(opts: PoolOptions, base_count: usize) -> crate::Result<Arc<Pool>> {
+        let (pool, threshold_rx) = Self::create(opts, base_count)?;
+        *pool.base_ids.lock().unwrap() = (1..=base_count).collect();
+        pool.next_id
+            .store(base_count.saturating_add(1), Ordering::Relaxed);
+        pool.initializing.store(true, Ordering::Relaxed);
+        Self::spawn_tasks(&pool, threshold_rx);
+        Ok(pool)
+    }
+
+    pub async fn attach_base_account(
+        self: &Arc<Self>,
+        id: usize,
+        config: WarpConfig,
+    ) -> crate::Result<()> {
+        let is_base = self.base_ids.lock().unwrap().contains(&id);
+        if !is_base || self.snapshot().iter().any(|worker| worker.id == id) {
+            return Err(crate::Error::Config(format!("无效或重复的基础账号 {id}")));
+        }
+        self.attach_account(
+            id,
+            config,
+            false,
+            "加载已保存的账号",
+            &format!("已加载账号 {id}"),
+        )
+        .await
+    }
+
+    pub async fn finish_initialization(self: &Arc<Self>) {
+        self.restore_temporary().await;
+        self.initializing.store(false, Ordering::Relaxed);
+        self.console
+            .log("account", "初始账号加载完成，连接在后台继续进行");
+    }
+
+    pub fn log_initialization(&self, message: impl Into<String>) {
+        let message = message.into();
+        eprintln!("[warp-proxy] {message}");
+        self.console.log("account", message);
+    }
+
+    fn create(
+        opts: PoolOptions,
+        expected_accounts: usize,
+    ) -> crate::Result<(Arc<Pool>, mpsc::UnboundedReceiver<usize>)> {
+        let policy = RestartPolicy {
+            mode: opts.restart.mode,
+            threshold: opts.restart.threshold,
+        };
+        policy.validate().map_err(crate::Error::Config)?;
+        if !opts.upstream.is_empty() && !opts.http2 {
+            return Err(crate::Error::Config(
+                "上游 SOCKS5 只支持 TCP，必须使用 HTTP/2（--http2）".into(),
+            ));
+        }
+        let (threshold_tx, threshold_rx) = mpsc::unbounded_channel();
+        let pool = Arc::new(Pool {
+            workers: Mutex::new(Vec::new()),
+            initializing: AtomicBool::new(false),
+            expected_accounts,
+            enabled: AtomicBool::new(true),
+            pinned: AtomicUsize::new(0),
+            http2: AtomicBool::new(opts.http2),
+            next_id: AtomicUsize::new(1),
+            rotate_secs: AtomicU64::new(0),
+            device_name: opts.device_name,
+            upstream: opts.upstream,
+            resolve: opts.resolve,
+            auth: opts.auth,
+            mixed: opts.mixed,
+            access_log: opts.access_log,
+            policy: opts.policy,
+            scheduler: Scheduler::new(),
+            restart: opts.restart.clone(),
+            restart_policy: RwLock::new(policy),
+            threshold_tx,
+            health_interval: opts.health_interval,
+            health_timeout: opts.health_timeout,
+            restart_limit: Arc::new(Semaphore::new(opts.restart.concurrency.max(1))),
+            connect_limit: Semaphore::new(CONNECT_CONCURRENCY),
+            restart_interval: Mutex::new(opts.restart.interval),
+            restart_misfire: AtomicU8::new(opts.restart.misfire as u8),
+            restart_batch: AtomicUsize::new(opts.restart.batch),
+            restart_defer: Mutex::new(opts.restart.defer),
+            restart_wake: Arc::new(Notify::new()),
+            restart_paused: AtomicBool::new(false),
+            restart_now: AtomicBool::new(false),
+            wake_reason: Mutex::new(WakeReason::None),
+            console: Console::new(),
+            listen: Mutex::new(String::new()),
+            state_dir: opts.state_dir.clone(),
+            auto_restore_limit: opts.auto_restore_limit,
+            base_ids: Mutex::new(Vec::new()),
+            reserved_ids: Mutex::new(Vec::new()),
+        });
+        Ok((pool, threshold_rx))
+    }
+
+    fn spawn_tasks(pool: &Arc<Pool>, threshold_rx: mpsc::UnboundedReceiver<usize>) {
         Pool::spawn_rotator(pool.clone());
         Pool::spawn_restarter(pool.clone());
         Pool::spawn_threshold_restarter(pool.clone(), threshold_rx);
-        Ok(pool)
     }
 
     fn transport(&self) -> Transport {
@@ -1330,13 +1529,13 @@ impl Pool {
         let (worker, jobs) = Worker::new(id, config, upstream);
         worker.temporary.store(temporary, Ordering::Relaxed);
         worker.note(note);
-        self.workers.lock().unwrap().push(worker.clone());
-        self.release_reserved(id);
-        if let Err(err) = self.build_tunnel(&worker).await {
-            let text = format!("[pool] 账号 {id} 初次连接失败: {err}");
-            eprintln!("{text}");
-            self.console.log("account", text);
+        worker.set_stage("连接中");
+        {
+            let mut workers = self.workers.lock().unwrap();
+            let position = workers.partition_point(|existing| existing.id < id);
+            workers.insert(position, worker.clone());
         }
+        self.release_reserved(id);
         Pool::spawn_supervisor(self.clone(), worker, jobs);
         self.console.log("account", message.to_string());
         Ok(())
@@ -1357,9 +1556,23 @@ impl Pool {
             let should_load = {
                 let mut reserved = self.reserved_ids.lock().unwrap();
                 let workers = self.workers.lock().unwrap();
-                let at_limit = self
-                    .auto_restore_limit
-                    .is_some_and(|limit| workers.len().saturating_add(reserved.len()) >= limit);
+                let pending_bases = if self.initializing.load(Ordering::Relaxed) {
+                    self.base_ids
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|base_id| !workers.iter().any(|worker| worker.id == **base_id))
+                        .count()
+                } else {
+                    0
+                };
+                let at_limit = self.auto_restore_limit.is_some_and(|limit| {
+                    workers
+                        .len()
+                        .saturating_add(reserved.len())
+                        .saturating_add(pending_bases)
+                        >= limit
+                });
                 if reserved.contains(&id)
                     || workers.iter().any(|worker| worker.id == id)
                     || at_limit
@@ -1399,20 +1612,37 @@ impl Pool {
 
     /// 运行时导入新发现的 MicroWARP 身份，并启动迁移名单中的实例。
     pub async fn scan_microwarp(self: &Arc<Self>, source_dir: &Path) -> crate::Result<usize> {
-        let Some(dir) = &self.state_dir else {
-            return Err(crate::Error::Config("迁移 MicroWARP 需要 STATE_DIR".into()));
-        };
-        let base_count = self.base_ids.lock().unwrap().len();
-        let imported = {
-            let reserved = self.reserved_ids.lock().unwrap();
-            crate::migration::migrate_excluding(dir, source_dir, base_count, &reserved)?
-        };
+        let imported = self.import_microwarp(source_dir)?;
         self.restore_temporary().await;
         if imported > 0 {
             self.console
                 .log("account", format!("已迁移 {imported} 个 MicroWARP 账号"));
         }
         Ok(imported)
+    }
+
+    /// 仅导入磁盘身份；适合启动阶段在阻塞线程执行，避免占用控制面的运行线程。
+    pub fn import_microwarp(&self, source_dir: &Path) -> crate::Result<usize> {
+        let Some(dir) = &self.state_dir else {
+            return Err(crate::Error::Config("迁移 MicroWARP 需要 STATE_DIR".into()));
+        };
+        let base_ids = self.base_ids.lock().unwrap().clone();
+        let pending_bases = if self.initializing.load(Ordering::Relaxed) {
+            let workers = self.snapshot();
+            base_ids
+                .iter()
+                .filter(|id| !workers.iter().any(|worker| worker.id == **id))
+                .copied()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        {
+            let reserved = self.reserved_ids.lock().unwrap();
+            let mut excluded = reserved.clone();
+            excluded.extend(pending_bases);
+            crate::migration::migrate_excluding(dir, source_dir, base_ids.len(), &excluded)
+        }
     }
 
     fn find_spare(&self, reserved: &[usize]) -> Option<(usize, WarpConfig)> {
@@ -1543,8 +1773,13 @@ impl Pool {
                 let (ipv4, ipv6, country, colo, warp) =
                     egress_parts(egress_v4.as_ref(), egress_v6.as_ref());
                 let trace = preferred_trace(egress_v4.as_ref(), egress_v6.as_ref()).cloned();
+                let stage = worker.stage.lock().unwrap().clone();
                 let health = if !manual {
                     "disabled"
+                } else if stage == "连接中" {
+                    "connecting"
+                } else if stage == "连接失败，重试中" {
+                    "retrying"
                 } else if draining {
                     "maintenance"
                 } else if deferred {
@@ -1567,7 +1802,6 @@ impl Pool {
                     "unknown" => unknown += 1,
                     _ => attention += 1,
                 }
-                let stage = worker.stage.lock().unwrap().clone();
                 let stage_at = *worker.stage_at.lock().unwrap();
                 if !stage.is_empty() {
                     tasks.push(TaskStatus {
@@ -1609,6 +1843,8 @@ impl Pool {
         let (bytes_up, bytes_down) = self.console.totals();
         let _ = now_ms;
         PoolStatus {
+            initializing: self.initializing.load(Ordering::Relaxed),
+            expected_accounts: self.expected_accounts,
             enabled: self.enabled(),
             mode: if pinned == 0 { "auto" } else { "pinned" },
             pinned,
@@ -1997,7 +2233,21 @@ async fn reconnect_loop(
         };
         let probe_timeout = current.restart.probe_timeout;
         worker.begin_draining();
-        worker.set_stage("重连");
+        let initial_connect = matches!(
+            worker.stage.lock().unwrap().as_str(),
+            "连接中" | "连接失败，重试中"
+        );
+        if initial_connect {
+            worker.set_stage("连接中");
+        } else {
+            worker.set_stage("重连");
+        }
+        let Ok(permit) = current.connect_limit.acquire().await else {
+            return false;
+        };
+        if worker.stopped.load(Ordering::Relaxed) {
+            return false;
+        }
         let built = current.build_tunnel(worker).await;
         let failure = match built {
             Err(err) => Some(err.to_string()),
@@ -2025,6 +2275,9 @@ async fn reconnect_loop(
             },
         };
         if let Some(err) = failure {
+            if initial_connect {
+                worker.set_stage("连接失败，重试中");
+            }
             let text = format!(
                 "[pool] 账号 {} 尚未就绪: {err}，{} 秒后重试",
                 worker.id,
@@ -2033,6 +2286,7 @@ async fn reconnect_loop(
             eprintln!("{text}");
             current.console.log("account", text);
         }
+        drop(permit);
         drop(current);
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {}
@@ -2337,6 +2591,8 @@ fn sticky_name(sticky: crate::schedule::StickyMode) -> &'static str {
 /// 控制接口 /api/status 的返回体。
 #[derive(Serialize)]
 pub struct PoolStatus {
+    pub initializing: bool,
+    pub expected_accounts: usize,
     pub enabled: bool,
     pub mode: &'static str,
     pub pinned: usize,
