@@ -99,7 +99,7 @@
   .metric { padding: 0 20px 0 0; }
   .metric + .metric { padding-left: 20px; border-left: 1px solid var(--hair); }
   .metric .k, .metric .s { font-size: 12px; color: var(--bs-secondary-color); }
-  .metric .v { font-size: 22px; line-height: 1.3; margin-top: 4px; }
+  .metric .v { font-size: 18px; line-height: 1.4; margin-top: 4px; overflow-wrap: anywhere; }
   .metric .s { margin-top: 4px; }
   .sheet { border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); overflow: auto; }
   .connections-scroll { max-height: 36rem; }
@@ -179,7 +179,7 @@
   <div class="alert alert-danger d-none" id="error" role="alert"></div>
   <section id="overview">
     <h1 class="h4">还没有状态</h1>
-    <p class="text-body-secondary mb-0">在顶栏输入管理密码并连接。连接后这里显示入口、流量和重启计划。</p>
+    <p class="text-body-secondary mb-0">在顶栏输入管理密码并连接。连接后这里显示入口、流量和自动重启队列。</p>
   </section>
   <section id="instances" class="d-none"></section>
   <section id="connections" class="d-none"></section>
@@ -285,9 +285,6 @@ function actionText(name, button) {
   if (name === "manual") return (button.dataset.on === "1" ? "启用" : "停用") + (slot ? "实例 " + slot : "");
   if (name === "rotate") return "换出口";
   if (name === "trace") return "刷新出口";
-  if (name === "plan-now") return "执行重启计划";
-  if (name === "plan-pause") return "暂停计划";
-  if (name === "plan-resume") return "恢复计划";
   if (name === "restart-policy") return "更新重启策略";
   if (name === "add-temp") {
     const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
@@ -295,7 +292,6 @@ function actionText(name, button) {
   }
   if (name === "remove-temp") return "移除临时实例";
   if (name === "toggle") return button.dataset.on === "1" ? "恢复入口" : "暂停入口";
-  if (name === "pin") return "切换固定实例";
   if (name === "http2") return button.dataset.on === "1" ? "切换到 HTTP/2" : "切换到 HTTP/3";
   if (name === "interval") return "设置换出口间隔";
   return ((button && button.textContent) || "操作").trim();
@@ -340,8 +336,8 @@ function capture() {
   const active = document.activeElement;
   const tempCount = document.getElementById("temp-count");
   if (tempCount) state.tempCount = tempCount.value;
-  state.focusId = active && ["pin", "rotate-seconds", "temp-count", "restart-mode", "restart-threshold"].includes(active.id) ? active.id : "";
-  for (const id of ["pin", "rotate-seconds"]) {
+  state.focusId = active && ["rotate-seconds", "temp-count", "restart-uptime", "restart-users", "restart-connections"].includes(active.id) ? active.id : "";
+  for (const id of ["rotate-seconds"]) {
     const node = document.getElementById(id);
     if (node && active === node) state.drafts[id] = node.value;
     else delete state.drafts[id];
@@ -388,29 +384,25 @@ function render() {
 function overview(data) {
   const total = data.accounts.length;
   const bad = data.attention + data.unknown;
-  const connecting = data.accounts.some((account) => account.health === "connecting" || account.health === "retrying");
+  const connecting = data.accounts.some((item) => item.health === "connecting" || item.health === "retrying");
   const title = data.initializing
     ? "正在准备账号（" + total + "/" + data.expected_accounts + "）"
     : connecting ? "正在连接实例（已就绪 " + data.ready + "/" + total + "）"
     : data.ready === total && total > 0 ? "全部实例运行正常"
-    : (bad ? bad + " 个实例需要关注" : "没有可调度的实例");
+    : bad ? bad + " 个实例需要关注" : "没有可调度的实例";
   const mode = data.mixed ? "MIXED" : "SOCKS5";
-  const plan = data.plan || {};
-  const last = plan.last;
-  const pinValue = state.drafts.pin != null ? state.drafts.pin : String(data.pinned || 0);
   const rotateValue = state.drafts["rotate-seconds"] != null ? state.drafts["rotate-seconds"] : data.rotate_seconds;
-  const restartMode = state.restartDraft ? state.restartDraft.mode : data.restart_mode;
-  const restartThreshold = state.restartDraft ? state.restartDraft.threshold : data.restart_threshold;
-  const thresholdMode = data.restart_mode !== "scheduled";
-  const thresholdLabel = data.restart_mode === "users" ? "累计用户" : "累计连接";
-  const pendingIds = data.accounts.filter((account) => account.restart_pending).map((account) => account.id);
-  const nextTitle = thresholdMode ? "触发条件" : "下次执行";
-  const nextValue = thresholdMode ? thresholdLabel + " ≥ " + data.restart_threshold : nextText(plan.next_at, data.restart_seconds);
-  const planInfo = thresholdMode ? "成功重启后清零 · 同时最多 " + data.restart_concurrency + " 个" : "每 " + data.restart_seconds + " 秒 · 每轮 " + (data.restart_batch || "全部") + " · 同时 " + data.restart_concurrency + " · 延后 " + data.restart_defer_seconds + " 秒 · 错过 " + (data.restart_misfire === "skip" ? "跳过" : "立即补跑");
-  const queueInfo = thresholdMode ? "待重启 " + idList(pendingIds) : "就绪 " + idList(plan.ready) + " · 延后 " + idList(plan.deferred) + " · 重试 " + idList(plan.retry);
-  const resultLabel = thresholdMode ? "当前累计" : "上次结果";
-  const resultValue = thresholdMode ? data.accounts.reduce((total, account) => total + (data.restart_mode === "users" ? account.restart_users : account.restart_connections), 0) : (last ? last.success + " 成功 / " + last.failed + " 失败" : "还没有");
-  const resultNote = thresholdMode ? "所有实例当前累计之和" : (last ? "延后 " + last.deferred + " · " + (last.millis / 1000).toFixed(1) + " 秒 · " + clock(last.at, true) : "");
+  const draft = state.restartDraft || {};
+  const uptime = draft.uptime ?? String(data.restart_max_uptime_seconds);
+  const users = draft.users ?? String(data.restart_max_users);
+  const connections = draft.connections ?? String(data.restart_max_connections);
+  const triggers = [
+    data.restart_max_uptime_seconds > 0 ? "运行 " + duration(data.restart_max_uptime_seconds) : null,
+    data.restart_max_users > 0 ? "用户 " + data.restart_max_users : null,
+    data.restart_max_connections > 0 ? "连接 " + data.restart_max_connections : null,
+  ].filter(Boolean);
+  const drains = data.drain_queue || [];
+  const restarts = data.restart_queue || [];
   return `
     <h1 class="h4 mb-1">${escapeHtml(title)}</h1>
     <p class="text-body-secondary">${escapeHtml(data.listen || "未绑定")} · ${mode} · ${escapeHtml(data.strategy)} · ${escapeHtml(data.sticky)} · 统计自 ${clock(data.started_at)}</p>
@@ -423,64 +415,39 @@ function overview(data) {
     <div class="card mt-3"><div class="card-body">
       <div class="d-flex flex-wrap justify-content-between align-items-baseline gap-2">
         <h2 class="h5 mb-0">调度</h2>
-        <div class="text-body-secondary small">${data.enabled ? "入口开启" : "入口已暂停"} · ${data.http2 ? "HTTP/2" : "HTTP/3"} · 固定 ${data.pinned ? data.pinned : "自动"}</div>
+        <div class="text-body-secondary small">${data.enabled ? "入口开启" : "入口已暂停"} · ${data.http2 ? "HTTP/2" : "HTTP/3"} · 按负载策略自动选路</div>
       </div>
       <div class="d-flex flex-wrap gap-3 mt-3">
-        <div class="cluster">
-          <div class="cluster-label">入口</div>
-          <div class="d-flex flex-wrap align-items-center gap-2">
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
-        <label class="d-flex align-items-center gap-2 mb-0">固定实例
-          <select id="pin" class="form-select form-select-sm" style="width: 7rem">${pinOptions(data, pinValue)}</select>
-        </label>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="pin">应用</button>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "改用 HTTP/3" : "改用 HTTP/2"}</button>
-          </div>
-        </div>
-        <div class="cluster">
-          <div class="cluster-label">出口</div>
-          <div class="d-flex flex-wrap align-items-center gap-2">
-            <label class="d-flex align-items-center gap-2 mb-0">换出口
-          <input id="rotate-seconds" class="form-control form-control-sm" inputmode="numeric" value="${escapeHtml(rotateValue)}" style="width: 5rem"> 秒
-        </label>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="interval">设置</button>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="rotate">立即换出口</button>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">刷新出口</button>
-          </div>
-        </div>
+        <div class="cluster"><div class="cluster-label">入口</div><div class="d-flex flex-wrap align-items-center gap-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "改用 HTTP/3" : "改用 HTTP/2"}</button>
+        </div></div>
+        <div class="cluster"><div class="cluster-label">出口</div><div class="d-flex flex-wrap align-items-center gap-2">
+          <label class="d-flex align-items-center gap-2 mb-0">换出口 <input id="rotate-seconds" class="form-control form-control-sm" inputmode="numeric" value="${escapeHtml(rotateValue)}" style="width:5rem"> 秒</label>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="interval">设置</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="rotate">立即换出口（首实例）</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">刷新出口</button>
+          <span class="text-body-secondary small">换出口会重新注册身份，独立于自动排空。</span>
+        </div></div>
       </div>
     </div></div>
     <div class="card mt-3"><div class="card-body">
-      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-        <h2 class="h5 mb-0">保身份重启 · ${thresholdMode ? "阈值触发" : "定时计划"}${!thresholdMode && plan.paused ? " · 已暂停" : ""}</h2>
-        <div class="btn-group btn-group-sm">
-          <button type="button" class="btn btn-outline-secondary" data-act="plan-now">立即执行</button>
-          ${thresholdMode ? "" : '<button type="button" class="btn btn-outline-secondary" data-act="' + (plan.paused ? "plan-resume" : "plan-pause") + '">' + (plan.paused ? "恢复" : "暂停") + "</button>"}
-        </div>
-      </div>
+      <h2 class="h5">自动重启 · 条件可组合</h2>
+      <p class="text-body-secondary small">任意一个条件达到即刻摘流，已建立的连接自然结束；0 表示关闭该条件，全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
       <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
-        <label class="d-flex align-items-center gap-2 mb-0">策略
-          <select id="restart-mode" class="form-select form-select-sm" style="width: 10rem">
-            ${[["scheduled", "定时重启"], ["users", "按累计用户数"], ["connections", "按累计连接数"]].map(([value, label]) => '<option value="' + value + '" ' + (restartMode === value ? "selected" : "") + '>' + label + '</option>').join("")}
-          </select>
-        </label>
-        <label class="d-flex align-items-center gap-2 mb-0">阈值
-          <input id="restart-threshold" class="form-control form-control-sm" type="number" min="1" step="1" value="${escapeHtml(restartThreshold)}" style="width: 7rem">
-        </label>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart-policy">应用策略</button>
-        <span class="text-body-secondary small">用户数达阈值后仅允许已统计用户继续连接，排空超时后重启；连接数达阈值后停止新连接。</span>
+        <label class="d-flex align-items-center gap-2 mb-0">运行超过 <input id="restart-uptime" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(uptime)}" style="width:7rem"> 秒</label>
+        <label class="d-flex align-items-center gap-2 mb-0">累计用户 <input id="restart-users" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(users)}" style="width:7rem"></label>
+        <label class="d-flex align-items-center gap-2 mb-0">累计连接 <input id="restart-connections" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(connections)}" style="width:8rem"></label>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart-policy">应用条件</button>
       </div>
       <div class="metrics">
-        <div class="metric"><div class="k">${nextTitle}</div><div class="v" ${thresholdMode ? "" : 'id="next"'}>${nextValue}</div><div class="s">${planInfo}</div></div>
-        <div class="metric"><div class="k">${resultLabel}</div><div class="v">${resultValue}</div><div class="s">${resultNote}</div></div>
-        <div class="metric"><div class="k">队列</div><div class="v">${thresholdMode ? pendingIds.length + " 待重启" : (plan.ready || []).length + " 就绪"}</div><div class="s">${queueInfo}</div></div>
+        <div class="metric"><div class="k">触发条件（任意满足）</div><div class="v">${triggers.length ? triggers.join(" / ") : "全部关闭"}</div><div class="s">三个阈值独立，所有统计按实例分别计算</div></div>
+        <div class="metric"><div class="k">排空队列 · ${drains.length}</div><div class="v">${idList(drains)}</div><div class="s">每 ${data.restart_drain_check_seconds} 秒检测；有活跃连接继续等待，不设超时</div></div>
+        <div class="metric"><div class="k">重启队列 · ${restarts.length}</div><div class="v">${idList(restarts)}</div><div class="s">同时最多重连 ${data.restart_concurrency} 个实例；无活跃连接才进入队列</div></div>
       </div>
-      ${thresholdMode ? "" : history(plan.history)}
+      <p class="text-body-secondary small mt-3 mb-0">排空后新请求只选择其他可用实例：username-round / username-least 会保存新绑定、不自动迁回；username-hash / ip-hash 无状态，原实例恢复后可能重新选中。所有实例都不可用时才拒绝新连接。实例页“强制重连”可中断已有连接。</p>
     </div></div>
-    <div class="card mt-3"><div class="card-body">
-      <h2 class="h5">进行中的任务</h2>
-      ${tasks(data.tasks)}
-    </div></div>`;
+    <div class="card mt-3"><div class="card-body"><h2 class="h5">进行中的任务</h2>${tasks(data.tasks)}</div></div>`;
 }
 function stat(label, value, note) {
   return `<div class="col-6 col-lg-3"><div class="card stat h-100"><div class="card-body"><div class="text-body-secondary small">${label}</div><div class="fs-3 num">${value}</div><div class="text-body-secondary small">${note || ""}</div></div></div></div>`;
@@ -502,14 +469,6 @@ function egressCell(ip, iface) {
 function placeText(account) {
   const place = [account.country, account.colo].filter(Boolean).join(" · ");
   return place || "还没探测";
-}
-function pinOptions(data, selected) {
-  const options = [{ value: "0", label: "自动" }].concat(data.accounts.map((account) => ({ value: String(account.id), label: String(account.id) })));
-  return options.map((option) => `<option value="${option.value}" ${option.value === String(selected) ? "selected" : ""}>${option.label}</option>`).join("");
-}
-function history(rows) {
-  if (!rows || !rows.length) return `<p class="text-body-secondary mt-3 mb-0">还没有执行历史</p>`;
-  return `<div class="table-responsive mt-3"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>时间</th><th class="text-end">成功</th><th class="text-end">失败</th><th class="text-end">延后</th><th class="text-end">耗时</th></tr></thead><tbody>${rows.slice(0, 10).map((row) => `<tr><td>${clock(row.at, true)}</td><td class="text-end font-monospace">${row.success}</td><td class="text-end font-monospace">${row.failed}</td><td class="text-end font-monospace">${row.deferred}</td><td class="text-end font-monospace">${(row.millis / 1000).toFixed(1)} 秒</td></tr>`).join("")}</tbody></table></div>`;
 }
 function tasks(rows) {
   if (!rows || !rows.length) return `<p class="text-body-secondary mb-0">没有进行中的任务。完成后会从这里消失</p>`;
@@ -533,7 +492,7 @@ function instances(data) {
       </div>
     </div>
     <div class="sheet table-responsive"><table class="table table-sm table-hover align-middle mb-0 instance-table data-table">
-      <thead><tr><th></th><th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口</th><th>IPv6 出口</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end" title="当前黏性用户名映射数；实例成功重连后清零">用户数</th><th class="text-end">重启进度</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight"></th></tr></thead>
+      <thead><tr><th></th><th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口</th><th>IPv6 出口</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end" title="当前黏性用户名映射数；实例成功重连后清零">黏性用户数</th><th class="text-end">重启统计（用户 / 连接）</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight"></th></tr></thead>
       <tbody>${rows.map((account) => `<tr class="${["down", "attention", "retrying"].includes(account.health) ? "row-alert" : ""}">
         <td>${account.temporary ? `<input class="form-check-input" type="checkbox" data-temp="${account.id}" ${state.temps.includes(String(account.id)) ? "checked" : ""} aria-label="选择 ${account.id}">` : ""}</td>
         <td class="font-monospace">${account.id}</td>
@@ -546,10 +505,10 @@ function instances(data) {
         <td class="${account.pooled ? "" : "text-body-secondary"}">${account.pooled ? "已入池" : "未入池"}</td>
         <td class="text-end font-monospace">${account.active}</td>
         <td class="text-end font-monospace">${account.users}</td>
-        <td class="text-end font-monospace">${data.restart_mode === "scheduled" ? "—" : (data.restart_mode === "users" ? account.restart_users : account.restart_connections) + "/" + data.restart_threshold}</td>
+        <td class="text-end font-monospace">${account.restart_users} / ${account.restart_connections}</td>
         <td class="text-end font-monospace">${duration(account.uptime_seconds)}</td>
         <td class="text-end">${rowStatus(account)}</td>
-        <td class="text-nowrap row-actions col-tight"><button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}">重连</button> <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}">${account.manual ? "停用" : "启用"}</button></td>
+        <td class="text-nowrap row-actions col-tight"><button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}" title="手动强制重连，不等待排空">强制重连</button> <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}">${account.manual ? "停用" : "启用"}</button></td>
       </tr>`).join("") || `<tr><td colspan="15" class="text-body-secondary">没有符合筛选的实例</td></tr>`}</tbody>
     </table></div>`;
 }
@@ -585,12 +544,13 @@ function logs() {
 function bind() {
   document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; render(); }));
   document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => { state.logKind = button.dataset.log; render(); }));
-  for (const id of ["restart-mode", "restart-threshold"]) {
+  for (const id of ["restart-uptime", "restart-users", "restart-connections"]) {
     const field = document.getElementById(id);
-    if (field) field.addEventListener(id === "restart-mode" ? "change" : "input", () => {
+    if (field) field.addEventListener("input", () => {
       state.restartDraft = {
-        mode: document.getElementById("restart-mode").value,
-        threshold: document.getElementById("restart-threshold").value,
+        uptime: document.getElementById("restart-uptime").value,
+        users: document.getElementById("restart-users").value,
+        connections: document.getElementById("restart-connections").value,
       };
     });
   }
@@ -629,19 +589,16 @@ async function act(name, button) {
   render();
   try {
     if (name === "toggle") await api("/api/toggle?on=" + button.dataset.on);
-    if (name === "pin") await api("/api/select?slot=" + (document.querySelector("#pin").value || "0"));
     if (name === "http2") await api("/api/http2?on=" + button.dataset.on);
     if (name === "interval") await api("/api/interval?seconds=" + (document.querySelector("#rotate-seconds").value || "0"));
-    if (name === "rotate") await api("/api/rotate?slot=" + (document.querySelector("#pin").value || "0"));
+    if (name === "rotate") await api("/api/rotate?slot=0");
     if (name === "trace") await api("/api/trace?slot=0");
-    if (name === "plan-now") await api("/api/restart-plan?action=now");
-    if (name === "plan-pause") await api("/api/restart-plan?action=pause");
-    if (name === "plan-resume") await api("/api/restart-plan?action=resume");
     if (name === "restart-policy") {
-      const mode = document.getElementById("restart-mode").value;
-      const threshold = document.getElementById("restart-threshold").value;
-      if (!/^[0-9]+$/.test(threshold) || (mode !== "scheduled" && Number(threshold) === 0)) throw new Error("阈值必须是正整数");
-      await api("/api/restart-policy?mode=" + encodeURIComponent(mode) + "&threshold=" + encodeURIComponent(threshold));
+      const uptime = document.getElementById("restart-uptime").value;
+      const users = document.getElementById("restart-users").value;
+      const connections = document.getElementById("restart-connections").value;
+      if (![uptime, users, connections].every((value) => /^[0-9]+$/.test(value))) throw new Error("阈值必须是非负整数，0 表示关闭");
+      await api("/api/restart-policy?max_uptime_seconds=" + uptime + "&max_users=" + users + "&max_connections=" + connections);
       state.restartDraft = null;
     }
     if (name === "add-temp") {
@@ -683,7 +640,7 @@ async function copyText(text) {
   }
 }
 function matchFilter(account, data) {
-  const busy = (data.tasks || []).some((task) => task.id === account.id) || account.draining || account.deferred;
+  const busy = (data.tasks || []).some((task) => task.id === account.id) || account.draining;
   if (state.filter === "attention") return account.health === "attention" || account.health === "down" || account.health === "unknown" || account.health === "connecting" || account.health === "retrying";
   if (state.filter === "busy") return busy;
   if (state.filter === "healthy") return account.health === "healthy";
@@ -692,13 +649,7 @@ function matchFilter(account, data) {
   return true;
 }
 function healthText(health) {
-  return { healthy: "健康", attention: "需关注", down: "中断", connecting: "连接中", retrying: "失败重试", waiting: "等待空闲", maintenance: "维护", disabled: "已停用", unknown: "未知" }[health] || health;
-}
-function nextText(at, seconds) {
-  if (!seconds) return "未设置";
-  if (!at) return "等待计时";
-  const left = Math.max(0, Math.round((at - Date.now()) / 1000));
-  return clock(at, true) + " · " + duration(left);
+  return { healthy: "健康", attention: "需关注", down: "中断", connecting: "连接中", retrying: "失败重试", maintenance: "维护", disabled: "已停用", unknown: "未知" }[health] || health;
 }
 function clock(ms, withDate) {
   if (!ms) return "—";
@@ -727,10 +678,6 @@ function bytes(value) {
 function escapeHtml(value) {
   return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
 }
-setInterval(() => {
-  const node = document.querySelector("#next");
-  if (node && state.status) node.textContent = nextText(state.status.plan && state.status.plan.next_at, state.status.restart_seconds);
-}, 1000);
 refresh();
 </script>
 </body>

@@ -17,9 +17,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use warp_masque::{
-    control, parse_misfire, parse_restart_mode, parse_sticky, parse_strategy, socks, Misfire,
-    Policy, Pool, PoolOptions, ProxyAuth, RegistrationClient, ResolvePreference, RestartConfig,
-    RestartMode, UpstreamProxy, UpstreamSet, WarpConfig,
+    control, parse_sticky, parse_strategy, socks, Policy, Pool, PoolOptions, ProxyAuth,
+    RegistrationClient, ResolvePreference, RestartConfig, UpstreamProxy, UpstreamSet, WarpConfig,
 };
 
 struct Args {
@@ -35,15 +34,12 @@ struct Args {
     strategy: String,
     sticky: String,
     lb_rotate: Duration,
-    restart_interval: Duration,
-    restart_mode: RestartMode,
-    restart_threshold: usize,
-    restart_force_after: Duration,
-    restart_misfire: Misfire,
+    restart_max_uptime: Duration,
+    restart_max_users: usize,
+    restart_max_connections: u64,
+    restart_drain_check_interval: Duration,
     restart_probe: Duration,
     restart_concurrency: usize,
-    restart_batch: usize,
-    restart_defer: Duration,
     resolve: String,
     socks_user: Option<String>,
     socks_pass: Option<String>,
@@ -57,8 +53,6 @@ struct Args {
 const REGISTRATION_CONCURRENCY: usize = 4;
 
 fn parse_args() -> anyhow::Result<Args> {
-    let env_force_after = env_string("ROTATE_RESTART_FORCE_AFTER");
-    let env_drain_timeout = env_string("ROTATE_RESTART_DRAIN_TIMEOUT");
     let mut args = Args {
         accounts: env_usize("INSTANCE_COUNT", 2),
         socks: env_string("BIND_ADDR").unwrap_or_else(|| "127.0.0.1".into()),
@@ -72,21 +66,15 @@ fn parse_args() -> anyhow::Result<Args> {
         strategy: env_string("LB_STRATEGY").unwrap_or_else(|| "round".into()),
         sticky: env_string("LB_STICKY_MODE").unwrap_or_else(|| "username-round".into()),
         lb_rotate: env_duration("LB_ROTATE_INTERVAL", Duration::from_secs(300))?,
-        restart_interval: env_duration("ROTATE_RESTART_INTERVAL", Duration::ZERO)?,
-        restart_mode: parse_restart_mode(
-            &env_string("ROTATE_RESTART_MODE").unwrap_or_else(|| "scheduled".into()),
-        )
-        .map_err(anyhow::Error::msg)?,
-        restart_threshold: env_usize("ROTATE_RESTART_THRESHOLD", 0),
-        restart_force_after: RestartConfig::default().force_after,
-        restart_misfire: parse_misfire(
-            &env_string("ROTATE_RESTART_MISFIRE").unwrap_or_else(|| "fire".into()),
-        )
-        .map_err(anyhow::Error::msg)?,
-        restart_probe: env_duration("ROTATE_RESTART_PROBE_TIMEOUT", Duration::from_secs(90))?,
-        restart_concurrency: env_usize("ROTATE_RESTART_CONCURRENCY", 1).max(1),
-        restart_batch: env_usize("ROTATE_RESTART_BATCH", 1),
-        restart_defer: env_duration("ROTATE_RESTART_DEFER", Duration::ZERO)?,
+        restart_max_uptime: env_duration("RESTART_MAX_UPTIME", Duration::ZERO)?,
+        restart_max_users: env_usize_checked("RESTART_MAX_USERS", 0)?,
+        restart_max_connections: env_u64("RESTART_MAX_CONNECTIONS", 0)?,
+        restart_drain_check_interval: env_duration(
+            "RESTART_DRAIN_CHECK_INTERVAL",
+            Duration::from_secs(10),
+        )?,
+        restart_probe: env_duration("RESTART_PROBE_TIMEOUT", Duration::from_secs(90))?,
+        restart_concurrency: env_usize_checked("RESTART_CONCURRENCY", 1)?.max(1),
         resolve: env_string("RESOLVE_PREFERENCE").unwrap_or_else(|| "auto".into()),
         socks_user: env_string("SOCKS_USER"),
         socks_pass: env_string("SOCKS_PASS"),
@@ -109,8 +97,6 @@ fn parse_args() -> anyhow::Result<Args> {
     args.control = apply_bind(&args.control, control_port.as_deref(), "47100");
 
     let mut it = std::env::args().skip(1);
-    let mut force_after_flag = None;
-    let mut drain_flag = None;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--accounts" => {
@@ -132,42 +118,21 @@ fn parse_args() -> anyhow::Result<Args> {
             "--strategy" => args.strategy = next_value(&mut it, &arg)?,
             "--sticky" => args.sticky = next_value(&mut it, &arg)?,
             "--lb-rotate" => args.lb_rotate = parse_duration(&next_value(&mut it, &arg)?)?,
-            "--restart-interval" => {
-                args.restart_interval = parse_duration(&next_value(&mut it, &arg)?)?
+            "--restart-max-uptime" => {
+                args.restart_max_uptime = parse_duration(&next_value(&mut it, &arg)?)?
             }
-            "--restart-mode" => {
-                args.restart_mode =
-                    parse_restart_mode(&next_value(&mut it, &arg)?).map_err(anyhow::Error::msg)?
-            }
-            "--restart-threshold" => {
-                args.restart_threshold = next_value(&mut it, &arg)?
+            "--restart-max-users" => {
+                args.restart_max_users = next_value(&mut it, &arg)?
                     .parse()
-                    .context("--restart-threshold")?
+                    .context("--restart-max-users")?
             }
-            "--restart-force-after" => {
-                remember_force_after_flag(
-                    &arg,
-                    parse_duration(&next_value(&mut it, &arg)?)?,
-                    &mut force_after_flag,
-                    &mut drain_flag,
-                );
+            "--restart-max-connections" => {
+                args.restart_max_connections = next_value(&mut it, &arg)?
+                    .parse()
+                    .context("--restart-max-connections")?
             }
-            "--restart-drain" => {
-                remember_force_after_flag(
-                    &arg,
-                    parse_duration(&next_value(&mut it, &arg)?)?,
-                    &mut force_after_flag,
-                    &mut drain_flag,
-                );
-            }
-            "--restart-retries" => {
-                let _ = next_value(&mut it, &arg)?;
-                eprintln!("[warp-proxy] 已忽略 --restart-retries：会一直重试，直到 warp=on");
-            }
-            "--restart-misfire" => {
-                args.restart_misfire = parse_misfire(&next_value(&mut it, &arg)?)
-                    .map_err(anyhow::Error::msg)
-                    .context("--restart-misfire")?;
+            "--restart-drain-check-interval" => {
+                args.restart_drain_check_interval = parse_duration(&next_value(&mut it, &arg)?)?
             }
             "--restart-probe-timeout" => {
                 args.restart_probe = parse_duration(&next_value(&mut it, &arg)?)?
@@ -178,12 +143,19 @@ fn parse_args() -> anyhow::Result<Args> {
                     .context("--restart-concurrency")?
                     .max(1)
             }
-            "--restart-batch" => {
-                args.restart_batch = next_value(&mut it, &arg)?
-                    .parse()
-                    .context("--restart-batch")?
+            // 遗留 CLI 参数直接报错，避免静默套用旧的重启语义。
+            "--restart-interval"
+            | "--restart-mode"
+            | "--restart-threshold"
+            | "--restart-drain-timeout"
+            | "--restart-force-after"
+            | "--restart-drain"
+            | "--restart-retries"
+            | "--restart-misfire"
+            | "--restart-batch"
+            | "--restart-defer" => {
+                anyhow::bail!("{arg} 已移除，请改用 --restart-max-uptime、--restart-max-users、--restart-max-connections")
             }
-            "--restart-defer" => args.restart_defer = parse_duration(&next_value(&mut it, &arg)?)?,
             "--resolve" => args.resolve = next_value(&mut it, &arg)?,
             "--socks-user" => args.socks_user = Some(next_value(&mut it, &arg)?),
             "--socks-pass" => args.socks_pass = Some(next_value(&mut it, &arg)?),
@@ -205,86 +177,32 @@ fn parse_args() -> anyhow::Result<Args> {
             "--health-timeout" => {
                 args.health_timeout = parse_duration(&next_value(&mut it, &arg)?)?
             }
-            other => eprintln!("[warp-proxy] 忽略未知参数 {other:?}"),
+            other => anyhow::bail!("未知参数 {other:?}"),
         }
     }
-    let (force_after, notices) = resolve_force_after_sources(
-        force_after_flag,
-        env_force_after.as_deref(),
-        drain_flag,
-        env_drain_timeout.as_deref(),
-    )?;
-    args.restart_force_after = force_after;
-    for notice in notices {
-        eprintln!("[warp-proxy] {notice}");
-    }
-    if std::env::var_os("ROTATE_RESTART_RETRIES").is_some() {
-        eprintln!("[warp-proxy] 已忽略 ROTATE_RESTART_RETRIES：会一直重试，直到 warp=on");
+    for key in [
+        "ROTATE_RESTART_ENABLED",
+        "ROTATE_RESTART_MODE",
+        "ROTATE_RESTART_THRESHOLD",
+        "ROTATE_RESTART_INTERVAL",
+        "ROTATE_RESTART_BATCH",
+        "ROTATE_RESTART_MISFIRE",
+        "ROTATE_RESTART_DEFER",
+        "ROTATE_RESTART_FORCE_AFTER",
+        "ROTATE_RESTART_DRAIN_TIMEOUT",
+        "ROTATE_RESTART_PROBE_TIMEOUT",
+        "ROTATE_RESTART_CONCURRENCY",
+        "ROTATE_RESTART_RETRIES",
+    ] {
+        if std::env::var_os(key).is_some() {
+            eprintln!("[warp-proxy] 已忽略旧配置 {key}；请改用 RESTART_MAX_UPTIME、RESTART_MAX_USERS、RESTART_MAX_CONNECTIONS 等新配置");
+        }
     }
     args.accounts = args.accounts.max(1);
-    if env_flag_off("ROTATE_RESTART_ENABLED") {
-        args.restart_interval = Duration::ZERO;
-    }
-    if args.restart_mode != RestartMode::Scheduled && args.restart_threshold == 0 {
-        anyhow::bail!("阈值重启模式需要 ROTATE_RESTART_THRESHOLD 或 --restart-threshold 大于 0");
+    if args.restart_drain_check_interval.is_zero() {
+        anyhow::bail!("RESTART_DRAIN_CHECK_INTERVAL 必须大于 0");
     }
     Ok(args)
-}
-
-/// 新旧名字同时出现时保留新值，命令行再覆盖同名的环境变量。
-/// 只有旧名字时仍采用旧值。新值来源优先于旧值，坏的旧值不会顶替合法的新值。
-fn resolve_force_after_sources(
-    cli_current: Option<Duration>,
-    env_current: Option<&str>,
-    cli_legacy: Option<Duration>,
-    env_legacy: Option<&str>,
-) -> anyhow::Result<(Duration, Vec<String>)> {
-    let current = match cli_current {
-        Some(value) => Some(value),
-        None => parse_optional_duration(env_current)?,
-    };
-    if let Some(value) = current {
-        let mut notices = Vec::new();
-        if env_legacy.is_some() {
-            notices.push(
-                "已忽略 ROTATE_RESTART_DRAIN_TIMEOUT：请改用 ROTATE_RESTART_FORCE_AFTER".into(),
-            );
-        }
-        if cli_legacy.is_some() {
-            notices.push("已忽略 --restart-drain：请改用 --restart-force-after".into());
-        }
-        return Ok((value, notices));
-    }
-    if let Some(value) = cli_legacy {
-        return Ok((
-            value,
-            vec!["--restart-drain 已弃用，请改用 --restart-force-after".into()],
-        ));
-    }
-    if let Some(value) = parse_optional_duration(env_legacy)? {
-        return Ok((
-            value,
-            vec!["ROTATE_RESTART_DRAIN_TIMEOUT 已弃用，请改用 ROTATE_RESTART_FORCE_AFTER".into()],
-        ));
-    }
-    Ok((RestartConfig::default().force_after, Vec::new()))
-}
-
-fn parse_optional_duration(value: Option<&str>) -> anyhow::Result<Option<Duration>> {
-    value.map(parse_duration).transpose()
-}
-
-fn remember_force_after_flag(
-    name: &str,
-    value: Duration,
-    current: &mut Option<Duration>,
-    legacy: &mut Option<Duration>,
-) {
-    match name {
-        "--restart-force-after" => *current = Some(value),
-        "--restart-drain" => *legacy = Some(value),
-        _ => {}
-    }
 }
 
 /// 把主机或 host:port 收成最终监听地址。端口环境变量优先于地址里自带的端口。
@@ -349,15 +267,12 @@ async fn main() -> anyhow::Result<()> {
         mixed: args.mixed,
         access_log: args.access_log,
         restart: RestartConfig {
-            mode: args.restart_mode,
-            threshold: args.restart_threshold,
-            interval: args.restart_interval,
+            max_uptime: args.restart_max_uptime,
+            max_users: args.restart_max_users,
+            max_connections: args.restart_max_connections,
+            drain_check_interval: args.restart_drain_check_interval,
             probe_timeout: args.restart_probe,
-            misfire: args.restart_misfire,
-            force_after: args.restart_force_after,
             concurrency: args.restart_concurrency,
-            batch: args.restart_batch,
-            defer: args.restart_defer,
         },
         health_interval: args.health_interval,
         health_timeout: args.health_timeout,
@@ -597,17 +512,32 @@ fn env_bool(key: &str, default: bool) -> bool {
     }
 }
 
-fn env_flag_off(key: &str) -> bool {
-    matches!(
-        env_string(key).as_deref(),
-        Some("0" | "false" | "off" | "no")
-    )
-}
-
 fn env_usize(key: &str, default: usize) -> usize {
     env_string(key)
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_usize_checked(key: &str, default: usize) -> anyhow::Result<usize> {
+    env_string(key)
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .with_context(|| format!("{key} 必须是非负整数"))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
+
+fn env_u64(key: &str, default: u64) -> anyhow::Result<u64> {
+    env_string(key)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("{key} 必须是非负整数"))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
 }
 
 fn env_duration(key: &str, default: Duration) -> anyhow::Result<Duration> {
@@ -715,89 +645,5 @@ mod tests {
             "127.0.0.1:1110"
         );
         assert_eq!(apply_bind("", None, "47100"), "0.0.0.0:47100");
-    }
-
-    #[test]
-    fn new_force_after_wins_and_reports_the_ignored_old_name() {
-        let (value, notices) =
-            resolve_force_after_sources(None, Some("30s"), None, Some("10s")).unwrap();
-        assert_eq!(value, Duration::from_secs(30));
-        assert_eq!(
-            notices,
-            vec!["已忽略 ROTATE_RESTART_DRAIN_TIMEOUT：请改用 ROTATE_RESTART_FORCE_AFTER"]
-        );
-        assert!(resolve_force_after_sources(None, Some("nope"), None, Some("10s")).is_err());
-
-        let (value, notices) =
-            resolve_force_after_sources(None, Some("30s"), Some(Duration::from_secs(10)), None)
-                .unwrap();
-        assert_eq!(value, Duration::from_secs(30));
-        assert_eq!(
-            notices,
-            vec!["已忽略 --restart-drain：请改用 --restart-force-after"]
-        );
-
-        let (value, notices) =
-            resolve_force_after_sources(Some(Duration::from_secs(30)), None, None, Some("90s"))
-                .unwrap();
-        assert_eq!(value, Duration::from_secs(30));
-        assert_eq!(
-            notices,
-            vec!["已忽略 ROTATE_RESTART_DRAIN_TIMEOUT：请改用 ROTATE_RESTART_FORCE_AFTER"]
-        );
-    }
-
-    #[test]
-    fn old_force_after_still_applies_with_a_deprecation_notice() {
-        let (value, notices) = resolve_force_after_sources(None, None, None, Some("90s")).unwrap();
-        assert_eq!(value, Duration::from_secs(90));
-        assert_eq!(
-            notices,
-            vec!["ROTATE_RESTART_DRAIN_TIMEOUT 已弃用，请改用 ROTATE_RESTART_FORCE_AFTER"]
-        );
-
-        let (value, notices) =
-            resolve_force_after_sources(None, None, Some(Duration::from_secs(10)), Some("90s"))
-                .unwrap();
-        assert_eq!(value, Duration::from_secs(10));
-        assert_eq!(
-            notices,
-            vec!["--restart-drain 已弃用，请改用 --restart-force-after"]
-        );
-
-        let (value, notices) = resolve_force_after_sources(None, None, None, None).unwrap();
-        assert_eq!(value, Duration::from_secs(300));
-        assert_eq!(value, RestartConfig::default().force_after);
-        assert!(notices.is_empty());
-
-        let (value, notices) = resolve_force_after_sources(None, Some("15s"), None, None).unwrap();
-        assert_eq!(value, Duration::from_secs(15));
-        assert!(notices.is_empty());
-    }
-
-    #[test]
-    fn restart_flags_keep_the_new_name_whichever_is_written_last() {
-        for flags in [
-            [("--restart-force-after", 30u64), ("--restart-drain", 10)],
-            [("--restart-drain", 10), ("--restart-force-after", 30)],
-        ] {
-            let mut current = None;
-            let mut legacy = None;
-            for (name, secs) in flags {
-                remember_force_after_flag(
-                    name,
-                    Duration::from_secs(secs),
-                    &mut current,
-                    &mut legacy,
-                );
-            }
-            let (value, notices) =
-                resolve_force_after_sources(current, None, legacy, None).unwrap();
-            assert_eq!(value, Duration::from_secs(30));
-            assert_eq!(
-                notices,
-                vec!["已忽略 --restart-drain：请改用 --restart-force-after"]
-            );
-        }
     }
 }

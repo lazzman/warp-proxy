@@ -36,17 +36,14 @@ services:
       LB_ACCESS_LOG: "0"
       # 需要上游时设置 UPSTREAM_SOCKS5，格式为 socks5://用户:密码@主机:端口。
       # 需要入口认证时同时设置 SOCKS_USER 和 SOCKS_PASS。
-      # 重启策略：scheduled 定时、users 累计用户、connections 累计连接。
-      ROTATE_RESTART_MODE: scheduled
-      # 阈值模式需要大于 0；例如 1000 表示每个实例累计接入 1000 个连接/用户后重启。
-      ROTATE_RESTART_THRESHOLD: "0"
-      ROTATE_RESTART_INTERVAL: "0"
-      ROTATE_RESTART_BATCH: "1"
-      ROTATE_RESTART_DEFER: "0"
-      ROTATE_RESTART_FORCE_AFTER: 300s
-      ROTATE_RESTART_PROBE_TIMEOUT: 90s
-      ROTATE_RESTART_MISFIRE: fire
-      ROTATE_RESTART_CONCURRENCY: "1"
+      # 三个重启阈值独立组合，任意达到就立即排空；0 关闭该条件。
+      RESTART_MAX_UPTIME: "0"
+      RESTART_MAX_USERS: "0"
+      RESTART_MAX_CONNECTIONS: "0"
+      # 排空无超时；活跃连接归零后进入并发受控的重启队列。
+      RESTART_DRAIN_CHECK_INTERVAL: 10s
+      RESTART_PROBE_TIMEOUT: 90s
+      RESTART_CONCURRENCY: "1"
       HEALTH_CHECK_INTERVAL: 60s
       HEALTH_CHECK_TIMEOUT: 20s
     volumes:

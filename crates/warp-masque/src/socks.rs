@@ -223,12 +223,6 @@ async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -
             record.millis = started.elapsed().as_millis() as u64;
             return record;
         }
-        Err(PickFail::StickyDown) => {
-            let _ = client.write_all(&reply(0x01)).await;
-            record.result = "sticky-down".into();
-            record.millis = started.elapsed().as_millis() as u64;
-            return record;
-        }
     };
     record.account = lease.worker_id.to_string();
     record.egress = lease.egress.clone();

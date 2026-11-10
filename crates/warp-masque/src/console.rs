@@ -1,4 +1,4 @@
-//! 面板用的运行时记录：连接与最近历史、日志环和定时重启计划。
+//! 面板用的运行时记录：连接与最近历史、日志环。
 //!
 //! 这些状态只活在进程里。临时账号和执行历史不会写入账号文件。
 
@@ -12,7 +12,6 @@ use serde::Serialize;
 const LOG_LIMIT: usize = 300;
 const LOG_LINE_LIMIT: usize = 2048;
 const SESSION_LIMIT: usize = 300;
-const HISTORY_LIMIT: usize = 10;
 
 pub fn unix_ms() -> u64 {
     SystemTime::now()
@@ -109,50 +108,6 @@ pub struct LogPage {
     pub unknown: usize,
 }
 
-#[derive(Clone, Serialize)]
-pub struct PlanRound {
-    pub at: u64,
-    pub success: usize,
-    pub failed: usize,
-    pub deferred: usize,
-    pub millis: u64,
-}
-
-#[derive(Clone, Serialize)]
-pub struct PlanView {
-    pub paused: bool,
-    pub next_at: Option<u64>,
-    pub ready: Vec<usize>,
-    pub deferred: Vec<usize>,
-    pub retry: Vec<usize>,
-    pub last: Option<PlanRound>,
-    pub history: Vec<PlanRound>,
-}
-
-struct PlanState {
-    paused: bool,
-    next_at: Option<u64>,
-    ready: Vec<usize>,
-    deferred: Vec<usize>,
-    retry: Vec<usize>,
-    last: Option<PlanRound>,
-    history: VecDeque<PlanRound>,
-}
-
-impl PlanState {
-    fn view(&self) -> PlanView {
-        PlanView {
-            paused: self.paused,
-            next_at: self.next_at,
-            ready: self.ready.clone(),
-            deferred: self.deferred.clone(),
-            retry: self.retry.clone(),
-            last: self.last.clone(),
-            history: self.history.iter().cloned().collect(),
-        }
-    }
-}
-
 struct Sessions {
     active: BTreeMap<u64, LiveSession>,
     closed: BTreeMap<u64, SessionView>,
@@ -165,7 +120,6 @@ struct Inner {
     up: AtomicU64,
     down: AtomicU64,
     started: u64,
-    plan: Mutex<PlanState>,
 }
 
 pub struct SessionOpen {
@@ -204,15 +158,6 @@ impl Console {
                 up: AtomicU64::new(0),
                 down: AtomicU64::new(0),
                 started: unix_ms(),
-                plan: Mutex::new(PlanState {
-                    paused: false,
-                    next_at: None,
-                    ready: Vec::new(),
-                    deferred: Vec::new(),
-                    retry: Vec::new(),
-                    last: None,
-                    history: VecDeque::new(),
-                }),
             }),
         }
     }
@@ -318,49 +263,6 @@ impl Console {
             maintenance,
             unknown,
         }
-    }
-
-    pub fn plan(&self) -> PlanView {
-        self.inner.plan.lock().unwrap().view()
-    }
-
-    pub fn set_paused(&self, paused: bool) {
-        self.inner.plan.lock().unwrap().paused = paused;
-    }
-
-    pub fn set_next(&self, next_at: Option<u64>) {
-        self.inner.plan.lock().unwrap().next_at = next_at;
-    }
-
-    pub fn set_queues(&self, ready: &[usize], deferred: &[usize]) {
-        let mut plan = self.inner.plan.lock().unwrap();
-        plan.ready = ready.to_vec();
-        plan.deferred = deferred.to_vec();
-        plan.retry = deferred.to_vec();
-    }
-
-    pub fn clear_queues(&self) {
-        let mut plan = self.inner.plan.lock().unwrap();
-        plan.ready.clear();
-        plan.deferred.clear();
-        plan.retry.clear();
-    }
-
-    pub fn finish_round(&self, success: usize, failed: usize, deferred: usize, millis: u64) {
-        let round = PlanRound {
-            at: unix_ms(),
-            success,
-            failed,
-            deferred,
-            millis,
-        };
-        let mut plan = self.inner.plan.lock().unwrap();
-        plan.last = Some(round.clone());
-        plan.history.push_front(round);
-        while plan.history.len() > HISTORY_LIMIT {
-            plan.history.pop_back();
-        }
-        plan.ready.clear();
     }
 }
 
@@ -492,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn log_ring_and_plan_history_stay_bounded() {
+    fn log_ring_stays_bounded() {
         let console = Console::new();
         for index in 0..320 {
             console.log("access", format!("line {index}"));
@@ -503,10 +405,5 @@ mod tests {
         assert_eq!(lines.len(), 300);
         assert!(lines.last().unwrap().text.len() <= LOG_LINE_LIMIT);
         assert!(lines.last().unwrap().text.ends_with('…'));
-        for _ in 0..12 {
-            console.finish_round(1, 0, 0, 10);
-        }
-        assert_eq!(console.plan().history.len(), 10);
-        assert_eq!(console.plan().last.unwrap().success, 1);
     }
 }

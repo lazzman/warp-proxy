@@ -1,14 +1,14 @@
 //! 多账号连接池。每个账号一条 MASQUE 隧道和一个出口地址，前面用同一入口做调度。
 //!
-//! 上游 SOCKS5、黏性、保身份重启都发生在这个进程里。账号身份保存在各自的
-//! WarpConfig 中；保身份重启只重连隧道，不重新注册。
+//! 上游 SOCKS5、黏性、排空队列和保身份重启都发生在这个进程里。
+//! 账号身份保存在各自的 WarpConfig 中；保身份重启只重连隧道，不重新注册。
 
 use std::collections::hash_map::RandomState;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::BuildHasher;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -27,15 +27,8 @@ use crate::{DeviceKeypair, WarpConfig};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const CONNECT_CONCURRENCY: usize = 4;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum WakeReason {
-    None,
-    /// 间隔、批量或延后被改过，重新计时。
-    Plan,
-    /// 暂停、恢复或立即执行，不重置倒计时。
-    Control,
-}
+// 精确去重身份需要内存；限制单实例的用户阈值以防长期运行时无限累积。
+const MAX_RESTART_USERS: usize = 1_000_000;
 
 #[cfg(test)]
 mod deferred_start_tests {
@@ -172,108 +165,48 @@ pub struct ProxyAuth {
     pub password: String,
 }
 
-/// 保身份重启参数。interval 为 0 时不定时重启。
-/// batch 是每一轮重启几个账号，0 表示这一轮包含当前全部账号。
-/// 连上隧道之后必须看到 warp=on 或 warp=plus，否则按退避一直重试。
+/// 三种自动重启触发条件可以同时启用，0 表示禁用该条件。
+/// 自动排空等待已有连接自然结束，只有实际重连和探测受并发名额限制。
 #[derive(Clone, Debug)]
 pub struct RestartConfig {
-    pub mode: RestartMode,
-    pub threshold: usize,
-    pub interval: Duration,
+    pub max_uptime: Duration,
+    pub max_users: usize,
+    pub max_connections: u64,
+    pub drain_check_interval: Duration,
     pub probe_timeout: Duration,
-    /// 已经开始重连后，最多再等现有连接这么久，到点就强制重连。
-    pub force_after: Duration,
     pub concurrency: usize,
-    pub batch: usize,
-    /// 计划重启时，账号仍有连接就延后这么久再试。0 表示不延后，直接排空。
-    pub defer: Duration,
-    /// 上一轮拖过下次时间时，立刻补跑或跳到下一个间隔点。
-    pub misfire: Misfire,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RestartMode {
-    Scheduled,
-    Users,
-    Connections,
-}
-
-impl RestartMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Scheduled => "scheduled",
-            Self::Users => "users",
-            Self::Connections => "connections",
-        }
-    }
-}
-
-pub fn parse_restart_mode(value: &str) -> Result<RestartMode, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "scheduled" => Ok(RestartMode::Scheduled),
-        "users" => Ok(RestartMode::Users),
-        "connections" => Ok(RestartMode::Connections),
-        other => Err(format!(
-            "未知 ROTATE_RESTART_MODE={other}（scheduled|users|connections）"
-        )),
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RestartPolicy {
-    mode: RestartMode,
-    threshold: usize,
+    max_uptime: Duration,
+    max_users: usize,
+    max_connections: u64,
 }
 
 impl RestartPolicy {
-    fn validate(self) -> Result<(), String> {
-        if self.mode != RestartMode::Scheduled && self.threshold == 0 {
-            return Err("按用户数或连接数重启时，阈值必须大于 0".into());
-        }
-        Ok(())
-    }
-}
-
-/// 一轮超过间隔后怎么处理错过的那次。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Misfire {
-    /// 结束后立刻补跑一轮。错过的多个整点合成这一次。
-    Fire = 0,
-    /// 不补跑，下次排到仍在未来的下一个间隔点。
-    Skip = 1,
-}
-
-impl Misfire {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Misfire::Fire => "fire",
-            Misfire::Skip => "skip",
+    fn from_config(config: &RestartConfig) -> Self {
+        Self {
+            max_uptime: config.max_uptime,
+            max_users: config.max_users,
+            max_connections: config.max_connections,
         }
     }
-}
 
-/// 解析 ROTATE_RESTART_MISFIRE。fire 立刻补跑，skip 跳过。
-pub fn parse_misfire(value: &str) -> Result<Misfire, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "fire" => Ok(Misfire::Fire),
-        "skip" => Ok(Misfire::Skip),
-        other => Err(format!("未知 ROTATE_RESTART_MISFIRE={other}（fire|skip）")),
+    fn is_disabled(self) -> bool {
+        self.max_uptime.is_zero() && self.max_users == 0 && self.max_connections == 0
     }
 }
 
 impl Default for RestartConfig {
     fn default() -> Self {
         Self {
-            mode: RestartMode::Scheduled,
-            threshold: 0,
-            interval: Duration::ZERO,
-            probe_timeout: Duration::from_secs(15),
-            force_after: Duration::from_secs(300),
+            max_uptime: Duration::ZERO,
+            max_users: 0,
+            max_connections: 0,
+            drain_check_interval: Duration::from_secs(10),
+            probe_timeout: Duration::from_secs(90),
             concurrency: 1,
-            batch: 1,
-            defer: Duration::ZERO,
-            misfire: Misfire::Fire,
         }
     }
 }
@@ -324,7 +257,6 @@ impl PoolOptions {
 struct RestartJob {
     reply: oneshot::Sender<Result<(), String>>,
     probe_timeout: Duration,
-    force_after: Duration,
 }
 
 /// 一个账号：配置、隧道、以及当前是否接新连接。
@@ -334,20 +266,22 @@ pub struct Worker {
     restart_tx: mpsc::UnboundedSender<RestartJob>,
     draining: AtomicBool,
     restart_pending: AtomicBool,
-    accept_existing_users: AtomicBool,
+    restart_busy: AtomicBool,
+    restart_attempted: AtomicBool,
     usage: Mutex<RestartUsage>,
     user_hash: RandomState,
-    /// 计划重启因为仍有连接而被推迟。
-    deferred: AtomicBool,
     active: AtomicUsize,
     /// 人工停用后不再接新连接，已有连接继续走完。
     manual: AtomicBool,
     temporary: AtomicBool,
     /// 已从池中移除。监督任务看到后退出，避免同一身份再建一条隧道。
     stopped: AtomicBool,
+    stop_notify: Notify,
     /// 曾经确认过 warp=on 或 warp=plus。之后的出口检查失败不会拆隧道。
     warp_ready: AtomicBool,
-    born: Instant,
+    /// 实例进入排空后冻结旧隧道：监督器不得执行其他主动重建操作。
+    drain_finished: Notify,
+    ready_since: Mutex<Option<Instant>>,
     stage: Mutex<String>,
     stage_at: Mutex<Option<Instant>>,
     last_action: Mutex<String>,
@@ -358,16 +292,13 @@ pub struct Worker {
 #[derive(Default)]
 struct RestartUsage {
     connections: u64,
-    users: HashSet<u64>,
+    identities: HashSet<u64>,
 }
 
 impl RestartUsage {
     fn reached(&self, policy: RestartPolicy) -> bool {
-        match policy.mode {
-            RestartMode::Scheduled => false,
-            RestartMode::Users => self.users.len() >= policy.threshold,
-            RestartMode::Connections => self.connections >= policy.threshold as u64,
-        }
+        (policy.max_users > 0 && self.identities.len() >= policy.max_users)
+            || (policy.max_connections > 0 && self.connections >= policy.max_connections)
     }
 }
 
@@ -394,16 +325,18 @@ impl Worker {
             restart_tx,
             draining: AtomicBool::new(false),
             restart_pending: AtomicBool::new(false),
-            accept_existing_users: AtomicBool::new(false),
+            restart_busy: AtomicBool::new(false),
+            restart_attempted: AtomicBool::new(false),
             usage: Mutex::new(RestartUsage::default()),
             user_hash: RandomState::new(),
-            deferred: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             manual: AtomicBool::new(true),
             temporary: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            stop_notify: Notify::new(),
             warp_ready: AtomicBool::new(false),
-            born: Instant::now(),
+            drain_finished: Notify::new(),
+            ready_since: Mutex::new(None),
             stage: Mutex::new(String::new()),
             stage_at: Mutex::new(None),
             last_action: Mutex::new(String::new()),
@@ -439,8 +372,19 @@ impl Worker {
     }
 
     fn retire(&self) {
-        self.warp_ready.store(false, Ordering::Relaxed);
         let mut inner = self.inner.lock().unwrap();
+        self.retire_inner(&mut inner);
+    }
+
+    fn retire_if_not_pending(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if !self.restart_pending.load(Ordering::Acquire) {
+            self.retire_inner(&mut inner);
+        }
+    }
+
+    fn retire_inner(&self, inner: &mut WorkerInner) {
+        self.warp_ready.store(false, Ordering::Relaxed);
         inner.net = None;
         inner.dead = None;
         inner.tunnel = None;
@@ -460,7 +404,9 @@ impl Worker {
     fn is_ready(&self) -> bool {
         self.manual.load(Ordering::Relaxed)
             && !self.stopped.load(Ordering::Relaxed)
+            && !self.restart_pending.load(Ordering::Relaxed)
             && !self.draining.load(Ordering::Relaxed)
+            && !self.restart_busy.load(Ordering::Relaxed)
             && self.inner.lock().unwrap().net.is_some()
     }
 
@@ -472,50 +418,79 @@ impl Worker {
         self.user_hash.hash_one((kind, user))
     }
 
-    fn accepts_existing_user(&self, username: Option<&str>, client_ip: &str) -> bool {
-        if !self.accept_existing_users.load(Ordering::Relaxed)
-            || !self.manual.load(Ordering::Relaxed)
-            || self.stopped.load(Ordering::Relaxed)
-        {
-            return false;
-        }
-        let identity = self.user_identity(username, client_ip);
-        let inner = self.inner.lock().unwrap();
-        inner.net.is_some()
-            && self.accept_existing_users.load(Ordering::Relaxed)
-            && self.usage.lock().unwrap().users.contains(&identity)
-    }
-
     fn begin_draining(&self) {
         let _inner = self.inner.lock().unwrap();
-        self.accept_existing_users.store(false, Ordering::Relaxed);
         self.draining.store(true, Ordering::Relaxed);
+    }
+
+    fn uptime(&self) -> Duration {
+        self.ready_since
+            .lock()
+            .unwrap()
+            .map(|started| started.elapsed())
+            .unwrap_or_default()
+    }
+
+    fn mark_initial_ready(&self) {
+        let mut started = self.ready_since.lock().unwrap();
+        if started.is_none() {
+            *started = Some(Instant::now());
+        }
     }
 
     fn queue_if_reached(&self, usage: &RestartUsage, policy: RestartPolicy) -> bool {
         if self.restart_pending.load(Ordering::Relaxed)
+            || self.restart_busy.load(Ordering::Relaxed)
             || self.draining.load(Ordering::Relaxed)
             || self.stopped.load(Ordering::Relaxed)
-            || !self.manual.load(Ordering::Relaxed)
-            || !usage.reached(policy)
+            || !(usage.reached(policy)
+                || (!policy.max_uptime.is_zero()
+                    && self.ready_since.lock().unwrap().is_some()
+                    && self.uptime() >= policy.max_uptime))
         {
             return false;
         }
         self.restart_pending.store(true, Ordering::Relaxed);
-        self.accept_existing_users
-            .store(policy.mode == RestartMode::Users, Ordering::Relaxed);
         self.draining.store(true, Ordering::Relaxed);
-        self.set_stage("等待重启");
-        self.note("达到阈值，等待重启");
+        self.set_stage("等待现有连接排空");
+        self.note("达到重启条件，停止接入新连接");
         true
     }
 
     fn reset_usage(&self) {
         let _inner = self.inner.lock().unwrap();
         *self.usage.lock().unwrap() = RestartUsage::default();
+        *self.ready_since.lock().unwrap() = Some(Instant::now());
         self.restart_pending.store(false, Ordering::Relaxed);
-        self.accept_existing_users.store(false, Ordering::Relaxed);
+        self.restart_attempted.store(false, Ordering::Relaxed);
         self.draining.store(false, Ordering::Relaxed);
+        self.drain_finished.notify_one();
+    }
+
+    /// 只取消尚未取得执行权的自动重启；保留手动重启和已经开始的重连。
+    fn cancel_queued_restart(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        let mut usage = self.usage.lock().unwrap();
+        if !self.restart_pending.load(Ordering::Acquire)
+            || self.restart_busy.load(Ordering::Acquire)
+            || self.restart_attempted.load(Ordering::Acquire)
+            || self.stopped.load(Ordering::Relaxed)
+        {
+            return false;
+        }
+        // 旧隧道仍可用才恢复接入；隧道已断开或尚未验证时交给监督器恢复。
+        let reusable = inner.net.is_some()
+            && self.warp_ready.load(Ordering::Relaxed)
+            && !inner.dead.as_ref().is_some_and(|dead| *dead.borrow());
+        // 取消一次排队意味着结束这一轮计数；否则重新开启旧阈值会立即再次摘流。
+        *usage = RestartUsage::default();
+        *self.ready_since.lock().unwrap() = reusable.then(Instant::now);
+        self.restart_pending.store(false, Ordering::Release);
+        self.draining.store(!reusable, Ordering::Release);
+        self.clear_stage();
+        self.note("已取消待执行的自动重启");
+        self.drain_finished.notify_one();
+        true
     }
 
     fn set_stage(&self, stage: &str) {
@@ -583,13 +558,18 @@ impl Drop for ConnLease {
     }
 }
 
+#[derive(Default)]
+struct RestartQueues {
+    draining: VecDeque<usize>,
+    ready: VecDeque<usize>,
+}
+
 /// 账号池和入口调度状态。
 pub struct Pool {
     workers: Mutex<Vec<Arc<Worker>>>,
     initializing: AtomicBool,
     expected_accounts: usize,
     enabled: AtomicBool,
-    pinned: AtomicUsize,
     http2: AtomicBool,
     next_id: AtomicUsize,
     rotate_secs: AtomicU64,
@@ -603,23 +583,12 @@ pub struct Pool {
     scheduler: Scheduler,
     restart: RestartConfig,
     restart_policy: RwLock<RestartPolicy>,
-    threshold_tx: mpsc::UnboundedSender<usize>,
+    restart_queues: Mutex<RestartQueues>,
     health_interval: Duration,
     health_timeout: Duration,
     restart_limit: Arc<Semaphore>,
-    connect_limit: Semaphore,
-    /// 运行中可改的保身份重启间隔。0 表示关闭计划。
-    restart_interval: Mutex<Duration>,
-    /// 错过整点时补跑或跳过。见 Misfire。
-    restart_misfire: AtomicU8,
-    /// 每一轮重启几个账号。0 表示当前全部账号。
-    restart_batch: AtomicUsize,
-    /// 忙碌账号延后重启的时间。0 表示到点就排空。
-    restart_defer: Mutex<Duration>,
+    connect_limit: Arc<Semaphore>,
     restart_wake: Arc<Notify>,
-    restart_paused: AtomicBool,
-    restart_now: AtomicBool,
-    wake_reason: Mutex<WakeReason>,
     console: Console,
     listen: Mutex<String>,
     state_dir: Option<PathBuf>,
@@ -641,11 +610,6 @@ impl Pool {
 
     /// 按 opts 建池。配置了上游时先探测 SOCKS5 CONNECT，失败则直接返回，不改走直连。
     pub async fn start(configs: Vec<WarpConfig>, opts: PoolOptions) -> crate::Result<Arc<Pool>> {
-        let policy = RestartPolicy {
-            mode: opts.restart.mode,
-            threshold: opts.restart.threshold,
-        };
-        policy.validate().map_err(crate::Error::Config)?;
         if !opts.upstream.is_empty() && !opts.http2 {
             return Err(crate::Error::Config(
                 "上游 SOCKS5 只支持 TCP，必须使用 HTTP/2（--http2）".into(),
@@ -657,7 +621,7 @@ impl Pool {
                 .await
                 .map_err(crate::Error::Config)?;
         }
-        let (pool, threshold_rx) = Self::create(opts, configs.len())?;
+        let pool = Self::create(opts, configs.len())?;
         for cfg in configs {
             let id = pool.next_id.fetch_add(1, Ordering::Relaxed);
             let upstream = pool.upstream.for_index(id.saturating_sub(1));
@@ -684,18 +648,18 @@ impl Pool {
             *pool.base_ids.lock().unwrap() = ids;
         }
         pool.restore_temporary().await;
-        Self::spawn_tasks(&pool, threshold_rx);
+        Self::spawn_tasks(&pool);
         Ok(pool)
     }
 
     /// 先建立可用的控制面，账号可随后逐个加载并在后台并发拨号。
     pub fn start_deferred(opts: PoolOptions, base_count: usize) -> crate::Result<Arc<Pool>> {
-        let (pool, threshold_rx) = Self::create(opts, base_count)?;
+        let pool = Self::create(opts, base_count)?;
         *pool.base_ids.lock().unwrap() = (1..=base_count).collect();
         pool.next_id
             .store(base_count.saturating_add(1), Ordering::Relaxed);
         pool.initializing.store(true, Ordering::Relaxed);
-        Self::spawn_tasks(&pool, threshold_rx);
+        Self::spawn_tasks(&pool);
         Ok(pool)
     }
 
@@ -731,27 +695,25 @@ impl Pool {
         self.console.log("account", message);
     }
 
-    fn create(
-        opts: PoolOptions,
-        expected_accounts: usize,
-    ) -> crate::Result<(Arc<Pool>, mpsc::UnboundedReceiver<usize>)> {
-        let policy = RestartPolicy {
-            mode: opts.restart.mode,
-            threshold: opts.restart.threshold,
-        };
-        policy.validate().map_err(crate::Error::Config)?;
+    fn create(opts: PoolOptions, expected_accounts: usize) -> crate::Result<Arc<Pool>> {
+        if opts.restart.max_users > MAX_RESTART_USERS {
+            return Err(crate::Error::Config(format!(
+                "单实例累计用户阈值不能超过 {MAX_RESTART_USERS}，以限制内存占用"
+            )));
+        }
+        if opts.restart.drain_check_interval.is_zero() {
+            return Err(crate::Error::Config("排空检测间隔必须大于 0".into()));
+        }
         if !opts.upstream.is_empty() && !opts.http2 {
             return Err(crate::Error::Config(
                 "上游 SOCKS5 只支持 TCP，必须使用 HTTP/2（--http2）".into(),
             ));
         }
-        let (threshold_tx, threshold_rx) = mpsc::unbounded_channel();
         let pool = Arc::new(Pool {
             workers: Mutex::new(Vec::new()),
             initializing: AtomicBool::new(false),
             expected_accounts,
             enabled: AtomicBool::new(true),
-            pinned: AtomicUsize::new(0),
             http2: AtomicBool::new(opts.http2),
             next_id: AtomicUsize::new(1),
             rotate_secs: AtomicU64::new(0),
@@ -764,20 +726,13 @@ impl Pool {
             policy: opts.policy,
             scheduler: Scheduler::new(),
             restart: opts.restart.clone(),
-            restart_policy: RwLock::new(policy),
-            threshold_tx,
+            restart_policy: RwLock::new(RestartPolicy::from_config(&opts.restart)),
+            restart_queues: Mutex::new(RestartQueues::default()),
             health_interval: opts.health_interval,
             health_timeout: opts.health_timeout,
             restart_limit: Arc::new(Semaphore::new(opts.restart.concurrency.max(1))),
-            connect_limit: Semaphore::new(CONNECT_CONCURRENCY),
-            restart_interval: Mutex::new(opts.restart.interval),
-            restart_misfire: AtomicU8::new(opts.restart.misfire as u8),
-            restart_batch: AtomicUsize::new(opts.restart.batch),
-            restart_defer: Mutex::new(opts.restart.defer),
+            connect_limit: Arc::new(Semaphore::new(CONNECT_CONCURRENCY)),
             restart_wake: Arc::new(Notify::new()),
-            restart_paused: AtomicBool::new(false),
-            restart_now: AtomicBool::new(false),
-            wake_reason: Mutex::new(WakeReason::None),
             console: Console::new(),
             listen: Mutex::new(String::new()),
             state_dir: opts.state_dir.clone(),
@@ -785,13 +740,12 @@ impl Pool {
             base_ids: Mutex::new(Vec::new()),
             reserved_ids: Mutex::new(Vec::new()),
         });
-        Ok((pool, threshold_rx))
+        Ok(pool)
     }
 
-    fn spawn_tasks(pool: &Arc<Pool>, threshold_rx: mpsc::UnboundedReceiver<usize>) {
+    fn spawn_tasks(pool: &Arc<Pool>) {
         Pool::spawn_rotator(pool.clone());
         Pool::spawn_restarter(pool.clone());
-        Pool::spawn_threshold_restarter(pool.clone(), threshold_rx);
     }
 
     fn transport(&self) -> Transport {
@@ -869,212 +823,132 @@ impl Pool {
 
     fn spawn_restarter(pool: Arc<Pool>) {
         let weak = Arc::downgrade(&pool);
+        let wake = Arc::clone(&pool.restart_wake);
+        let interval = pool.restart.drain_check_interval;
         drop(pool);
         tokio::spawn(async move {
-            let mut index = 0usize;
-            let mut round_at: Option<tokio::time::Instant> = None;
-            let mut deferred: Vec<(usize, tokio::time::Instant)> = Vec::new();
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                let Some(pool) = weak.upgrade() else { return };
-                let interval = if pool.restart_policy.read().unwrap().mode == RestartMode::Scheduled
-                {
-                    *pool.restart_interval.lock().unwrap()
-                } else {
-                    Duration::ZERO
-                };
-                let wake = Arc::clone(&pool.restart_wake);
-                if interval.is_zero() {
-                    round_at = None;
-                    pool.console.set_next(None);
-                    if deferred.is_empty() && !pool.restart_now.load(Ordering::Relaxed) {
-                        pool.console.clear_queues();
-                        drop(pool);
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
-                            _ = wake.notified() => {}
-                        }
-                        continue;
-                    }
-                }
-                let now = tokio::time::Instant::now();
-                if round_at.is_none() && !interval.is_zero() {
-                    round_at = Some(now + interval);
-                }
-                // 开始等待前就已经过点，说明上一轮把这次整点拖过去了。
-                let already_late = round_at.is_some_and(|at| at <= now);
-                publish_next(&pool, round_at);
-                let next = if pool.restart_now.load(Ordering::Relaxed) {
-                    now
-                } else {
-                    earliest_restart(round_at, &deferred).unwrap_or(now)
-                };
-                let wait = next.saturating_duration_since(now);
-                drop(pool);
                 tokio::select! {
-                    _ = tokio::time::sleep(wait) => {}
-                    _ = wake.notified() => {
-                        let Some(pool) = weak.upgrade() else { return };
-                        if pool.take_wake() == WakeReason::Plan {
-                            round_at = None;
-                            deferred.clear();
-                            pool.console.clear_queues();
-                            continue;
-                        }
-                    }
+                    _ = ticker.tick() => {},
+                    _ = wake.notified() => {},
                 }
                 let Some(pool) = weak.upgrade() else { return };
-                let now = tokio::time::Instant::now();
-                let defer_for = *pool.restart_defer.lock().unwrap();
-                let force = pool.restart_now.swap(false, Ordering::Relaxed);
-                let paused = pool.restart_paused.load(Ordering::Relaxed);
-                let mut due = Vec::new();
-                deferred.retain(|(id, at)| {
-                    if *at <= now {
-                        due.push(*id);
-                        false
-                    } else {
-                        true
-                    }
-                });
-                let round_due = round_at.is_some_and(|at| at <= now);
-                if paused && !force {
-                    if round_due {
-                        round_at = Some(now + interval);
-                    }
-                    // 暂停期间到期的延后项先放回队列，恢复后再处理。
-                    for id in due.drain(..) {
-                        schedule_defer(&mut deferred, id, now + Duration::from_secs(5));
-                    }
-                    publish_next(&pool, round_at);
-                    continue;
-                }
-                match round_action(pool.misfire(), already_late, round_due, force) {
-                    RoundAction::Skip => {
-                        if let Some(at) = round_at {
-                            let next_at = next_future_deadline(at, interval, now);
-                            let secs = next_at.saturating_duration_since(now).as_secs();
-                            round_at = Some(next_at);
-                            let text = format!(
-                                "[pool] 上一轮超过间隔，跳过补跑，约 {secs} 秒后进入下一间隔点"
-                            );
-                            eprintln!("{text}");
-                            pool.console.log("plan", text);
-                        }
-                    }
-                    RoundAction::Run => {
-                        let ids: Vec<usize> =
-                            pool.snapshot().iter().map(|worker| worker.id).collect();
-                        let batch = pool.restart_batch.load(Ordering::Relaxed);
-                        let (chosen, next_index) = next_restart_batch(&ids, index, batch);
-                        index = next_index;
-                        for id in chosen {
-                            if !due.contains(&id)
-                                && !deferred.iter().any(|(pending, _)| *pending == id)
-                            {
-                                due.push(id);
-                            }
-                        }
-                        if round_due {
-                            round_at = Some(now + interval);
-                        }
-                    }
-                    RoundAction::Wait => {}
-                }
-                publish_next(&pool, round_at);
-                if due.is_empty() {
-                    let pending: Vec<usize> = deferred.iter().map(|(id, _)| *id).collect();
-                    pool.console.set_queues(&[], &pending);
-                    continue;
-                }
-                let workers = pool.snapshot();
-                let active = |id: usize| {
-                    workers
-                        .iter()
-                        .find(|worker| worker.id == id)
-                        .map(|worker| worker.active.load(Ordering::Relaxed))
-                        .unwrap_or(0)
-                };
-                let (restart_now, later) = split_due_restarts(&due, active, !defer_for.is_zero());
-                for id in &later {
-                    if let Some(worker) = workers.iter().find(|worker| worker.id == *id) {
-                        worker.deferred.store(true, Ordering::Relaxed);
-                        worker.set_stage("等待空闲");
-                        worker.note("延后重启");
-                    }
-                    schedule_defer(&mut deferred, *id, now + defer_for);
-                    let text = format!(
-                        "[pool] 账号 {id} 仍有 {} 个连接，延后 {} 秒再重启",
-                        active(*id),
-                        defer_for.as_secs()
-                    );
-                    eprintln!("{text}");
-                    pool.console.log("plan", text);
-                }
-                let pending: Vec<usize> = deferred.iter().map(|(id, _)| *id).collect();
-                pool.console.set_queues(&restart_now, &pending);
-                if restart_now.is_empty() {
-                    continue;
-                }
-                let label = restart_now
-                    .iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let text = format!(
-                    "[pool] 计划保身份重启账号 {label}（同时最多 {}）",
-                    pool.restart.concurrency.max(1)
-                );
-                eprintln!("{text}");
-                pool.console.log("plan", text);
-                let started = Instant::now();
-                let mut joins = tokio::task::JoinSet::new();
-                for id in restart_now {
-                    if let Some(worker) = workers.iter().find(|worker| worker.id == id) {
-                        worker.deferred.store(false, Ordering::Relaxed);
-                        worker.set_stage("排队");
-                    }
-                    let pool = Arc::clone(&pool);
-                    joins.spawn(async move { pool.restart_one(id).await.is_ok() });
-                }
-                let mut success = 0usize;
-                let mut failed = 0usize;
-                while let Some(joined) = joins.join_next().await {
-                    match joined {
-                        Ok(true) => success += 1,
-                        _ => failed += 1,
-                    }
-                }
-                pool.console.finish_round(
-                    success,
-                    failed,
-                    later.len(),
-                    started.elapsed().as_millis() as u64,
-                );
-                pool.console.log(
-                    "plan",
-                    format!(
-                        "一轮结束：成功 {success}，失败 {failed}，延后 {}。失败的账号会继续重试，直到 warp=on",
-                        later.len()
-                    ),
-                );
+                pool.inspect_restart_queues();
             }
         });
     }
 
-    fn spawn_threshold_restarter(pool: Arc<Pool>, mut rx: mpsc::UnboundedReceiver<usize>) {
-        let weak = Arc::downgrade(&pool);
-        drop(pool);
-        tokio::spawn(async move {
-            while let Some(id) = rx.recv().await {
-                let Some(pool) = weak.upgrade() else { return };
-                tokio::spawn(async move {
-                    if let Err(err) = pool.restart_one_pending(id).await {
-                        pool.console
-                            .log("plan", format!("账号 {id} 阈值重启失败: {err}"));
-                    }
-                });
+    fn queue_threshold_restart(&self, id: usize) {
+        let mut queues = self.restart_queues.lock().unwrap();
+        if !queues.draining.contains(&id) && !queues.ready.contains(&id) {
+            queues.draining.push_back(id);
+        }
+        drop(queues);
+        self.scheduler.forget_users(id);
+        let text = format!("[pool] 账号 {id} 达到重启条件，停止接入新连接并进入排空队列");
+        eprintln!("{text}");
+        self.console.log("plan", text);
+        if let Some(worker) = self.snapshot().into_iter().find(|worker| worker.id == id) {
+            worker.drain_finished.notify_one();
+        }
+        self.restart_wake.notify_one();
+    }
+
+    /// 外部操作要触碰隧道时先判断是否处于自动排空，避免打断已有连接。
+    fn may_rebuild(&self, id: usize) -> bool {
+        self.snapshot().into_iter().any(|worker| {
+            worker.id == id
+                && !worker.stopped.load(Ordering::Relaxed)
+                && !worker.restart_pending.load(Ordering::Relaxed)
+        })
+    }
+
+    fn inspect_restart_queues(self: &Arc<Self>) {
+        // 修改阈值、取消待执行任务与取得重启名额必须串行。
+        let policy_guard = self.restart_policy.read().unwrap();
+        let workers = self.snapshot();
+        // 持有策略读锁直至队列调度结束，避免关闭阈值和领取名额交错。
+        let policy = *policy_guard;
+        for worker in &workers {
+            let inner = worker.inner.lock().unwrap();
+            let usage = worker.usage.lock().unwrap();
+            let queued = inner.net.is_some() && worker.queue_if_reached(&usage, policy);
+            drop(usage);
+            drop(inner);
+            if queued {
+                self.queue_threshold_restart(worker.id);
             }
-        });
+        }
+        let mut queues = self.restart_queues.lock().unwrap();
+        let draining = queues.draining.len();
+        for _ in 0..draining {
+            let id = queues.draining.pop_front().unwrap();
+            let worker = workers.iter().find(|worker| worker.id == id);
+            match worker {
+                Some(worker)
+                    if worker.restart_pending.load(Ordering::Relaxed)
+                        && !worker.stopped.load(Ordering::Relaxed)
+                        && !worker.restart_attempted.load(Ordering::Relaxed) =>
+                {
+                    if worker.active.load(Ordering::Relaxed) == 0
+                        && !worker.restart_busy.load(Ordering::Relaxed)
+                    {
+                        worker.set_stage("等待重启名额");
+                        queues.ready.push_back(id);
+                    } else {
+                        queues.draining.push_back(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut jobs = Vec::new();
+        let ready_count = queues.ready.len();
+        for _ in 0..ready_count {
+            let Ok(permit) = self.restart_limit.clone().try_acquire_owned() else {
+                break;
+            };
+            let id = queues.ready.pop_front().unwrap();
+            let Some(worker) = workers.iter().find(|worker| worker.id == id) else {
+                continue;
+            };
+            if !worker.restart_pending.load(Ordering::Relaxed)
+                || worker.stopped.load(Ordering::Relaxed)
+                || worker.restart_attempted.load(Ordering::Relaxed)
+            {
+                continue;
+            }
+            if worker.restart_busy.swap(true, Ordering::AcqRel) {
+                queues.ready.push_back(id);
+                continue;
+            }
+            // 自动重启无论排队多久，都必须在执行前再次核对没有活跃连接。
+            if worker.active.load(Ordering::Acquire) != 0 {
+                worker.restart_busy.store(false, Ordering::Release);
+                queues.draining.push_back(id);
+                continue;
+            }
+            jobs.push((worker.clone(), permit));
+        }
+        drop(queues);
+        drop(policy_guard);
+
+        for (worker, permit) in jobs {
+            let pool = Arc::clone(self);
+            tokio::spawn(async move {
+                let id = worker.id;
+                if let Err(err) = pool.restart_one_permitted(&worker).await {
+                    pool.console
+                        .log("plan", format!("账号 {id} 重启失败: {err}"));
+                }
+                worker.restart_busy.store(false, Ordering::Release);
+                drop(permit);
+                pool.restart_wake.notify_one();
+            });
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -1083,10 +957,6 @@ impl Pool {
 
     pub fn set_enabled(&self, on: bool) {
         self.enabled.store(on, Ordering::Relaxed);
-    }
-
-    pub fn select(&self, id: usize) {
-        self.pinned.store(id, Ordering::Relaxed);
     }
 
     pub fn mixed(&self) -> bool {
@@ -1103,38 +973,41 @@ impl Pool {
             .map(|auth| (auth.username.clone(), auth.password.clone()))
     }
 
-    /// 为新连接选择账号。全局 pin 优先；否则按策略和黏性选择。
+    /// 为新连接选择账号。排空实例不能再获得新请求，旧黏性关系自动迁往其他可用实例。
     pub fn checkout(&self, username: Option<&str>, client_ip: &str) -> Result<ConnLease, PickFail> {
         let workers = self.snapshot();
-        let pin = self.pinned.load(Ordering::Relaxed);
-        if pin != 0 {
-            if let Some(worker) = workers.iter().find(|worker| worker.id == pin) {
-                if let Some(lease) = self.lease(worker.clone(), username, client_ip) {
-                    return Ok(lease);
-                }
-            }
-        }
-        let eligible: Vec<usize> = workers
+        let mut eligible: Vec<usize> = workers
             .iter()
-            .filter(|worker| worker.is_ready() || worker.accepts_existing_user(username, client_ip))
+            .filter(|worker| worker.is_ready())
             .map(|worker| worker.id)
             .collect();
         let alive: Vec<usize> = workers.iter().map(|worker| worker.id).collect();
-        let id =
-            self.scheduler
-                .pick(&self.policy, &eligible, &alive, username, client_ip, |id| {
+        // 选路与真正取得准入锁之间可能刚好触发排空。排除失效目标再选，
+        // 而不是让这个本可以迁往其他实例的请求直接失败。
+        while !eligible.is_empty() {
+            let id = self.scheduler.pick(
+                &self.policy,
+                &eligible,
+                &alive,
+                username,
+                client_ip,
+                |id| {
                     workers
                         .iter()
                         .find(|worker| worker.id == id)
                         .map(|worker| worker.active.load(Ordering::Relaxed))
                         .unwrap_or(0)
-                })?;
-        let worker = workers
-            .into_iter()
-            .find(|worker| worker.id == id)
-            .ok_or(PickFail::NoWorker)?;
-        self.lease(worker, username, client_ip)
-            .ok_or(PickFail::NoWorker)
+                },
+            )?;
+            if let Some(worker) = workers.iter().find(|worker| worker.id == id) {
+                if let Some(lease) = self.lease(worker.clone(), username, client_ip) {
+                    return Ok(lease);
+                }
+            }
+            eligible.retain(|candidate| *candidate != id);
+            self.scheduler.forget_users(id);
+        }
+        Err(PickFail::NoWorker)
     }
 
     /// 兼容旧调用：匿名轮询，不计入活跃连接。
@@ -1151,18 +1024,24 @@ impl Pool {
         username: Option<&str>,
         client_ip: &str,
     ) -> Option<ConnLease> {
-        let policy = self.restart_policy.read().unwrap();
+        // 与运行时关闭阈值同步，避免使用旧策略在取消队列后再次触发排空。
+        let policy_guard = self.restart_policy.read().unwrap();
+        let policy = *policy_guard;
+        let identity = worker.user_identity(username, client_ip);
         let inner = worker.inner.lock().unwrap();
-        if !worker.manual.load(Ordering::Relaxed) || worker.stopped.load(Ordering::Relaxed) {
+        if !worker.manual.load(Ordering::Relaxed)
+            || worker.stopped.load(Ordering::Relaxed)
+            || worker.restart_pending.load(Ordering::Relaxed)
+            || worker.draining.load(Ordering::Relaxed)
+            || worker.restart_busy.load(Ordering::Relaxed)
+        {
             return None;
         }
         let net = inner.net.clone()?;
         let mut usage = worker.usage.lock().unwrap();
-        let identity =
-            (policy.mode == RestartMode::Users).then(|| worker.user_identity(username, client_ip));
-        if worker.draining.load(Ordering::Relaxed)
-            && !(worker.accept_existing_users.load(Ordering::Relaxed)
-                && identity.is_some_and(|identity| usage.users.contains(&identity)))
+        if worker.restart_pending.load(Ordering::Relaxed)
+            || worker.draining.load(Ordering::Relaxed)
+            || worker.restart_busy.load(Ordering::Relaxed)
         {
             return None;
         }
@@ -1177,17 +1056,17 @@ impl Pool {
         );
         worker.active.fetch_add(1, Ordering::Relaxed);
         usage.connections = usage.connections.saturating_add(1);
-        if let Some(identity) = identity {
-            usage.users.insert(identity);
+        // 仅在开启用户阈值时保存去重身份，避免关闭该条件时内存随累计用户持续增长。
+        if policy.max_users > 0 {
+            usage.identities.insert(identity);
         }
-        let queued = worker.queue_if_reached(&usage, *policy);
+        let queued = worker.queue_if_reached(&usage, policy);
         drop(usage);
         drop(inner);
-        let mode = policy.mode;
-        drop(policy);
         if queued {
-            self.queue_threshold_restart(worker.id, mode);
+            self.queue_threshold_restart(worker.id);
         }
+        drop(policy_guard);
         Some(ConnLease {
             worker_id: worker.id,
             egress: shown.fallback,
@@ -1200,13 +1079,20 @@ impl Pool {
 
     pub fn reconnect(&self, id: usize) {
         for worker in self.snapshot() {
-            if id == 0 || worker.id == id {
-                worker.rebuild.notify_one();
+            if (id == 0 || worker.id == id)
+                && !worker.restart_pending.load(Ordering::Relaxed)
+                && !worker.restart_busy.load(Ordering::Relaxed)
+            {
+                // 与阈值准入使用同一把锁，消除“检查后刚排空”的窗口。
+                let _inner = worker.inner.lock().unwrap();
+                if !worker.restart_pending.load(Ordering::Relaxed) {
+                    worker.rebuild.notify_one();
+                }
             }
         }
     }
 
-    /// 保身份重启一个账号；id 为 0 时按顺序逐个重启。
+    /// 手动强制保身份重启一个账号；id 为 0 时按顺序逐个重启。
     pub async fn restart(&self, id: usize) -> Result<(), String> {
         if id == 0 {
             let ids: Vec<usize> = self.snapshot().iter().map(|worker| worker.id).collect();
@@ -1220,53 +1106,62 @@ impl Pool {
     }
 
     pub async fn restart_one(&self, id: usize) -> Result<(), String> {
-        self.restart_one_inner(id, false).await
-    }
-
-    async fn restart_one_pending(&self, id: usize) -> Result<(), String> {
-        self.restart_one_inner(id, true).await
-    }
-
-    async fn restart_one_inner(&self, id: usize, only_pending: bool) -> Result<(), String> {
-        let permit = self
-            .restart_limit
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| "重启已取消".to_string())?;
         let worker = self
             .snapshot()
             .into_iter()
             .find(|worker| worker.id == id)
             .ok_or_else(|| format!("没有账号 {id}"))?;
-        if only_pending && !worker.restart_pending.load(Ordering::Relaxed) {
-            return Ok(());
+        if worker.restart_busy.swap(true, Ordering::AcqRel) {
+            return Err(format!("账号 {id} 已在重启中"));
         }
-        worker.deferred.store(false, Ordering::Relaxed);
+        // 手动强制重启立即摘流，不等待连接排空；实际重连仍受并发名额限制。
+        worker.begin_draining();
+        worker.restart_pending.store(true, Ordering::Relaxed);
+        self.scheduler.forget_users(id);
+        {
+            let mut queues = self.restart_queues.lock().unwrap();
+            queues.draining.retain(|queued| *queued != id);
+            queues.ready.retain(|queued| *queued != id);
+        }
+        worker.set_stage("等待手动重启名额");
+        let result = tokio::select! {
+            biased;
+            _ = wait_stopped(&worker) => Err(format!("账号 {id} 已移除")),
+            acquired = self.restart_limit.clone().acquire_owned() => match acquired {
+                Ok(permit) => {
+                    let result = self.restart_one_permitted(&worker).await;
+                    drop(permit);
+                    result
+                }
+                Err(_) => Err("重启已取消".into()),
+            },
+        };
+        worker.restart_busy.store(false, Ordering::Release);
+        // 手动任务排队时可能被管理员移除，等待者退出后仍需唤醒自动队列。
+        self.restart_wake.notify_one();
+        result
+    }
+
+    /// 调度器已经占有名额；自动路径还须先检查该实例的活跃连接数为零。
+    async fn restart_one_permitted(&self, worker: &Arc<Worker>) -> Result<(), String> {
+        if worker.stopped.load(Ordering::Acquire) {
+            return Err(format!("账号 {} 已移除", worker.id));
+        }
+        worker.restart_attempted.store(true, Ordering::Relaxed);
+        worker.set_stage("重连并验证出口");
         let (reply_tx, reply_rx) = oneshot::channel();
         worker
             .restart_tx
             .send(RestartJob {
                 reply: reply_tx,
                 probe_timeout: self.restart.probe_timeout,
-                force_after: self.restart.force_after,
             })
             .map_err(|_| "账号监督任务已退出".to_string())?;
-        let result = reply_rx.await.map_err(|_| "重启任务中断".to_string())?;
-        drop(permit);
-        result
-    }
-
-    fn queue_threshold_restart(&self, id: usize, mode: RestartMode) {
-        let admission = if mode == RestartMode::Users {
-            "停止接收新用户，已统计用户可继续连接直到排空超时"
-        } else {
-            "停止接收新连接"
-        };
-        let text = format!("[pool] 账号 {id} 达到重启阈值，{admission}，进入重启队列");
-        eprintln!("{text}");
-        self.console.log("plan", text);
-        let _ = self.threshold_tx.send(id);
+        tokio::select! {
+            biased;
+            _ = wait_stopped(worker) => Err(format!("账号 {} 已移除", worker.id)),
+            result = reply_rx => result.map_err(|_| "重启任务中断".to_string())?,
+        }
     }
 
     fn finish_reconnect(&self, worker: &Worker) {
@@ -1274,45 +1169,69 @@ impl Pool {
         worker.reset_usage();
     }
 
+    /// 运行中修改任意重启条件；未指定的阈值保持原值，0 表示关闭。
     pub fn set_restart_policy(
         &self,
-        mode: Option<RestartMode>,
-        threshold: Option<usize>,
+        max_uptime: Option<Duration>,
+        max_users: Option<usize>,
+        max_connections: Option<u64>,
     ) -> Result<(), String> {
         let mut policy = self.restart_policy.write().unwrap();
         let next = RestartPolicy {
-            mode: mode.unwrap_or(policy.mode),
-            threshold: threshold.unwrap_or(policy.threshold),
+            max_uptime: max_uptime.unwrap_or(policy.max_uptime),
+            max_users: max_users.unwrap_or(policy.max_users),
+            max_connections: max_connections.unwrap_or(policy.max_connections),
         };
-        next.validate()?;
+        if next.max_users > MAX_RESTART_USERS {
+            return Err(format!("单实例累计用户阈值不能超过 {MAX_RESTART_USERS}"));
+        }
         if next == *policy {
             return Ok(());
         }
-        let changed_mode = next.mode != policy.mode;
+        let users_enabled = policy.max_users == 0 && next.max_users > 0;
         *policy = next;
-        for worker in self.snapshot() {
+        let workers = self.snapshot();
+        for worker in &workers {
             let inner = worker.inner.lock().unwrap();
             let mut usage = worker.usage.lock().unwrap();
-            if changed_mode && !worker.restart_pending.load(Ordering::Relaxed) {
-                *usage = RestartUsage::default();
-            }
-            if next.mode != RestartMode::Users {
-                worker.accept_existing_users.store(false, Ordering::Relaxed);
-            }
-            if changed_mode && worker.deferred.swap(false, Ordering::Relaxed) {
-                worker.clear_stage();
+            if users_enabled || next.max_users == 0 {
+                // 仅启用用户阈值时保存去重身份，重新启用从此刻开始计数。
+                usage.identities.clear();
             }
             let queued = inner.net.is_some() && worker.queue_if_reached(&usage, next);
             drop(usage);
             drop(inner);
             if queued {
-                self.queue_threshold_restart(worker.id, next.mode);
+                self.queue_threshold_restart(worker.id);
+            }
+        }
+        if next.is_disabled() {
+            // 排空、待重启队列中的自动任务可以取消；已占名额、正在重试和手动任务继续完成。
+            let mut queues = self.restart_queues.lock().unwrap();
+            let queued: HashSet<usize> = queues
+                .draining
+                .iter()
+                .chain(queues.ready.iter())
+                .copied()
+                .collect();
+            let mut cancelled = HashSet::new();
+            for worker in &workers {
+                if queued.contains(&worker.id) && worker.cancel_queued_restart() {
+                    cancelled.insert(worker.id);
+                }
+            }
+            queues.draining.retain(|id| !cancelled.contains(id));
+            queues.ready.retain(|id| !cancelled.contains(id));
+            drop(queues);
+            for id in cancelled {
+                self.console.log(
+                    "plan",
+                    format!("账号 {id} 取消尚未执行的自动重启，等待正常接入或故障恢复"),
+                );
             }
         }
         drop(policy);
-        if changed_mode {
-            self.wake(WakeReason::Plan);
-        }
+        self.restart_wake.notify_one();
         Ok(())
     }
 
@@ -1321,22 +1240,32 @@ impl Pool {
         let target = if id != 0 {
             workers.into_iter().find(|worker| worker.id == id)
         } else {
-            let pin = self.pinned.load(Ordering::Relaxed);
-            workers
-                .iter()
-                .find(|worker| worker.id == pin)
-                .cloned()
-                .or_else(|| workers.first().cloned())
+            workers.first().cloned()
         };
         let Some(worker) = target else {
             return Err(crate::Error::Config("没有这个账号".into()));
         };
+        if !self.may_rebuild(worker.id) {
+            return Err(crate::Error::Config(format!(
+                "账号 {} 正在排空或等待重启，不能换出口",
+                worker.id
+            )));
+        }
         let opts = RegisterOptions {
             device_name: Some(format!("{}-{}", self.device_name, worker.id)),
             ..Default::default()
         };
         let fresh = register_with(worker.upstream.as_ref(), &opts).await?;
-        worker.inner.lock().unwrap().config = fresh;
+        // 账号注册可能较慢，再次确认期间没有进入排空。
+        let mut inner = worker.inner.lock().unwrap();
+        if worker.restart_pending.load(Ordering::Relaxed) {
+            return Err(crate::Error::Config(format!(
+                "账号 {} 已开始排空，取消换出口",
+                worker.id
+            )));
+        }
+        inner.config = fresh;
+        drop(inner);
         worker.rebuild.notify_one();
         Ok(())
     }
@@ -1348,88 +1277,6 @@ impl Pool {
         }
         self.http2.store(on, Ordering::Relaxed);
         self.reconnect(0);
-    }
-
-    /// 修改保身份重启计划。`None` 表示这一项保持原值。
-    /// batch 为 0 时，每一轮包含当前全部账号。改间隔、批量或延后会重新计时；只改 misfire 不会。
-    pub fn set_restart_plan(
-        &self,
-        interval: Option<Duration>,
-        batch: Option<usize>,
-        defer: Option<Duration>,
-        misfire: Option<Misfire>,
-    ) {
-        let mut reschedule = false;
-        if let Some(interval) = interval {
-            *self.restart_interval.lock().unwrap() = interval;
-            reschedule = true;
-        }
-        if let Some(batch) = batch {
-            self.restart_batch.store(batch, Ordering::Relaxed);
-            reschedule = true;
-        }
-        if let Some(defer) = defer {
-            *self.restart_defer.lock().unwrap() = defer;
-            reschedule = true;
-        }
-        if let Some(misfire) = misfire {
-            self.restart_misfire.store(misfire as u8, Ordering::Relaxed);
-        }
-        // 只改错过策略时不重新计时，也不取消已经延后的账号。
-        if !reschedule {
-            return;
-        }
-        for worker in self.snapshot() {
-            worker.deferred.store(false, Ordering::Relaxed);
-            worker.clear_stage();
-        }
-        self.wake(WakeReason::Plan);
-    }
-
-    fn misfire(&self) -> Misfire {
-        match self.restart_misfire.load(Ordering::Relaxed) {
-            1 => Misfire::Skip,
-            _ => Misfire::Fire,
-        }
-    }
-
-    pub fn set_plan_paused(&self, paused: bool) {
-        self.restart_paused.store(paused, Ordering::Relaxed);
-        self.console.set_paused(paused);
-        self.console.log(
-            "plan",
-            if paused {
-                "已暂停后续轮次"
-            } else {
-                "已恢复后续轮次"
-            },
-        );
-        self.wake(WakeReason::Control);
-    }
-
-    pub fn plan_paused(&self) -> bool {
-        self.restart_paused.load(Ordering::Relaxed)
-    }
-
-    pub fn run_plan_now(&self) {
-        self.restart_now.store(true, Ordering::Relaxed);
-        self.console.log("plan", "已请求立即执行一轮");
-        self.wake(WakeReason::Control);
-    }
-
-    fn wake(&self, reason: WakeReason) {
-        let mut pending = self.wake_reason.lock().unwrap();
-        if *pending != WakeReason::Plan || reason == WakeReason::Plan {
-            *pending = reason;
-        }
-        self.restart_wake.notify_one();
-    }
-
-    fn take_wake(&self) -> WakeReason {
-        let mut reason = self.wake_reason.lock().unwrap();
-        let current = *reason;
-        *reason = WakeReason::None;
-        current
     }
 
     pub fn set_listen(&self, addr: impl Into<String>) {
@@ -1444,6 +1291,10 @@ impl Pool {
             .ok_or_else(|| crate::Error::Config(format!("没有账号 {id}")))?;
         worker.manual.store(on, Ordering::Relaxed);
         worker.note(if on { "已启用" } else { "已停用" });
+        // 手动停用和排空都不能保留旧用户名绑定；下一次请求会迁往可用实例。
+        if !on {
+            self.scheduler.forget_users(id);
+        }
         self.console.log(
             "account",
             format!("账号 {id} {}", if on { "已启用" } else { "已停用" }),
@@ -1747,14 +1598,18 @@ impl Pool {
         };
         let worker = workers.remove(index);
         let temporary = worker.temporary.load(Ordering::Relaxed);
+        // 摘出实例与阻止新租约连续完成；持有旧快照的请求也必须看到停止状态。
+        worker.begin_draining();
+        worker.stopped.store(true, Ordering::Release);
         drop(workers);
-        worker.stopped.store(true, Ordering::Relaxed);
+        worker.stop_notify.notify_waiters();
         worker.retire();
         worker.rebuild.notify_one();
         self.scheduler.forget(id);
-        if self.pinned.load(Ordering::Relaxed) == id {
-            self.pinned.store(0, Ordering::Relaxed);
-        }
+        let mut queues = self.restart_queues.lock().unwrap();
+        queues.draining.retain(|queued| *queued != id);
+        queues.ready.retain(|queued| *queued != id);
+        drop(queues);
         if temporary {
             if let Some(dir) = &self.state_dir {
                 if let Err(err) = forget_saved_temporary(dir, id) {
@@ -1786,10 +1641,12 @@ impl Pool {
     }
 
     pub fn status(&self) -> PoolStatus {
-        let pinned = self.pinned.load(Ordering::Relaxed);
         let policy = *self.restart_policy.read().unwrap();
+        let queues = self.restart_queues.lock().unwrap();
+        let drain_queue = queues.draining.iter().copied().collect();
+        let restart_queue = queues.ready.iter().copied().collect();
+        drop(queues);
         let users = self.scheduler.user_counts();
-        let now_ms = crate::console::unix_ms();
         let mut ready_n = 0usize;
         let mut attention = 0usize;
         let mut maintenance = 0usize;
@@ -1802,7 +1659,6 @@ impl Pool {
                 let draining = worker.draining.load(Ordering::Relaxed);
                 let active = worker.active.load(Ordering::Relaxed);
                 let manual = worker.manual.load(Ordering::Relaxed);
-                let deferred = worker.deferred.load(Ordering::Relaxed);
                 let inner = worker.inner.lock().unwrap();
                 let usage = worker.usage.lock().unwrap();
                 let egress_v4 = inner.egress_v4.clone();
@@ -1819,8 +1675,6 @@ impl Pool {
                     "retrying"
                 } else if draining {
                     "maintenance"
-                } else if deferred {
-                    "waiting"
                 } else if inner.net.is_none() {
                     "down"
                 } else if warp == "on"
@@ -1835,7 +1689,7 @@ impl Pool {
                 };
                 match health {
                     "healthy" => ready_n += 1,
-                    "maintenance" | "waiting" | "disabled" => maintenance += 1,
+                    "maintenance" | "disabled" => maintenance += 1,
                     "unknown" => unknown += 1,
                     _ => attention += 1,
                 }
@@ -1848,13 +1702,17 @@ impl Pool {
                         elapsed_seconds: stage_at.map(|at| at.elapsed().as_secs()).unwrap_or(0),
                     });
                 }
-                let ready = manual && !draining && inner.net.is_some();
+                let ready = manual
+                    && !draining
+                    && !worker.stopped.load(Ordering::Relaxed)
+                    && !worker.restart_pending.load(Ordering::Relaxed)
+                    && !worker.restart_busy.load(Ordering::Relaxed)
+                    && inner.net.is_some();
                 AccountStatus {
                     id: worker.id,
                     ready,
                     tunnel: inner.net.is_some(),
                     draining,
-                    deferred,
                     manual,
                     temporary: worker.temporary.load(Ordering::Relaxed),
                     active,
@@ -1866,10 +1724,10 @@ impl Pool {
                     colo,
                     pooled: ready,
                     users: users.get(&worker.id).copied().unwrap_or(0),
-                    restart_users: usage.users.len(),
+                    restart_users: usage.identities.len(),
                     restart_connections: usage.connections,
                     restart_pending: worker.restart_pending.load(Ordering::Relaxed),
-                    uptime_seconds: worker.born.elapsed().as_secs(),
+                    uptime_seconds: worker.uptime().as_secs(),
                     last_action: worker.last_action.lock().unwrap().clone(),
                     ip: inner.assigned_v4.to_string(),
                     assigned_v6: inner.config.ipv6.clone(),
@@ -1878,24 +1736,21 @@ impl Pool {
             })
             .collect();
         let (bytes_up, bytes_down) = self.console.totals();
-        let _ = now_ms;
         PoolStatus {
             initializing: self.initializing.load(Ordering::Relaxed),
             expected_accounts: self.expected_accounts,
             enabled: self.enabled(),
-            mode: if pinned == 0 { "auto" } else { "pinned" },
-            pinned,
             http2: self.http2.load(Ordering::Relaxed),
             mixed: self.mixed,
             listen: self.listen.lock().unwrap().clone(),
             rotate_seconds: self.rotate_secs.load(Ordering::Relaxed),
-            restart_seconds: self.restart_interval.lock().unwrap().as_secs(),
-            restart_mode: policy.mode.as_str(),
-            restart_threshold: policy.threshold,
-            restart_batch: self.restart_batch.load(Ordering::Relaxed),
+            restart_max_uptime_seconds: policy.max_uptime.as_secs(),
+            restart_max_users: policy.max_users,
+            restart_max_connections: policy.max_connections,
+            restart_drain_check_seconds: self.restart.drain_check_interval.as_secs_f64(),
             restart_concurrency: self.restart.concurrency.max(1),
-            restart_defer_seconds: self.restart_defer.lock().unwrap().as_secs(),
-            restart_misfire: self.misfire().as_str(),
+            drain_queue,
+            restart_queue,
             health_seconds: self.health_interval.as_secs(),
             strategy: strategy_name(self.policy.strategy),
             sticky: sticky_name(self.policy.sticky),
@@ -1907,7 +1762,6 @@ impl Pool {
             attention,
             maintenance,
             unknown,
-            plan: self.console.plan(),
             tasks,
             accounts,
         }
@@ -2053,113 +1907,6 @@ async fn register_with(
     }
 }
 
-/// 从账号列表里取出下一轮要重启的账号，并返回下一轮的游标。
-/// batch 为 0 时取当前全部账号，且同一轮不会重复同一个账号。
-fn publish_next(pool: &Pool, round_at: Option<tokio::time::Instant>) {
-    let next = round_at.map(|at| {
-        let wait = at.saturating_duration_since(tokio::time::Instant::now());
-        crate::console::unix_ms().saturating_add(wait.as_millis() as u64)
-    });
-    pool.console.set_next(next);
-}
-
-fn earliest_restart(
-    round_at: Option<tokio::time::Instant>,
-    deferred: &[(usize, tokio::time::Instant)],
-) -> Option<tokio::time::Instant> {
-    deferred.iter().fold(round_at, |soon, (_, at)| {
-        Some(soon.map_or(*at, |previous| previous.min(*at)))
-    })
-}
-
-fn schedule_defer(
-    deferred: &mut Vec<(usize, tokio::time::Instant)>,
-    id: usize,
-    at: tokio::time::Instant,
-) {
-    if let Some(slot) = deferred.iter_mut().find(|(existing, _)| *existing == id) {
-        slot.1 = slot.1.min(at);
-    } else {
-        deferred.push((id, at));
-    }
-}
-
-/// 把到点的账号分成立即重启和继续延后。延后关闭时，有连接也会立即进入排空。
-pub(crate) fn split_due_restarts(
-    ids: &[usize],
-    active: impl Fn(usize) -> usize,
-    defer_enabled: bool,
-) -> (Vec<usize>, Vec<usize>) {
-    let mut now = Vec::new();
-    let mut later = Vec::new();
-    for id in ids {
-        if defer_enabled && active(*id) > 0 {
-            later.push(*id);
-        } else {
-            now.push(*id);
-        }
-    }
-    (now, later)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RoundAction {
-    Run,
-    Skip,
-    Wait,
-}
-
-/// 到点且上一轮已经把整点拖过去时，skip 不补跑。准时触发和手动执行仍然跑。
-pub(crate) fn round_action(
-    policy: Misfire,
-    already_late: bool,
-    round_due: bool,
-    force: bool,
-) -> RoundAction {
-    if round_due && !force && policy == Misfire::Skip && already_late {
-        RoundAction::Skip
-    } else if round_due || force {
-        RoundAction::Run
-    } else {
-        RoundAction::Wait
-    }
-}
-
-/// 从错过的整点继续加间隔，直到严格晚于 now。
-pub(crate) fn next_future_deadline(
-    deadline: tokio::time::Instant,
-    interval: Duration,
-    now: tokio::time::Instant,
-) -> tokio::time::Instant {
-    if interval.is_zero() || deadline > now {
-        return if deadline > now { deadline } else { now };
-    }
-    let late = now.saturating_duration_since(deadline);
-    let step = interval.as_nanos().max(1);
-    let steps = u32::try_from(late.as_nanos() / step + 1).unwrap_or(u32::MAX);
-    let mut next = deadline + interval.saturating_mul(steps);
-    if next <= now {
-        next = now + interval;
-    }
-    next
-}
-
-pub(crate) fn next_restart_batch(ids: &[usize], index: usize, batch: usize) -> (Vec<usize>, usize) {
-    if ids.is_empty() {
-        return (Vec::new(), index);
-    }
-    let count = if batch == 0 {
-        ids.len()
-    } else {
-        batch.min(ids.len())
-    };
-    let start = index % ids.len();
-    let chosen = (0..count)
-        .map(|offset| ids[(start + offset) % ids.len()])
-        .collect();
-    (chosen, start + count)
-}
-
 fn probe_target(configs: &[WarpConfig]) -> SocketAddr {
     let host = configs
         .iter()
@@ -2189,18 +1936,67 @@ async fn supervise(
         };
         let health_every = current.health_interval;
         drop(current);
-        if worker_needs_warp_check(&worker) {
+        if !worker.restart_pending.load(Ordering::Acquire) && worker_needs_warp_check(&worker) {
             worker.begin_draining();
-            let confirmed = confirm_warp(&pool, &worker).await;
-            worker.draining.store(false, Ordering::Relaxed);
-            if !confirmed {
-                worker.retire();
+            let confirmed = tokio::select! {
+                biased;
+                _ = wait_stopped(&worker) => {
+                    worker.retire();
+                    return;
+                }
+                confirmed = confirm_warp(&pool, &worker) => confirmed,
+            };
+            if confirmed {
+                // Pool::start() 的首次建链不经过 reconnect_loop，也必须开始运行计时。
+                worker.mark_initial_ready();
             }
+            {
+                // 与 lease() 互斥，防止刚触发的排空被本次验证清除。
+                let _inner = worker.inner.lock().unwrap();
+                if !worker.restart_pending.load(Ordering::Acquire) && confirmed {
+                    worker.draining.store(false, Ordering::Release);
+                }
+            }
+            if !confirmed {
+                worker.retire_if_not_pending();
+            }
+        }
+        if worker.restart_pending.load(Ordering::Acquire) {
+            // 等待排空时冻结健康检查和主动换出口，不触碰旧隧道。
+            // 已执行过重启但失败时，改由后台重试循环取得新的并发名额。
+            if worker.restart_attempted.load(Ordering::Acquire) {
+                if !reconnect_loop(&pool, &worker, &mut jobs).await {
+                    return;
+                }
+                continue;
+            }
+            tokio::select! {
+                biased;
+                _ = wait_stopped(&worker) => {
+                    worker.retire();
+                    return;
+                },
+                job = jobs.recv() => match job {
+                    Some(job) => {
+                        let result = graceful(&pool, &worker, &job).await;
+                        let _ = job.reply.send(result);
+                    }
+                    None => return,
+                },
+                // 关闭阈值、移除实例时必须离开等待，重新核对 pending / stopped。
+                _ = worker.drain_finished.notified() => {},
+                _ = worker.rebuild.notified() => {},
+            }
+            continue;
         }
         let next_health = tokio::time::Instant::now() + health_every;
         if let Some(mut dead) = worker.dead_signal() {
             tokio::select! {
                 biased;
+                _ = wait_stopped(&worker) => {
+                    worker.retire();
+                    return;
+                },
                 job = jobs.recv() => {
                     match job {
                         Some(job) => {
@@ -2211,6 +2007,7 @@ async fn supervise(
                         None => return,
                     }
                 }
+                _ = worker.drain_finished.notified() => continue,
                 _ = wait_true(&mut dead) => worker.clear_net(),
                 _ = worker.rebuild.notified() => worker.clear_net(),
                 _ = tokio::time::sleep_until(next_health), if !health_every.is_zero() => {
@@ -2265,6 +2062,50 @@ async fn reconnect_loop(
             worker.retire();
             return false;
         }
+        // 手动或自动任务已占有实例的重启执行权时，监督器必须优先消费
+        // 该任务，不能抢先自行连接并等待第二份名额，否则并发数为 1 会死锁。
+        if worker.restart_busy.load(Ordering::Acquire) {
+            tokio::select! {
+                biased;
+                _ = wait_stopped(worker) => {
+                    worker.retire();
+                    return false;
+                },
+                job = jobs.recv() => match job {
+                    Some(job) => {
+                        let result = graceful(pool, worker, &job).await;
+                        let _ = job.reply.send(result);
+                        return true;
+                    }
+                    None => return false,
+                },
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+            }
+            continue;
+        }
+        // 阈值已触发但排空/重启队列尚未放行时，故障恢复也不得抢先重连。
+        if worker.restart_pending.load(Ordering::Relaxed)
+            && !worker.restart_attempted.load(Ordering::Relaxed)
+        {
+            tokio::select! {
+                biased;
+                _ = wait_stopped(worker) => {
+                    worker.retire();
+                    return false;
+                },
+                job = jobs.recv() => match job {
+                    Some(job) => {
+                        let result = graceful(pool, worker, &job).await;
+                        let _ = job.reply.send(result);
+                        return true;
+                    }
+                    None => return false,
+                },
+                _ = worker.drain_finished.notified() => {},
+                _ = worker.rebuild.notified() => {},
+            }
+            continue;
+        }
         let Some(current) = pool.upgrade() else {
             return false;
         };
@@ -2276,19 +2117,79 @@ async fn reconnect_loop(
         );
         if initial_connect {
             worker.set_stage("连接中");
+        } else if worker.restart_pending.load(Ordering::Relaxed) {
+            worker.set_stage("重启失败，后台重试中");
         } else {
             worker.set_stage("重连");
         }
-        let Ok(permit) = current.connect_limit.acquire().await else {
-            return false;
+        // 自动重启后的后台故障恢复也占用同一个并发名额。
+        let restart_permit = if worker.restart_pending.load(Ordering::Relaxed) {
+            let permit = tokio::select! {
+                biased;
+                _ = wait_stopped(worker) => {
+                    worker.retire();
+                    return false;
+                },
+                job = jobs.recv() => match job {
+                    Some(job) => {
+                        let result = graceful(pool, worker, &job).await;
+                        let _ = job.reply.send(result);
+                        return true;
+                    }
+                    None => return false,
+                },
+                permit = current.restart_limit.clone().acquire_owned() => permit,
+            };
+            match permit {
+                Ok(permit) => Some(permit),
+                Err(_) => return false,
+            }
+        } else {
+            None
+        };
+        let connect = tokio::select! {
+            biased;
+            _ = wait_stopped(worker) => {
+                worker.retire();
+                return false;
+            },
+            job = jobs.recv() => match job {
+                Some(job) => {
+                    drop(restart_permit);
+                    let result = graceful(pool, worker, &job).await;
+                    let _ = job.reply.send(result);
+                    return true;
+                }
+                None => return false,
+            },
+            permit = current.connect_limit.clone().acquire_owned() => permit,
+        };
+        let permit = match connect {
+            Ok(permit) => permit,
+            Err(_) => return false,
         };
         if worker.stopped.load(Ordering::Relaxed) {
+            worker.retire();
             return false;
         }
-        let built = current.build_tunnel(worker).await;
+        let built = tokio::select! {
+            biased;
+            _ = wait_stopped(worker) => {
+                worker.retire();
+                return false;
+            },
+            built = current.build_tunnel(worker) => built,
+        };
         let failure = match built {
             Err(err) => Some(err.to_string()),
-            Ok(()) => match probe_egress(worker, probe_timeout).await {
+            Ok(()) => match tokio::select! {
+                biased;
+                _ = wait_stopped(worker) => {
+                    worker.retire();
+                    return false;
+                },
+                result = probe_egress(worker, probe_timeout) => result,
+            } {
                 Ok(egress) if egress_confirmed(&egress) => {
                     let text = format!(
                         "[pool] 账号 {} 隧道已重连，出口 {}",
@@ -2324,8 +2225,14 @@ async fn reconnect_loop(
             current.console.log("account", text);
         }
         drop(permit);
+        drop(restart_permit);
         drop(current);
         tokio::select! {
+            biased;
+            _ = wait_stopped(worker) => {
+                worker.retire();
+                return false;
+            },
             _ = tokio::time::sleep(backoff) => {}
             _ = worker.rebuild.notified() => {}
             job = jobs.recv() => {
@@ -2344,9 +2251,19 @@ async fn reconnect_loop(
 }
 
 async fn graceful(pool: &Weak<Pool>, worker: &Arc<Worker>, job: &RestartJob) -> Result<(), String> {
+    if worker.stopped.load(Ordering::Acquire) {
+        return Err(format!("账号 {} 已移除", worker.id));
+    }
     account_log(pool, format!("[pool] 账号 {} 开始保身份重启", worker.id));
-    wait_before_restart(worker, job.force_after).await;
-    let result = restart_in_place(pool, worker, job).await;
+    worker.begin_draining();
+    let result = tokio::select! {
+        biased;
+        _ = wait_stopped(worker) => {
+            worker.retire();
+            return Err(format!("账号 {} 已移除", worker.id));
+        },
+        result = restart_in_place(pool, worker, job) => result,
+    };
     if result.is_ok() {
         if let Some(current) = pool.upgrade() {
             current.finish_reconnect(worker);
@@ -2354,25 +2271,17 @@ async fn graceful(pool: &Weak<Pool>, worker: &Arc<Worker>, job: &RestartJob) -> 
             worker.reset_usage();
         }
     }
-    worker.clear_stage();
+    if result.is_ok() {
+        worker.clear_stage();
+    } else {
+        worker.set_stage("重启失败，后台重试中");
+    }
     worker.note(if result.is_ok() {
         "保身份重启"
     } else {
         "重启失败"
     });
     result
-}
-
-async fn wait_before_restart(worker: &Worker, force_after: Duration) {
-    if worker.accept_existing_users.load(Ordering::Relaxed) {
-        worker.set_stage("等待排空超时");
-        tokio::time::sleep(force_after).await;
-        worker.begin_draining();
-    } else {
-        worker.begin_draining();
-        worker.set_stage("排空");
-        wait_for_drain(worker, force_after).await;
-    }
 }
 
 async fn restart_in_place(
@@ -2429,13 +2338,6 @@ async fn restart_in_place(
     }
 }
 
-async fn wait_for_drain(worker: &Worker, force_after: Duration) {
-    let started = tokio::time::Instant::now();
-    while worker.active.load(Ordering::Relaxed) > 0 && started.elapsed() < force_after {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
 async fn wait_true(rx: &mut watch::Receiver<bool>) {
     loop {
         if *rx.borrow_and_update() {
@@ -2444,6 +2346,19 @@ async fn wait_true(rx: &mut watch::Receiver<bool>) {
         if rx.changed().await.is_err() {
             return;
         }
+    }
+}
+
+async fn wait_stopped(worker: &Worker) {
+    loop {
+        let notified = worker.stop_notify.notified();
+        tokio::pin!(notified);
+        // 注册在状态检查之前，避免在两者之间移除实例时遗漏退出通知。
+        notified.as_mut().enable();
+        if worker.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -2641,19 +2556,17 @@ pub struct PoolStatus {
     pub initializing: bool,
     pub expected_accounts: usize,
     pub enabled: bool,
-    pub mode: &'static str,
-    pub pinned: usize,
     pub http2: bool,
     pub mixed: bool,
     pub listen: String,
     pub rotate_seconds: u64,
-    pub restart_seconds: u64,
-    pub restart_mode: &'static str,
-    pub restart_threshold: usize,
-    pub restart_batch: usize,
+    pub restart_max_uptime_seconds: u64,
+    pub restart_max_users: usize,
+    pub restart_max_connections: u64,
+    pub restart_drain_check_seconds: f64,
     pub restart_concurrency: usize,
-    pub restart_defer_seconds: u64,
-    pub restart_misfire: &'static str,
+    pub drain_queue: Vec<usize>,
+    pub restart_queue: Vec<usize>,
     pub health_seconds: u64,
     pub strategy: &'static str,
     pub sticky: &'static str,
@@ -2665,7 +2578,6 @@ pub struct PoolStatus {
     pub attention: usize,
     pub maintenance: usize,
     pub unknown: usize,
-    pub plan: crate::console::PlanView,
     pub tasks: Vec<TaskStatus>,
     pub accounts: Vec<AccountStatus>,
 }
@@ -2685,7 +2597,6 @@ pub struct AccountStatus {
     pub ready: bool,
     pub tunnel: bool,
     pub draining: bool,
-    pub deferred: bool,
     pub manual: bool,
     pub temporary: bool,
     pub active: usize,
@@ -2755,16 +2666,18 @@ fn preferred_trace<'a>(
 }
 
 #[cfg(test)]
-mod restart_threshold_tests {
-    use super::{parse_restart_mode, Pool, PoolOptions, RestartMode, WarpConfig, Worker};
+mod restart_queue_tests {
+    use super::{Pool, PoolOptions, RestartPolicy, RestartUsage, WarpConfig, Worker};
+    use crate::schedule::StickyMode;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::mpsc;
+    use std::time::{Duration, Instant};
+    use tokio::sync::{mpsc, watch};
 
     async fn mock_pool(
-        mode: RestartMode,
-        threshold: usize,
+        users: usize,
+        connections: u64,
+        uptime: Duration,
         concurrency: usize,
     ) -> (
         Arc<Pool>,
@@ -2772,840 +2685,515 @@ mod restart_threshold_tests {
         Vec<mpsc::UnboundedReceiver<super::RestartJob>>,
     ) {
         let mut options = PoolOptions::basic(true);
-        options.restart.mode = mode;
-        options.restart.threshold = threshold;
+        options.policy.sticky = StickyMode::UsernameRound;
+        options.restart.max_users = users;
+        options.restart.max_connections = connections;
+        options.restart.max_uptime = uptime;
         options.restart.concurrency = concurrency;
+        options.restart.drain_check_interval = Duration::from_secs(3600);
         let pool = Pool::start(Vec::new(), options).await.unwrap();
         let mut workers = Vec::new();
-        let mut receivers = Vec::new();
+        let mut jobs = Vec::new();
         for id in 1..=2 {
-            let (worker, jobs) = Worker::new(id, WarpConfig::default(), None);
+            let (worker, rx) = Worker::new(id, WarpConfig::default(), None);
             worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
+            *worker.ready_since.lock().unwrap() = Some(Instant::now());
             pool.workers.lock().unwrap().push(worker.clone());
             workers.push(worker);
-            receivers.push(jobs);
+            jobs.push(rx);
         }
-        (pool, workers, receivers)
+        (pool, workers, jobs)
     }
 
     #[test]
-    fn rejects_invalid_modes_and_zero_thresholds() {
-        assert_eq!(parse_restart_mode("USERS").unwrap(), RestartMode::Users);
-        assert_eq!(
-            parse_restart_mode("connections").unwrap(),
-            RestartMode::Connections
-        );
-        assert!(parse_restart_mode("unknown").is_err());
-        let invalid = super::RestartPolicy {
-            mode: RestartMode::Users,
-            threshold: 0,
+    fn independent_triggers_and_disabled_policy() {
+        let mut usage = RestartUsage::default();
+        usage.connections = 4;
+        usage.identities.insert(1);
+        let mut policy = RestartPolicy {
+            max_uptime: Duration::ZERO,
+            max_users: 0,
+            max_connections: 0,
         };
-        assert!(invalid.validate().is_err());
+        assert!(!usage.reached(policy));
+        policy.max_users = 1;
+        assert!(usage.reached(policy));
+        policy.max_users = 2;
+        assert!(!usage.reached(policy));
+        policy.max_connections = 4;
+        assert!(usage.reached(policy));
     }
 
     #[tokio::test]
-    async fn successful_reconnect_clears_only_its_sticky_user_count() {
-        let mut options = PoolOptions::basic(true);
-        options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
-        let pool = Pool::start(Vec::new(), options).await.unwrap();
-        let mut workers = Vec::new();
-        for id in 1..=2 {
-            let (worker, _jobs) = Worker::new(id, WarpConfig::default(), None);
-            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-            pool.workers.lock().unwrap().push(worker.clone());
-            workers.push(worker);
-        }
-
-        let alice = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        let bob = pool.checkout(Some("bob"), "192.0.2.2").unwrap();
-        assert_eq!(alice.worker_id, 1);
-        assert_eq!(bob.worker_id, 2);
-        assert_eq!(pool.status().accounts[0].users, 1);
-        assert_eq!(pool.status().accounts[1].users, 1);
-
-        workers[0].begin_draining();
-        pool.finish_reconnect(&workers[0]);
-        assert_eq!(pool.status().accounts[0].users, 0);
-        assert_eq!(pool.status().accounts[1].users, 1);
-        assert_eq!(
-            pool.checkout(Some("bob"), "192.0.2.3").unwrap().worker_id,
-            2
-        );
-
-        workers[1].begin_draining();
-        pool.finish_reconnect(&workers[1]);
-        assert_eq!(pool.status().accounts[1].users, 0);
-    }
-
-    #[tokio::test]
-    async fn failed_reconnect_preserves_sticky_user_count_until_recovery() {
-        let mut options = PoolOptions::basic(true);
-        options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
-        let pool = Pool::start(Vec::new(), options).await.unwrap();
-        let (worker, _jobs) = Worker::new(1, WarpConfig::default(), None);
-        worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-        pool.workers.lock().unwrap().push(worker.clone());
-        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        drop(lease);
-
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let job = super::RestartJob {
-            reply,
-            probe_timeout: Duration::ZERO,
-            force_after: Duration::ZERO,
-        };
-        assert!(super::graceful(&Arc::downgrade(&pool), &worker, &job)
-            .await
-            .is_err());
-        assert_eq!(pool.status().accounts[0].users, 1);
-        pool.finish_reconnect(&worker);
-        assert_eq!(pool.status().accounts[0].users, 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn threshold_restart_clears_instance_users_and_recounts_in_both_modes() {
-        for mode in [RestartMode::Users, RestartMode::Connections] {
-            let mut options = PoolOptions::basic(true);
-            options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
-            options.restart.mode = mode;
-            options.restart.threshold = 2;
-            let pool = Pool::start(Vec::new(), options).await.unwrap();
-            let (worker, mut jobs) = Worker::new(1, WarpConfig::default(), None);
-            let (other_worker, _other_jobs) = Worker::new(2, WarpConfig::default(), None);
-            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-            other_worker.inner.lock().unwrap().net =
-                Some(crate::netstack::NetHandle::test_handle());
-            pool.workers
-                .lock()
-                .unwrap()
-                .extend([worker.clone(), other_worker]);
-
-            let first = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-            let other = pool.checkout(Some("outside"), "192.0.2.2").unwrap();
-            assert_eq!(other.worker_id, 2);
-            let second_user = if mode == RestartMode::Users {
-                "bob"
-            } else {
-                "alice"
-            };
-            let second = pool.checkout(Some(second_user), "192.0.2.3").unwrap();
-            let before = &pool.status().accounts[0];
-            assert_eq!(before.users, if mode == RestartMode::Users { 2 } else { 1 });
-            assert_eq!(before.restart_connections, 2);
-            assert_eq!(
-                before.restart_users,
-                if mode == RestartMode::Users { 2 } else { 0 }
-            );
-            assert!(before.restart_pending);
-            assert!(before.draining);
-            assert_eq!(pool.status().accounts[1].users, 1);
-
-            let job = tokio::time::timeout(Duration::from_secs(1), jobs.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            if mode == RestartMode::Users {
-                let repeat = pool.checkout(Some("alice"), "192.0.2.4").unwrap();
-                assert_eq!(repeat.worker_id, 1);
-                assert_eq!(pool.status().accounts[0].restart_users, 2);
-                assert_eq!(pool.status().accounts[0].restart_connections, 3);
-                drop(repeat);
-            } else {
-                assert!(pool.checkout(Some("alice"), "192.0.2.4").is_err());
-            }
-            drop((first, second));
-
-            pool.finish_reconnect(&worker);
-            let _ = job.reply.send(Ok(()));
-            let after = &pool.status().accounts[0];
-            assert_eq!(after.users, 0);
-            assert_eq!(after.restart_users, 0);
-            assert_eq!(after.restart_connections, 0);
-            assert!(!after.restart_pending);
-            assert!(!after.draining);
-            assert_eq!(pool.status().accounts[1].users, 1);
-            assert_eq!(pool.status().accounts[1].restart_connections, 1);
-
-            let fresh = pool.checkout(Some("alice"), "192.0.2.5").unwrap();
-            assert_eq!(fresh.worker_id, 1);
-            let after_new_connection = &pool.status().accounts[0];
-            assert_eq!(after_new_connection.users, 1);
-            assert_eq!(after_new_connection.restart_connections, 1);
-            assert_eq!(
-                after_new_connection.restart_users,
-                if mode == RestartMode::Users { 1 } else { 0 }
-            );
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn threshold_restart_failure_keeps_instance_user_count() {
-        for mode in [RestartMode::Users, RestartMode::Connections] {
-            let mut options = PoolOptions::basic(true);
-            options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
-            options.restart.mode = mode;
-            options.restart.threshold = 1;
-            let pool = Pool::start(Vec::new(), options).await.unwrap();
-            let (worker, mut jobs) = Worker::new(1, WarpConfig::default(), None);
-            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-            pool.workers.lock().unwrap().push(worker.clone());
-
-            let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-            let job = tokio::time::timeout(Duration::from_secs(1), jobs.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            drop(lease);
-            let result = super::graceful(&Arc::downgrade(&pool), &worker, &job).await;
-            assert!(result.is_err());
-            let _ = job.reply.send(result);
-
-            let failed = &pool.status().accounts[0];
-            assert_eq!(failed.users, 1);
-            assert_eq!(failed.restart_connections, 1);
-            assert_eq!(
-                failed.restart_users,
-                usize::from(mode == RestartMode::Users)
-            );
-            assert!(failed.restart_pending);
-            assert!(failed.draining);
-            assert!(pool.checkout(Some("alice"), "192.0.2.1").is_err());
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn user_threshold_allows_counted_users_until_drain_timeout() {
-        let mut options = PoolOptions::basic(true);
-        options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
-        options.restart.mode = RestartMode::Users;
-        options.restart.threshold = 2;
-        let pool = Pool::start(Vec::new(), options).await.unwrap();
-        let (worker, mut jobs) = Worker::new(1, WarpConfig::default(), None);
-        worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-        pool.workers.lock().unwrap().push(worker.clone());
-
+    async fn threshold_immediately_drains_and_existing_user_moves_without_moving_back() {
+        let (pool, workers, _jobs) = mock_pool(2, 0, Duration::ZERO, 1).await;
         let first = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        let second = pool.checkout(Some("bob"), "192.0.2.2").unwrap();
-        let job = tokio::time::timeout(Duration::from_secs(1), jobs.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        drop((first, second));
-
-        assert!(worker.restart_pending.load(Ordering::Relaxed));
-        assert!(worker.draining.load(Ordering::Relaxed));
-        assert!(pool.checkout(Some("charlie"), "192.0.2.3").is_err());
-
-        let waiting = worker.clone();
-        let restart_wait = tokio::spawn(async move {
-            super::wait_before_restart(&waiting, Duration::from_secs(3)).await;
-        });
-        tokio::task::yield_now().await;
-        assert!(!restart_wait.is_finished());
-        tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(!restart_wait.is_finished());
-
-        let alice_again = pool.checkout(Some("alice"), "198.51.100.2").unwrap();
-        let bob_again = pool.checkout(Some("bob"), "198.51.100.3").unwrap();
-        assert_eq!(alice_again.worker_id, 1);
-        assert_eq!(bob_again.worker_id, 1);
-        assert_eq!(pool.status().accounts[0].restart_users, 2);
-        assert_eq!(pool.status().accounts[0].restart_connections, 4);
-        assert!(pool.checkout(Some("charlie"), "192.0.2.3").is_err());
-
-        tokio::time::advance(Duration::from_secs(1)).await;
-        restart_wait.await.unwrap();
-        assert!(pool.checkout(Some("alice"), "198.51.100.2").is_err());
-        assert!(pool.checkout(Some("bob"), "198.51.100.3").is_err());
-        assert!(worker.restart_pending.load(Ordering::Relaxed));
-        assert_eq!(pool.status().accounts[0].restart_users, 2);
-        drop((alice_again, bob_again));
-        let _ = job.reply.send(Err("模拟超时后重启失败".into()));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn anonymous_user_threshold_recognizes_original_ip_only() {
-        let (pool, workers, mut receivers) = mock_pool(RestartMode::Users, 1, 1).await;
-        workers[1].manual.store(false, Ordering::Relaxed);
-        let first = pool.checkout(None, "192.0.2.1").unwrap();
         assert_eq!(first.worker_id, 1);
-        let repeat = pool.checkout(None, "192.0.2.1").unwrap();
-        assert_eq!(repeat.worker_id, 1);
-        assert!(pool.checkout(None, "192.0.2.2").is_err());
-        assert_eq!(pool.status().accounts[0].restart_users, 1);
-        assert_eq!(pool.status().accounts[0].restart_connections, 2);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), receivers[0].recv())
-                .await
-                .unwrap()
-                .is_some()
-        );
-        drop((first, repeat));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn user_threshold_routes_new_users_to_other_instances() {
-        for sticky in [
-            crate::schedule::StickyMode::UsernameRound,
-            crate::schedule::StickyMode::UsernameLeast,
-        ] {
-            let mut options = PoolOptions::basic(true);
-            options.policy.sticky = sticky;
-            options.restart.mode = RestartMode::Users;
-            options.restart.threshold = 2;
-            let pool = Pool::start(Vec::new(), options).await.unwrap();
-            let (first_worker, _first_jobs) = Worker::new(1, WarpConfig::default(), None);
-            let (second_worker, _second_jobs) = Worker::new(2, WarpConfig::default(), None);
-            first_worker.inner.lock().unwrap().net =
-                Some(crate::netstack::NetHandle::test_handle());
-            second_worker.inner.lock().unwrap().net =
-                Some(crate::netstack::NetHandle::test_handle());
-            second_worker.manual.store(false, Ordering::Relaxed);
-            pool.workers
-                .lock()
-                .unwrap()
-                .extend([first_worker, second_worker.clone()]);
-
-            let alice = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-            let bob = pool.checkout(Some("bob"), "192.0.2.2").unwrap();
-            assert_eq!(alice.worker_id, 1);
-            assert_eq!(bob.worker_id, 1);
-            second_worker.manual.store(true, Ordering::Relaxed);
-
-            assert_eq!(
-                pool.checkout(Some("alice"), "192.0.2.3").unwrap().worker_id,
-                1
-            );
-            assert_eq!(
-                pool.checkout(Some("bob"), "192.0.2.4").unwrap().worker_id,
-                1
-            );
-            assert_eq!(
-                pool.checkout(Some("charlie"), "192.0.2.5")
-                    .unwrap()
-                    .worker_id,
-                2
-            );
-            assert_eq!(pool.status().accounts[0].restart_users, 2);
-            assert_eq!(pool.status().accounts[1].restart_users, 1);
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn concurrent_new_users_cannot_exceed_user_threshold() {
-        let (pool, workers, _receivers) = mock_pool(RestartMode::Users, 5, 1).await;
-        workers[1].manual.store(false, Ordering::Relaxed);
-        let mut tasks = Vec::new();
-        for index in 0..100 {
-            let pool = pool.clone();
-            tasks.push(tokio::spawn(async move {
-                pool.checkout(Some(&format!("user-{index}")), "192.0.2.1")
-                    .is_ok()
-            }));
-        }
-        let mut admitted = 0;
-        for task in tasks {
-            admitted += usize::from(task.await.unwrap());
-        }
-        assert_eq!(admitted, 5);
-        assert_eq!(pool.status().accounts[0].restart_users, 5);
-        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn switching_away_from_user_mode_disables_existing_user_admission() {
-        let (pool, workers, _receivers) = mock_pool(RestartMode::Users, 1, 1).await;
-        workers[1].manual.store(false, Ordering::Relaxed);
-        let first = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        assert!(pool.checkout(Some("alice"), "192.0.2.2").is_ok());
-
-        pool.set_restart_policy(Some(RestartMode::Connections), None)
+        let trigger = pool
+            .lease(workers[0].clone(), Some("bob"), "192.0.2.2")
             .unwrap();
-        assert!(pool.checkout(Some("alice"), "192.0.2.3").is_err());
-        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
-        drop(first);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn connection_limit_stops_new_leases_without_dropping_active_ones() {
-        let (pool, workers, mut receivers) = mock_pool(RestartMode::Connections, 2, 1).await;
-        let first = pool.checkout(None, "192.0.2.1").unwrap();
-        assert_eq!(first.worker_id, 1);
-        assert_eq!(workers[0].usage.lock().unwrap().connections, 1);
-        let second = pool.checkout(None, "192.0.2.2").unwrap();
-        assert_eq!(second.worker_id, 2);
-        let third = pool.checkout(None, "192.0.2.3").unwrap();
-        assert_eq!(third.worker_id, 1);
-        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
-        assert_eq!(workers[0].active.load(Ordering::Relaxed), 2);
-        let job = tokio::time::timeout(Duration::from_secs(1), receivers[0].recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(receivers[1].try_recv().is_err());
-        assert_eq!(pool.checkout(None, "192.0.2.4").unwrap().worker_id, 2);
-        assert!(workers[1].restart_pending.load(Ordering::Relaxed));
-        assert!(pool.checkout(None, "192.0.2.5").is_err());
-        assert!(receivers[1].try_recv().is_err());
-        drop(first);
-        drop(third);
-        assert_eq!(workers[0].active.load(Ordering::Relaxed), 0);
-        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
-        let _ = job.reply.send(Ok(()));
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), receivers[1].recv())
-                .await
-                .unwrap()
-                .is_some()
-        );
-        pool.finish_reconnect(&workers[0]);
-        assert_eq!(workers[0].usage.lock().unwrap().connections, 0);
-        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
-        drop(second);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn user_limit_counts_distinct_names_and_anonymous_ips() {
-        let (pool, workers, mut receivers) = mock_pool(RestartMode::Users, 3, 1).await;
-        pool.select(1);
-        let first = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        let repeat = pool.checkout(Some("alice"), "192.0.2.2").unwrap();
-        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 1);
-        assert!(!workers[0].draining.load(Ordering::Relaxed));
-        let second = pool.checkout(None, "192.0.2.1").unwrap();
-        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 2);
-        let repeat_anonymous = pool.checkout(None, "192.0.2.1").unwrap();
-        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 2);
-        let third = pool.checkout(None, "192.0.2.3").unwrap();
-        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 3);
         assert!(workers[0].draining.load(Ordering::Relaxed));
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 2);
+        assert_eq!(pool.status().drain_queue, vec![1]);
+        let second = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        assert_eq!(second.worker_id, 2);
+        assert_eq!(pool.status().accounts[0].restart_users, 2);
+        assert_eq!(pool.status().accounts[0].restart_connections, 2);
+        // 清空 A 的排空状态仅用于验证映射行为；B 的黏性不会自动迁回 A。
+        workers[0].draining.store(false, Ordering::Relaxed);
+        assert_eq!(pool.scheduler.user_counts().get(&2), Some(&1));
         assert_eq!(
             pool.checkout(Some("alice"), "192.0.2.1").unwrap().worker_id,
+            2
+        );
+        // B 继续接收新用户后也达到上限：两个实例排空时才会拒绝请求。
+        workers[0].draining.store(true, Ordering::Relaxed);
+        let _other = pool
+            .lease(workers[1].clone(), Some("carol"), "192.0.2.3")
+            .unwrap();
+        assert!(pool.checkout(Some("alice"), "192.0.2.1").is_err());
+        drop((first, trigger, second));
+    }
+
+    #[tokio::test]
+    async fn long_connections_keep_worker_draining_until_closed() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        pool.inspect_restart_queues();
+        assert_eq!(pool.status().drain_queue, vec![1]);
+        assert!(pool.status().restart_queue.is_empty());
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 1);
+        drop(lease);
+        // 占住唯一重启名额，确认活跃数为零时只入队而不会直接发起重连。
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        pool.inspect_restart_queues();
+        assert!(pool.status().drain_queue.is_empty());
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn pending_always_blocks_new_leases_even_if_draining_flag_is_cleared() {
+        let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        workers[0].restart_pending.store(true, Ordering::Release);
+        workers[0].draining.store(false, Ordering::Release);
+        assert!(!workers[0].is_ready());
+        assert!(pool
+            .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
+            .is_none());
+        workers[0].retire_if_not_pending();
+        assert!(workers[0].net().is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrency_is_bounded_and_queue_is_deduplicated() {
+        let (pool, workers, mut jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let first = pool.checkout(None, "192.0.2.1").unwrap();
+        let second = pool.checkout(None, "192.0.2.2").unwrap();
+        drop((first, second));
+        pool.inspect_restart_queues();
+        pool.inspect_restart_queues();
+        tokio::task::yield_now().await;
+        assert_eq!(
+            pool.status().drain_queue.len() + pool.status().restart_queue.len(),
             1
         );
-        assert_eq!(workers[0].usage.lock().unwrap().users.len(), 3);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), receivers[0].recv())
-                .await
-                .unwrap()
-                .is_some()
-        );
-        pool.finish_reconnect(&workers[0]);
-        assert!(workers[0].usage.lock().unwrap().users.is_empty());
-        drop((first, repeat, second, repeat_anonymous, third));
+        assert!(workers[0].restart_busy.load(Ordering::Relaxed));
+        let received = jobs[0].try_recv().unwrap();
+        assert!(jobs[1].try_recv().is_err());
+        let _ = received.reply.send(Ok(()));
+        tokio::task::yield_now().await;
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn concurrent_checkout_never_exceeds_threshold() {
-        let (pool, workers, _receivers) = mock_pool(RestartMode::Connections, 10, 1).await;
-        workers[1].manual.store(false, Ordering::Relaxed);
-        let mut tasks = Vec::new();
-        for _ in 0..100 {
+    #[tokio::test]
+    async fn manual_restart_drains_immediately_and_respects_concurrency() {
+        let (pool, workers, mut jobs) = mock_pool(0, 2, Duration::ZERO, 1).await;
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let pending = tokio::spawn({
             let pool = pool.clone();
-            tasks.push(tokio::spawn(async move {
-                pool.checkout(None, "192.0.2.1").is_ok()
-            }));
-        }
-        let mut accepted = 0;
-        for task in tasks {
-            accepted += usize::from(task.await.unwrap());
-        }
-        assert_eq!(accepted, 10);
-        assert_eq!(workers[0].usage.lock().unwrap().connections, 10);
+            async move { pool.restart_one(1).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(workers[0].draining.load(Ordering::Relaxed));
+        assert!(workers[0].restart_busy.load(Ordering::Relaxed));
+        assert!(jobs[0].try_recv().is_err());
+        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        // 关闭自动阈值不能取消正在等待并发名额的手动强制重启。
         assert!(workers[0].restart_pending.load(Ordering::Relaxed));
+        assert!(workers[0].restart_busy.load(Ordering::Relaxed));
+        assert_eq!(pool.checkout(None, "192.0.2.1").unwrap().worker_id, 2);
+        drop(permit);
+        let job = tokio::time::timeout(Duration::from_secs(1), jobs[0].recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let _ = job.reply.send(Err("模拟重连失败".into()));
+        assert!(pending.await.unwrap().is_err());
+        assert!(!workers[0].restart_busy.load(Ordering::Relaxed));
+        assert!(workers[0].draining.load(Ordering::Relaxed));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn updating_threshold_checks_existing_counts() {
-        let (pool, workers, mut receivers) = mock_pool(RestartMode::Connections, 5, 1).await;
-        pool.select(1);
-        let lease = pool.checkout(None, "192.0.2.1").unwrap();
+    #[tokio::test]
+    async fn removing_worker_wakes_manual_restart_waiting_for_permit() {
+        let (pool, workers, mut jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let task = tokio::spawn({
+            let pool = pool.clone();
+            async move { pool.restart_one(1).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !workers[0].restart_busy.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(jobs[0].try_recv().is_err());
+        pool.remove_account(1).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("实例被移除时不应继续等待重启名额")
+            .unwrap();
+        assert!(result.unwrap_err().contains("已移除"));
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn reconnect_waiting_for_slot_prioritizes_manual_job() {
+        let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let worker = workers[0].clone();
+        worker.restart_pending.store(true, Ordering::Relaxed);
+        worker.restart_attempted.store(true, Ordering::Relaxed);
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let weak = Arc::downgrade(&pool);
+        let task =
+            tokio::spawn(async move { super::reconnect_loop(&weak, &worker, &mut rx).await });
+        tokio::task::yield_now().await;
+        workers[0].restart_busy.store(true, Ordering::Release);
+        let (reply, result) = tokio::sync::oneshot::channel();
+        tx.send(super::RestartJob {
+            reply,
+            probe_timeout: Duration::ZERO,
+        })
+        .unwrap();
+        // 并发名额仍被测试持有，监督器也必须能直接执行已放行的手动任务。
+        assert!(tokio::time::timeout(Duration::from_secs(1), result)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        assert!(task.await.unwrap());
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn runtime_changes_apply_to_current_usage() {
+        let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let _lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        pool.set_restart_policy(None, None, Some(1)).unwrap();
+        assert!(workers[0].draining.load(Ordering::Relaxed));
+        assert_eq!(pool.status().drain_queue, vec![1]);
+        assert_eq!(pool.status().restart_max_connections, 1);
+    }
+
+    #[tokio::test]
+    async fn disabling_all_thresholds_cancels_draining_without_closing_old_connections() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        workers[0].warp_ready.store(true, Ordering::Relaxed);
+        let old = pool
+            .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        assert_eq!(pool.status().drain_queue, vec![1]);
+        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        assert!(pool.status().drain_queue.is_empty());
+        assert!(pool.status().restart_queue.is_empty());
         assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
-        pool.set_restart_policy(None, Some(1)).unwrap();
+        assert!(!workers[0].draining.load(Ordering::Relaxed));
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 1);
+        assert_eq!(workers[0].usage.lock().unwrap().connections, 0);
+        let next = pool
+            .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        assert_eq!(next.worker_id, old.worker_id);
+        drop((old, next));
+        // 关闭后建立的连接也在累计统计里，重新启用时会应用现有累计值。
+        pool.set_restart_policy(None, None, Some(2)).unwrap();
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        let next = pool
+            .lease(workers[0].clone(), Some("bob"), "192.0.2.2")
+            .unwrap();
         assert!(workers[0].restart_pending.load(Ordering::Relaxed));
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), receivers[0].recv())
-                .await
-                .unwrap()
-                .is_some()
-        );
+        drop(next);
+    }
+
+    #[tokio::test]
+    async fn disabling_all_thresholds_cancels_ready_queue_before_reconnect() {
+        let (pool, workers, mut jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        workers[0].warp_ready.store(true, Ordering::Relaxed);
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let lease = pool
+            .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        drop(lease);
+        pool.inspect_restart_queues();
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        assert!(pool.status().drain_queue.is_empty());
+        assert!(pool.status().restart_queue.is_empty());
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        drop(permit);
+        pool.inspect_restart_queues();
+        tokio::task::yield_now().await;
+        assert!(jobs[0].try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelling_unverified_drain_does_not_expose_tunnel() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let old = pool
+            .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        assert!(workers[0].draining.load(Ordering::Relaxed));
+        assert!(workers[0].ready_since.lock().unwrap().is_none());
+        assert!(pool
+            .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
+            .is_none());
+        drop(old);
+    }
+
+    #[tokio::test]
+    async fn failed_restart_enters_background_retry() {
+        let (pool, mut workers, mut receivers) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let worker = workers.remove(0);
+        worker.warp_ready.store(true, Ordering::Relaxed);
+        let supervisor = tokio::spawn(super::supervise(
+            Arc::downgrade(&pool),
+            worker.clone(),
+            receivers.remove(0),
+        ));
+        // 测试账号没有有效密钥，实际重启会失败；此后应进入后台循环继续尝试。
+        assert!(pool.restart_one(worker.id).await.is_err());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if pool
+                    .logs()
+                    .lines
+                    .iter()
+                    .any(|line| line.text.contains("尚未就绪"))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("失败后应进入后台重试，而不是卡在等待重启指令");
+        assert!(worker.restart_pending.load(Ordering::Relaxed));
+        pool.remove_account(worker.id).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), supervisor)
+            .await
+            .expect("移除后重试任务应退出")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn automatic_restart_failure_retries_after_releasing_execution_slot() {
+        let (pool, mut workers, mut receivers) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let worker = workers.remove(0);
+        worker.warp_ready.store(true, Ordering::Relaxed);
+        let (dead_tx, dead_rx) = watch::channel(false);
+        worker.inner.lock().unwrap().dead = Some(dead_rx);
+        let supervisor = tokio::spawn(super::supervise(
+            Arc::downgrade(&pool),
+            worker.clone(),
+            receivers.remove(0),
+        ));
+        let lease = pool
+            .lease(worker.clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        drop(lease);
+        pool.inspect_restart_queues();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if pool
+                    .logs()
+                    .lines
+                    .iter()
+                    .any(|line| line.text.contains("尚未就绪"))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("自动重启失败后应释放名额并进入后台重试");
+        assert!(worker.restart_pending.load(Ordering::Relaxed));
+        assert!(!worker.restart_busy.load(Ordering::Relaxed));
+        pool.remove_account(worker.id).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), supervisor)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(dead_tx);
+    }
+
+    #[tokio::test]
+    async fn supervisor_recovers_after_cancelling_queued_drain() {
+        let (pool, mut workers, mut receivers) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let worker = workers.remove(0);
+        worker.warp_ready.store(true, Ordering::Relaxed);
+        let (dead_tx, dead_rx) = watch::channel(false);
+        worker.inner.lock().unwrap().dead = Some(dead_rx);
+        let supervisor = tokio::spawn(super::supervise(
+            Arc::downgrade(&pool),
+            worker.clone(),
+            receivers.remove(0),
+        ));
+        let lease = pool
+            .lease(worker.clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        assert!(worker.restart_pending.load(Ordering::Relaxed));
+        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        assert!(!worker.restart_pending.load(Ordering::Relaxed));
+        assert!(worker.is_ready());
+        tokio::task::yield_now().await;
+        assert!(worker.net().is_some());
+        assert!(!supervisor.is_finished());
+        pool.remove_account(worker.id).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), supervisor)
+            .await
+            .unwrap()
+            .unwrap();
+        drop((lease, dead_tx));
+    }
+
+    #[tokio::test]
+    async fn background_retry_obeys_restart_concurrency() {
+        let (pool, mut workers, mut receivers) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let worker = workers.remove(0);
+        worker.warp_ready.store(true, Ordering::Relaxed);
+        worker.restart_pending.store(true, Ordering::Relaxed);
+        worker.restart_attempted.store(true, Ordering::Relaxed);
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let supervisor = tokio::spawn(super::supervise(
+            Arc::downgrade(&pool),
+            worker.clone(),
+            receivers.remove(0),
+        ));
+        tokio::task::yield_now().await;
+        assert!(!pool
+            .logs()
+            .lines
+            .iter()
+            .any(|line| line.text.contains("尚未就绪")));
+        drop(permit);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if pool
+                    .logs()
+                    .lines
+                    .iter()
+                    .any(|line| line.text.contains("尚未就绪"))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("释放重启名额后应恢复后台尝试");
+        pool.remove_account(worker.id).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), supervisor)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn removing_draining_worker_stops_supervisor() {
+        let (pool, mut workers, mut receivers) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let worker = workers.remove(0);
+        worker.warp_ready.store(true, Ordering::Relaxed);
+        let supervisor = tokio::spawn(super::supervise(
+            Arc::downgrade(&pool),
+            worker.clone(),
+            receivers.remove(0),
+        ));
+        let lease = pool
+            .lease(worker.clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        assert_eq!(pool.status().drain_queue, vec![1]);
+        pool.remove_account(worker.id).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), supervisor)
+            .await
+            .expect("排空中的实例移除后监督任务必须退出")
+            .unwrap();
+        drop(lease);
+    }
+
+    #[test]
+    fn first_confirmed_connection_starts_uptime_without_resetting_it_again() {
+        let (worker, _rx) = Worker::new(1, WarpConfig::default(), None);
+        assert!(worker.ready_since.lock().unwrap().is_none());
+        worker.mark_initial_ready();
+        assert!(worker.ready_since.lock().unwrap().is_some());
+        let original = Instant::now() - Duration::from_secs(10);
+        *worker.ready_since.lock().unwrap() = Some(original);
+        worker.mark_initial_ready();
+        assert_eq!(*worker.ready_since.lock().unwrap(), Some(original));
+    }
+
+    #[tokio::test]
+    async fn uptime_from_last_success_and_statistics_reset() {
+        let (pool, workers, _jobs) = mock_pool(0, 0, Duration::from_secs(1), 1).await;
+        *workers[0].ready_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(2));
+        pool.inspect_restart_queues();
+        assert!(workers[0].draining.load(Ordering::Relaxed));
+        pool.finish_reconnect(&workers[0]);
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        assert!(!workers[0].draining.load(Ordering::Relaxed));
+        assert!(workers[0].uptime() < Duration::from_secs(1));
+        assert_eq!(workers[0].usage.lock().unwrap().connections, 0);
+        assert!(workers[0].usage.lock().unwrap().identities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn removing_instance_cleans_queues() {
+        let (pool, _workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        assert_eq!(pool.status().drain_queue, vec![1]);
+        pool.remove_account(1).unwrap();
+        assert!(pool.status().drain_queue.is_empty());
+        assert!(pool.status().restart_queue.is_empty());
         drop(lease);
     }
 
     #[tokio::test]
-    async fn failed_restart_retains_counts_and_blocks_new_leases() {
-        let (pool, workers, _receivers) = mock_pool(RestartMode::Connections, 1, 1).await;
-        let worker = &workers[0];
-        worker.usage.lock().unwrap().connections = 1;
-        worker.begin_draining();
-        let (reply, _rx) = tokio::sync::oneshot::channel();
-        let job = super::RestartJob {
-            reply,
-            probe_timeout: Duration::ZERO,
-            force_after: Duration::ZERO,
-        };
-        assert!(super::graceful(&Arc::downgrade(&pool), worker, &job)
-            .await
-            .is_err());
-        assert!(worker.draining.load(Ordering::Relaxed));
-        assert_eq!(worker.usage.lock().unwrap().connections, 1);
-        assert_eq!(pool.checkout(None, "192.0.2.1").unwrap().worker_id, 2);
-    }
-}
-
-#[cfg(test)]
-mod restart_plan_tests {
-    use super::next_restart_batch;
-    use super::{Pool, PoolOptions, RestartConfig, WarpConfig, Worker};
-    use std::sync::atomic::Ordering;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::mpsc;
-
-    async fn mock_pool(
-        interval: Duration,
-        defer: Duration,
-    ) -> (
-        Arc<Pool>,
-        Arc<Worker>,
-        mpsc::UnboundedReceiver<tokio::time::Instant>,
-    ) {
-        let mut options = PoolOptions::basic(true);
-        options.restart = RestartConfig {
-            interval,
-            defer,
-            ..RestartConfig::default()
-        };
-        let pool = Pool::start(Vec::new(), options).await.unwrap();
-        let (worker, mut jobs) = Worker::new(1, WarpConfig::default(), None);
-        pool.workers.lock().unwrap().push(worker.clone());
-        let (sender, receiver) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Some(job) = jobs.recv().await {
-                let _ = sender.send(tokio::time::Instant::now());
-                let _ = job.reply.send(Ok(()));
-            }
-        });
-        tokio::task::yield_now().await;
-        (pool, worker, receiver)
+    async fn disabling_user_threshold_drops_cached_identities() {
+        let (pool, workers, _jobs) = mock_pool(100, 0, Duration::ZERO, 1).await;
+        let _lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        assert_eq!(workers[0].usage.lock().unwrap().identities.len(), 1);
+        pool.set_restart_policy(None, Some(0), None).unwrap();
+        assert!(workers[0].usage.lock().unwrap().identities.is_empty());
+        pool.set_restart_policy(None, Some(1_000_001), None)
+            .unwrap_err();
+        assert_eq!(pool.status().restart_max_users, 0);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn manual_round_runs_when_periodic_restart_is_disabled() {
-        let (pool, _, mut jobs) = mock_pool(Duration::ZERO, Duration::ZERO).await;
-        pool.run_plan_now();
-        assert!(tokio::time::timeout(Duration::from_secs(1), jobs.recv())
-            .await
-            .unwrap()
-            .is_some());
-        assert!(pool.status().plan.next_at.is_none());
-        tokio::time::advance(Duration::from_secs(120)).await;
-        tokio::task::yield_now().await;
-        assert!(jobs.try_recv().is_err());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn manual_round_keeps_retrying_deferred_accounts_with_periodic_restart_disabled() {
-        let (pool, worker, mut jobs) = mock_pool(Duration::ZERO, Duration::from_secs(5)).await;
-        worker.active.store(1, Ordering::Relaxed);
-        pool.run_plan_now();
-        tokio::task::yield_now().await;
-        assert!(worker.deferred.load(Ordering::Relaxed));
-        tokio::time::advance(Duration::from_secs(5)).await;
-        tokio::task::yield_now().await;
-        assert!(jobs.try_recv().is_err());
-        worker.active.store(0, Ordering::Relaxed);
-        tokio::time::advance(Duration::from_secs(4)).await;
-        assert!(jobs.try_recv().is_err());
-        tokio::time::advance(Duration::from_secs(1)).await;
-        assert!(tokio::time::timeout(Duration::from_secs(1), jobs.recv())
-            .await
-            .unwrap()
-            .is_some());
-        assert!(pool.status().plan.next_at.is_none());
-        tokio::time::advance(Duration::from_secs(15)).await;
-        tokio::task::yield_now().await;
-        assert!(jobs.try_recv().is_err());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn new_round_does_not_overwrite_pending_defer_deadline() {
-        let started = tokio::time::Instant::now();
-        let (_pool, worker, mut jobs) =
-            mock_pool(Duration::from_secs(40), Duration::from_secs(70)).await;
-        worker.active.store(1, Ordering::Relaxed);
-        tokio::time::advance(Duration::from_secs(40)).await;
-        tokio::task::yield_now().await;
-        assert!(worker.deferred.load(Ordering::Relaxed));
-        tokio::time::advance(Duration::from_secs(40)).await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(20)).await;
-        worker.active.store(0, Ordering::Relaxed);
-        tokio::time::advance(Duration::from_secs(9)).await;
-        assert!(jobs.try_recv().is_err());
-        tokio::time::advance(Duration::from_secs(1)).await;
-        let executed = tokio::time::timeout(Duration::from_secs(1), jobs.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(executed.duration_since(started), Duration::from_secs(110));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn busy_account_is_deferred_again_at_its_deadline() {
-        let (_pool, worker, mut jobs) =
-            mock_pool(Duration::from_secs(40), Duration::from_secs(70)).await;
-        worker.active.store(1, Ordering::Relaxed);
-        tokio::time::advance(Duration::from_secs(40)).await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(40)).await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(30)).await;
-        tokio::task::yield_now().await;
-        assert!(worker.deferred.load(Ordering::Relaxed));
-        worker.active.store(0, Ordering::Relaxed);
-        tokio::time::advance(Duration::from_secs(10)).await;
-        tokio::task::yield_now().await;
-        assert!(jobs.try_recv().is_err());
-        tokio::time::advance(Duration::from_secs(59)).await;
-        assert!(jobs.try_recv().is_err());
-        tokio::time::advance(Duration::from_secs(1)).await;
-        assert!(tokio::time::timeout(Duration::from_secs(1), jobs.recv())
-            .await
-            .unwrap()
-            .is_some());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn drain_prevents_new_leases_but_keeps_existing_sessions() {
-        let (pool, worker, _) = mock_pool(Duration::ZERO, Duration::ZERO).await;
-        worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-        let existing = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        assert_eq!(worker.active.load(Ordering::Relaxed), 1);
-        worker.begin_draining();
-        assert!(pool.checkout(Some("alice"), "192.0.2.1").is_err());
-        assert!(pool.checkout(None, "192.0.2.2").is_err());
-        assert_eq!(worker.active.load(Ordering::Relaxed), 1);
-        drop(existing);
-        assert_eq!(worker.active.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_checkout_cannot_admit_connections_after_draining() {
-        let (pool, worker, _) = mock_pool(Duration::ZERO, Duration::ZERO).await;
-        worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-        let mut tasks = Vec::new();
-        for _ in 0..8 {
-            let pool = pool.clone();
-            tasks.push(tokio::spawn(async move {
-                for _ in 0..1000 {
-                    if let Ok(lease) = pool.checkout(None, "192.0.2.1") {
-                        tokio::task::yield_now().await;
-                        drop(lease);
-                    }
-                }
-            }));
-        }
-        tokio::task::yield_now().await;
-        worker.begin_draining();
-        for _ in 0..100 {
-            assert!(pool.checkout(None, "192.0.2.1").is_err());
-        }
-        for task in tasks {
-            task.await.unwrap();
-        }
-        assert_eq!(worker.active.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn draining_sticky_account_fails_closed_without_blocking_other_accounts() {
-        let mut options = PoolOptions::basic(true);
-        options.policy.sticky = crate::schedule::StickyMode::UsernameRound;
-        let pool = Pool::start(Vec::new(), options).await.unwrap();
-        let mut workers = Vec::new();
-        for id in 1..=2 {
-            let (worker, _) = Worker::new(id, WarpConfig::default(), None);
-            worker.inner.lock().unwrap().net = Some(crate::netstack::NetHandle::test_handle());
-            pool.workers.lock().unwrap().push(worker.clone());
-            workers.push(worker);
-        }
-        let alice = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        let chosen = alice.worker_id;
-        workers[chosen - 1].begin_draining();
-        assert!(matches!(
-            pool.checkout(Some("alice"), "192.0.2.2"),
-            Err(crate::schedule::PickFail::StickyDown)
-        ));
-        let other = pool.checkout(None, "192.0.2.3").unwrap();
-        assert_ne!(other.worker_id, chosen);
-        drop(alice);
-        assert_eq!(workers[chosen - 1].active.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn scheduled_batch_honors_restart_concurrency() {
-        let mut options = PoolOptions::basic(true);
-        options.restart.batch = 0;
-        options.restart.concurrency = 2;
-        let pool = Pool::start(Vec::new(), options).await.unwrap();
-        let mut receivers = Vec::new();
-        for id in 1..=3 {
-            let (worker, jobs) = Worker::new(id, WarpConfig::default(), None);
-            pool.workers.lock().unwrap().push(worker);
-            receivers.push(jobs);
-        }
-        pool.run_plan_now();
-        let mut running = Vec::new();
-        for _ in 0..30 {
-            for receiver in &mut receivers {
-                if let Ok(job) = receiver.try_recv() {
-                    running.push(job);
-                }
-            }
-            if running.len() == 2 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(running.len(), 2);
-        tokio::time::advance(Duration::from_secs(1)).await;
-        assert!(receivers
-            .iter_mut()
-            .all(|receiver| receiver.try_recv().is_err()));
-        running.pop().unwrap().reply.send(Ok(())).unwrap();
-
-        let mut third = None;
-        for _ in 0..30 {
-            for receiver in &mut receivers {
-                if let Ok(job) = receiver.try_recv() {
-                    third = Some(job);
-                }
-            }
-            if third.is_some() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(third.is_some());
-        running.pop().unwrap().reply.send(Ok(())).unwrap();
-        third.unwrap().reply.send(Ok(())).unwrap();
-        tokio::task::yield_now().await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn drain_waits_for_active_connections_but_respects_force_after() {
-        let (worker, _) = Worker::new(1, WarpConfig::default(), None);
-        worker.active.store(1, Ordering::Relaxed);
-        let waiting = worker.clone();
-        let deadline = tokio::spawn(async move {
-            super::wait_for_drain(&waiting, Duration::from_secs(3)).await;
-        });
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(!deadline.is_finished());
-        tokio::time::advance(Duration::from_secs(1)).await;
-        deadline.await.unwrap();
-
-        let waiting = worker.clone();
-        let idle = tokio::spawn(async move {
-            super::wait_for_drain(&waiting, Duration::from_secs(30)).await;
-        });
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(1)).await;
-        worker.active.store(0, Ordering::Relaxed);
-        tokio::time::advance(Duration::from_millis(200)).await;
-        idle.await.unwrap();
-    }
-
-    #[test]
-    fn batches_walk_the_pool_without_repeating_inside_a_round() {
-        let ids = [1usize, 2, 3, 4];
-        let (first, index) = next_restart_batch(&ids, 0, 2);
-        assert_eq!(first, vec![1, 2]);
-        let (second, index) = next_restart_batch(&ids, index, 2);
-        assert_eq!(second, vec![3, 4]);
-        let (third, index) = next_restart_batch(&ids, index, 2);
-        assert_eq!(third, vec![1, 2]);
-        let (fourth, _) = next_restart_batch(&ids, index, 2);
-        assert_eq!(fourth, vec![3, 4]);
-
-        let (all, _) = next_restart_batch(&ids, 1, 0);
-        assert_eq!(all, vec![2, 3, 4, 1]);
-        let (capped, _) = next_restart_batch(&ids, 3, 9);
-        assert_eq!(capped, vec![4, 1, 2, 3]);
-        assert!(next_restart_batch(&[], 2, 1).0.is_empty());
-    }
-
-    #[test]
-    fn busy_accounts_wait_only_when_defer_is_enabled() {
-        let ids = [1usize, 2, 3];
-        let active = |id: usize| if id == 2 { 4 } else { 0 };
-        let (now, later) = super::split_due_restarts(&ids, active, true);
-        assert_eq!(now, vec![1, 3]);
-        assert_eq!(later, vec![2]);
-        let (forced, waiting) = super::split_due_restarts(&ids, active, false);
-        assert_eq!(forced, vec![1, 2, 3]);
-        assert!(waiting.is_empty());
-    }
-    #[test]
-    fn skip_waits_for_the_next_future_slot_instead_of_catching_up() {
-        use std::time::Duration;
-
-        use super::{next_future_deadline, round_action, Misfire, RoundAction};
-
-        assert_eq!(
-            round_action(Misfire::Skip, false, true, false),
-            RoundAction::Run
-        );
-        assert_eq!(
-            round_action(Misfire::Skip, true, true, false),
-            RoundAction::Skip
-        );
-        assert_eq!(
-            round_action(Misfire::Fire, true, true, false),
-            RoundAction::Run
-        );
-        assert_eq!(
-            round_action(Misfire::Skip, true, true, true),
-            RoundAction::Run
-        );
-        assert_eq!(
-            round_action(Misfire::Skip, true, false, false),
-            RoundAction::Wait
-        );
-
-        let start = tokio::time::Instant::now();
-        let interval = Duration::from_secs(30 * 60);
-        let scheduled = start + interval;
-        assert_eq!(
-            next_future_deadline(
-                scheduled,
-                interval,
-                scheduled + Duration::from_secs(20 * 60)
-            ),
-            scheduled + interval
-        );
-        assert_eq!(
-            next_future_deadline(
-                scheduled,
-                interval,
-                scheduled + Duration::from_secs(40 * 60)
-            ),
-            scheduled + interval * 2
-        );
-        assert_eq!(
-            next_future_deadline(scheduled, interval, scheduled),
-            scheduled + interval
-        );
-        let future = scheduled + interval;
-        assert_eq!(next_future_deadline(future, interval, scheduled), future);
-    }
-
-    #[test]
-    fn misfire_accepts_fire_and_skip_only() {
-        assert_eq!(super::parse_misfire("fire").unwrap(), super::Misfire::Fire);
-        assert_eq!(super::parse_misfire("SKIP").unwrap(), super::Misfire::Skip);
-        assert!(super::parse_misfire("later").is_err());
+    #[tokio::test]
+    async fn drain_is_not_interrupted_by_direct_reconnect_notifications() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let _lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        assert!(workers[0].draining.load(Ordering::Relaxed));
+        pool.reconnect(1);
+        // 手动重连通知在排空期间被忽略，不得把排空实例提前带入重连流程。
+        assert!(workers[0].draining.load(Ordering::Relaxed));
+        assert!(!workers[0].restart_attempted.load(Ordering::Relaxed));
+        assert!(workers[0].restart_pending.load(Ordering::Relaxed));
     }
 }
 

@@ -363,7 +363,6 @@ async fn write_simple(client: &mut TcpStream, status: &str, extra: &str) -> std:
 fn pick_result(fail: PickFail) -> &'static str {
     match fail {
         PickFail::NoWorker => "no-worker",
-        PickFail::StickyDown => "sticky-down",
     }
 }
 

@@ -1,13 +1,13 @@
-//! 入口连接的选路。
-//!
-//! 带用户名的连接走黏性；匿名连接走 [`Strategy`]。username-round 的既有映射
-//! 在目标账号仍存在但不健康时不会改派到其他账号。账号被删除后，映射作废，
-//! 下一次作为新用户重新分配。
+//! 带用户名的连接走黏性；匿名连接按调度策略选择实例。
+//! 绑定实例排空、停用或失联时，旧绑定作废并重新分配到其他可用实例。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+// 即使用户阈值被关闭，黏性用户名表也不能无上限增长。
+const MAX_STICKY_USERS: usize = 100_000;
 
 /// 匿名连接，以及没有命中黏性时的选路方式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,8 +32,6 @@ pub enum StickyMode {
 pub enum PickFail {
     /// 当前没有可接流量的账号。
     NoWorker,
-    /// 黏性账号仍在，但正在重启或离线，不为这个用户改派。
-    StickyDown,
 }
 
 #[derive(Clone, Debug)]
@@ -120,10 +118,10 @@ impl Scheduler {
         if let Some(user) = username.filter(|user| !user.is_empty()) {
             match policy.sticky {
                 StickyMode::UsernameRound => {
-                    return self.sticky_assign(user, eligible, alive, true, &active);
+                    return self.sticky_assign(user, eligible, true, &active);
                 }
                 StickyMode::UsernameLeast => {
-                    return self.sticky_assign(user, eligible, alive, false, &active);
+                    return self.sticky_assign(user, eligible, false, &active);
                 }
                 StickyMode::UsernameHash => {
                     return rendezvous(&format!("user:{user}"), eligible).ok_or(PickFail::NoWorker);
@@ -156,7 +154,6 @@ impl Scheduler {
         &self,
         user: &str,
         eligible: &[usize],
-        alive: &[usize],
         by_mapping: bool,
         active: &impl Fn(usize) -> usize,
     ) -> Result<usize, PickFail> {
@@ -164,9 +161,6 @@ impl Scheduler {
         if let Some(id) = map.get(user).copied() {
             if eligible.contains(&id) {
                 return Ok(id);
-            }
-            if alive.contains(&id) {
-                return Err(PickFail::StickyDown);
             }
             map.remove(user);
         }
@@ -205,6 +199,11 @@ impl Scheduler {
         }
         self.sticky_cursor
             .fetch_add(offset_used + 1, Ordering::Relaxed);
+        if map.len() >= MAX_STICKY_USERS {
+            // 容量保护：保留已有黏性，超出上限的新用户本次仍走选路结果，
+            // 但不再建立持久映射。原有用户不会被随机淘汰或突然改派。
+            return Ok(chosen);
+        }
         map.insert(user.to_string(), chosen);
         Ok(chosen)
     }
@@ -313,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn username_round_sticks_and_does_not_migrate() {
+    fn username_round_reassigns_unavailable_instances_and_keeps_new_mapping() {
         let scheduler = Scheduler::new();
         let rule = policy(Strategy::Round, StickyMode::UsernameRound);
         let eligible = [1usize, 2, 3];
@@ -344,21 +343,30 @@ mod tests {
             .into_iter()
             .filter(|id| *id != first)
             .collect::<Vec<_>>();
-        let held = scheduler.pick(
-            &rule,
-            &without,
-            &still_alive,
-            Some("alice"),
-            "10.0.0.1",
-            |_| 0,
-        );
-        assert_eq!(held, Err(PickFail::StickyDown));
-
-        scheduler.forget(first);
         let reassigned = scheduler
-            .pick(&rule, &without, &without, Some("alice"), "10.0.0.1", |_| 0)
+            .pick(
+                &rule,
+                &without,
+                &still_alive,
+                Some("alice"),
+                "10.0.0.1",
+                |_| 0,
+            )
             .unwrap();
         assert_ne!(reassigned, first);
+        assert_eq!(
+            scheduler
+                .pick(
+                    &rule,
+                    &eligible,
+                    &eligible,
+                    Some("alice"),
+                    "10.0.0.1",
+                    |_| 0
+                )
+                .unwrap(),
+            reassigned
+        );
     }
 
     #[test]

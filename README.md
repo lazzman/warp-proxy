@@ -1,7 +1,6 @@
 # warp-proxy
 [![CI](https://github.com/akumaginkou/warp-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/akumaginkou/warp-proxy/actions/workflows/ci.yml)
 A clean-room, portable **Cloudflare WARP over MASQUE** proxy in Rust.
-
 It registers free WARP accounts, runs one MASQUE (CONNECT-IP / HTTP-3) tunnel
 per account, fronts the pool with a local SOCKS5 load-balancer, and exposes a
 small control API to switch/rotate egress IPs live — no external `usque` binary,
@@ -31,9 +30,8 @@ Built bottom-up (see the repo plan). Current state:
 - [x] HTTP/2 fallback (`--http2`) for QUIC-blocked networks: plain CONNECT +
       `cf-connect-proto` → 200, DATAGRAM capsules with Cloudflare's bare-IP quirk.
       Live-verified: `proxy --http2` → `warp=on`
-- [x] multi-account pool (N tunnels = N egress IPs) + front SOCKS5
-      load-balancer (round-robin / pin, WARP off = direct) + token-guarded
-      control HTTP API + egress trace — live-verified (`pool` example)
+- [x] 多账号池（每个实例一条隧道、一个出口 IP）、前置 SOCKS5 负载均衡（轮询和用户名黏性）、
+      带令牌保护的 HTTP 管理接口和出口探测；已通过 `pool` 示例验证
 - [x] `warp-proxy` daemon (handshake JSON on stdout, account persistence,
       graceful SIGINT/SIGTERM) — usable from any language as a subprocess
 - [x] per-worker supervisor (auto-reconnect with exponential backoff on tunnel
@@ -92,17 +90,11 @@ curl --socks5-hostname 127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace  
 cargo run -p warp-masque --example pool -- 2 127.0.0.1:1080 127.0.0.1:47100
 # round-robins across 2 egress IPs; drive it live (token printed on start):
 curl -H "X-Warp-Token: <token>" http://127.0.0.1:47100/api/status
-curl -H "X-Warp-Token: <token>" "http://127.0.0.1:47100/api/select?slot=1"   # pin account 1
 curl -H "X-Warp-Token: <token>" "http://127.0.0.1:47100/api/rotate?slot=1"   # new egress IP
 ```
 
-Control endpoints (loopback, JSON, `X-Warp-Token` required): `/api/status`,
-`/api/sessions`, `/api/logs`, `/api/toggle`, `/api/select`, `/api/rotate`,
-`/api/reconnect`, `/api/restart`, `/api/restart-plan`, `/api/restart-policy`, `/api/http2`,
-`/api/interval` (auto-rotate seconds), `/api/trace`, `/api/account/add`,
-`/api/account/manual`, `/api/account/remove`. Open `panelUrl` in a browser for
-the same actions, plus live connections and the log ring. The panel password is
-`CONTROL_PASSWORD` (default `admin`) and is sent as `X-Warp-Token`. The page does not embed it.
+控制接口（需通过 `X-Warp-Token` 认证）：`/api/status`、`/api/sessions`、`/api/logs`、`/api/toggle`、`/api/rotate`、`/api/reconnect`、`/api/restart`、`/api/restart-policy`、`/api/http2`、`/api/interval`、`/api/trace`、`/api/account/add`、`/api/account/manual`、`/api/account/remove`。
+浏览器打开 `panelUrl` 可以执行同样的操作，还可以查看活跃连接和环形日志。管理密码由 `CONTROL_PASSWORD` 设置，默认 `admin`；页面不会嵌入密码。
 
 
 ## 入口、上游和调度
@@ -119,10 +111,12 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
   --lb-rotate 5m \
   --resolve ipv6_prefer \
   --access-log \
-  --restart-interval 30m \
-  --restart-force-after 300s \
+  --restart-max-uptime 24h \
+  --restart-max-users 1000 \
+  --restart-max-connections 10000 \
+  --restart-drain-check-interval 10s \
   --restart-probe-timeout 90s \
-  --restart-misfire fire
+  --restart-concurrency 2
 ```
 
 - `--upstream` / `UPSTREAM_SOCKS5`：一个或多个 SOCKS5 地址，用逗号分隔。可以写主机和端口，也可以带用户名和密码。按账号序号固定分配，只支持 TCP CONNECT。后台探测失败只记录错误；节点通过自己的上游连接，失败则重试，不会改走直连。注册请求对齐 usque 的请求头和 Go `net/http` 的 HTTP/2 窗口。遇到 HTTP 429、503 或 Cloudflare `1015` 时，按 `Retry-After` 或递增间隔等待后重试，最多 6 次，不会马上退出再打。
@@ -132,12 +126,15 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
 - `--lb-rotate` / `LB_ROTATE_INTERVAL`：只在 `rotate` 策略下使用，见「调度」。
 - `--resolve` / `RESOLVE_PREFERENCE`：见「解析」。
 - `--access-log` / `LB_ACCESS_LOG`：把来源、用户、目标、账号和出口写到标准错误。一行里用 `|` 分开，成功是 `↗`，失败是 `×`。不记录密码。
-- `--restart-*` / `ROTATE_RESTART_*`：保身份重连，见「保身份重启」。它不重新注册。
-- `--restart-mode` / `ROTATE_RESTART_MODE`：选择 `scheduled`（定时）、`users`（累计用户）或 `connections`（累计连接）；阈值模式还需 `--restart-threshold` / `ROTATE_RESTART_THRESHOLD`。
+- `--restart-max-uptime` / `RESTART_MAX_UPTIME`：实例成功连接后的运行时长阈值，例如 `24h`。
+- `--restart-max-users` / `RESTART_MAX_USERS`：本轮去重用户阈值，例如 `1000`。
+- `--restart-max-connections` / `RESTART_MAX_CONNECTIONS`：本轮累计分配连接数阈值，例如 `10000`。
+- `--restart-drain-check-interval` / `RESTART_DRAIN_CHECK_INTERVAL`：排空检测间隔，默认 `10s`；排空没有超时。
+- `--restart-concurrency` / `RESTART_CONCURRENCY`：最多同时重连实例数，默认 `1`。
 - `--health-interval` / `HEALTH_CHECK_INTERVAL`：多久经隧道检查一次出口，默认 `60s`。`0` 关闭。见「出口检查」。
 - `--health-timeout` / `HEALTH_CHECK_TIMEOUT`：单次出口检查的最长时间，默认 `20s`。
 - 管理面板就是控制地址本身（stdout 里的 `panelUrl`）。浏览器打开后输入管理密码。登录成功后密码记在这个浏览器里，下次打开会直接用它认证。总览看入口、流量和重启策略；实例可以筛选、停用、重连、按数量添加临时实例；连接页滚动展示最近 300 条连接（包括已关闭的连接、活跃状态与流量），最新连接在前；日志展示最近 300 行。连接历史仅保存在当前进程内，重启后清空。页面放在进程里，不需要另外的脚本。
-- 内存占用：连接历史最多保留 300 条已关闭记录，活跃连接按实际数量保留；面板日志最多 300 条、每条不超过 2 KiB。累计用户模式用哈希集合去重，集合达到配置的阈值就排队重启，重启成功后清空，不会无限增长；阈值设置过大时会相应增加内存占用。
+- 内存占用：连接历史最多保留 300 条已关闭记录，活跃连接按实际数量保留；面板日志最多 300 条、每条不超过 2 KiB。只在启用用户阈值时保留本轮去重用户哈希（触发阈值后冻结）；用户名黏性映射最多约 10 万条，满额后新用户名仍能选路但不再记住绑定。队列中每个实例最多占一个位置，等待排空不额外创建常驻任务。
 
 临时实例的身份同样写在 `STATE_DIR` 的 `account-<编号>.json`，待恢复的编号记在 `temporary.json`。守护进程启动时最多自动加载 `INSTANCE_COUNT` 个账号，超额身份会保留等待空位；手动在面板添加账号仍可超过这个数量。移除临时实例只把它移出当前进程和这份名单，不删除已保存的身份；之后再添加时优先用回这些身份。
 
@@ -170,7 +167,7 @@ services:
 - `hash`：用客户端 IP 做稳定哈希，在当前可接流量的账号里选择。账号不可用时会在剩下的账号里重算。算法和 `ip-hash` 相同，但 `hash` 不覆盖已经按用户名黏住的连接。
 - `rotate`：走这个策略的连接在一个时间窗里共用同一个账号。时间窗是 `LB_ROTATE_INTERVAL`，也就是 `--lb-rotate`，默认 `5m`。时间到了就按当前账号顺序换到下一个。这个账号不能接流量时，临时使用下一个可用账号，时间窗的指针不往前拨；它恢复后，仍回到这个窗口原来的账号。设为 `0` 时不再按时间换，退回 `round`。
 
-`LB_ROTATE_INTERVAL` 只决定新连接进入哪个现有账号，不重连隧道，也不重新注册。保身份重连由 `ROTATE_RESTART_INTERVAL` 控制。面板里的「换出口」和 `/api/interval?seconds=300` 是第三件事：到点后重新注册账号以更换出口 IP。这项启动时是关闭的，`0` 表示关闭，其他值至少按 60 秒计。`/api/rotate?slot=1` 会立刻重新注册指定账号，`slot=0` 重新注册当前固定的账号，没有固定时使用第一个。重新注册得到的新身份只在当前进程里生效，不会写回 `STATE_DIR`。
+`LB_ROTATE_INTERVAL` 只决定新连接进入哪个现有账号，不重连隧道，也不重新注册。保身份重连由下面三个独立阈值触发。面板里的「换出口」和 `/api/interval?seconds=300` 是另一项独立功能：到点重新注册账号以更换出口 IP。这项启动时关闭，`0` 表示关闭，其他值至少按 60 秒计。`/api/rotate?slot=1` 会立刻重新注册指定账号；`slot=0` 重新注册编号最小的实例。重新注册得到的新身份只在当前进程里生效，不会写回 `STATE_DIR`。
 
 ### 黏性
 
@@ -184,7 +181,7 @@ services:
 - `username-hash`：用用户名做稳定哈希，只在当前可接流量的账号里选择。不保存映射。原来的账号停用、排空或离线后，下次会在剩下的账号里重算，出口可能变化。
 - `ip-hash`：忽略用户名，用客户端 IP 做同样的哈希。匿名连接也按 IP 黏住。`client-ip-hash` 是同一个值。账号不可用时会在剩下的账号里重算。
 
-`username-round` 和 `username-least` 记住的账号如果还在，但正在排空、已停用或隧道不在，这条连接直接失败，不会临时改到其他账号。账号被删除或成功重连后，该实例的映射作废，下一次按新用户重新分配。面板实例页的「用户数」只统计这两种模式记住的用户名；成功重连后该实例的用户数清零，其他实例不受影响；两种哈希模式不记这张表，用户数是 0。阈值模式的独立累计值见「重启进度」。
+`username-round` 和 `username-least` 记住的实例进入排空、停用或失联后，下次请求会立即在其他可用实例中重新选择并绑定；原实例恢复后不会自动迁回。所有实例都不可接入时才拒绝连接。面板实例页的「黏性用户数」只统计这两种模式的用户名映射，独立的本轮累计用户数和累计连接数列在「重启统计」中；重新连接成功后对应实例的两种统计都清零。
 
 ### 解析
 
@@ -199,44 +196,41 @@ services:
 
 隧道就绪后，每个账号按 `HEALTH_CHECK_INTERVAL` 同时做两次出口检查：IPv4 连 `104.16.124.96`，IPv6 连 `2606:4700::11`，TLS 仍使用 `www.cloudflare.com`。默认 `60s`。这两次请求会在 HTTP/2 上产生数据，避免上游或中间网络因为大约两分钟没有流量就把连接关掉。`0` 关闭。某一族失败只让面板那一列显示「未测到」，不拆隧道；两条都没确认 `warp=on` 或 `warp=plus` 时，初次连接和保身份重连才会重试。出口 IP 或 `warp` 状态变了才记日志。单次检查最长 `HEALTH_CHECK_TIMEOUT`，默认 `20s`。面板上的 IPv4 出口和 IPv6 出口是这两次探测的公网地址，接口地址只在提示里。
 
-### 保身份重启
+### 可组合的保身份重启
 
-这些设置只重连现有隧道，不重新注册。注册时写入的接口地址保持不变，重连后会重新探测出口。隧道算就绪的条件是 `warp=on` 或 `warp=plus`。没有达到就从 1 秒开始重试，每次加倍，最长 30 秒，直到探测通过。断线后的恢复也走这条路径。默认策略是 `scheduled` 定时重启；`ROTATE_RESTART_ENABLED=0` 会忽略下面的间隔，只关闭定时计划。
+自动重启保留原有 WARP 账号身份，只重连隧道并重新验证 `warp=on` 或 `warp=plus`；失败后退避重试（1 秒起，最长 30 秒），成功前不接受新请求。
 
-**按阈值重启**：设置 `ROTATE_RESTART_MODE=users` 或 `connections`，并把 `ROTATE_RESTART_THRESHOLD` 设为大于 0 的整数。这与定时策略互斥，`ROTATE_RESTART_INTERVAL` 不再触发重启；两种阈值模式每个实例独立统计：
+三种阈值**各自独立且可以同时开启**，任意达到就触发（OR 关系）：
 
-- `users`：累计去重用户数，同一用户名的重复连接只算 1 个；没有用户名时用客户端 IP 作为身份，同一 IP 的匿名连接只算 1 个。此项独立于黏性模式，不使用面板原有的「用户数」映射统计。入口只配置一组 `SOCKS_USER` 时，所有认证连接会被视为同一个用户。
-- `connections`：累计成功分配给实例的连接数，每条计 1 次，已关闭的连接也算；不是同时在线的连接数。
+| 配置项 | 含义 | 示例 |
+| :--- | :--- | :--- |
+| `RESTART_MAX_UPTIME` | 实例从最近一次成功连接起运行的时长；成功重连后重新计时 | `24h` |
+| `RESTART_MAX_USERS` | 从上次成功连接起累计去重用户数，认证用户按用户名、匿名用户按客户端 IP 区分 | `1000` |
+| `RESTART_MAX_CONNECTIONS` | 从上次成功连接起累计接入的连接次数，断开的连接也已经计数 | `10000` |
 
-达到阈值的**那条连接仍然被接收**，实例随即进入重启队列：
+每个阈值 `0` 表示关闭；三个都为 `0` 表示完全关闭**自动**重启，不影响手动重连、换出口和故障恢复。阈值是按实例分别计算的，不是整个池的总计。入口若只有一组 `SOCKS_USER`，所有认证请求都计为一个用户；用户数不代表同时在线人数。为控制长期运行内存，单实例用户阈值上限为 `1000000`，超出时拒绝配置。
 
-- `users`：不再接收新用户名或新匿名 IP，但已累计的用户可以继续建立新连接（包括固定实例），不会增加去重用户数。在取得重启并发名额后，继续允许这些用户连接 `ROTATE_RESTART_FORCE_AFTER` 时长，到期停止所有新连接并强制重连；即使这期间暂时没有活跃连接，也会等到超时才重连。等待队列中的时间不计入排空时长。
-- `connections`：达到阈值就停止接收所有新连接。取得重启名额后等待现有连接自然结束，最多等 `ROTATE_RESTART_FORCE_AFTER` 后强制重连。
+**排空和重启是两个队列，不存在排空超时：**
 
-队列受 `ROTATE_RESTART_CONCURRENCY` 限制，不受定时计划的 `BATCH` / `DEFER` 限制。只有重连成功并确认 WARP 正常后才清零计数、恢复接入；失败后停止所有新连接并继续后台重试。两种模式都使用保身份重启，避免重复注册账号。
+1. 任意阈值达到时，触发的那条连接先被接收，实例随后立即摘流，进入排空队列；此后新用户和老用户都不能再建立到该实例的连接。
+2. 已建立的连接继续传输，不会因为自动重启而被强制中断。默认每 `10s`（`RESTART_DRAIN_CHECK_INTERVAL`）检查排空队列；实例活跃连接数归零后移到重启队列。某个长连接一直不结束，实例就一直排空等待。
+3. 重启队列由 `RESTART_CONCURRENCY` 控制实际同时重连的实例数。重连并确认 WARP 正常后，该实例的运行时间、去重用户、累计连接和旧黏性映射重置，恢复接入。失败时实例保持不可接入，后台持续重试。排空检查不会每轮刷日志，也不会为每个排队实例开一个等待任务。
+4. 老用户再次发起新请求时，只会选择其他可用实例。`username-round` 和 `username-least` 会在改派后保存新绑定，原实例恢复也不会自动迁回；`username-hash` 和 `ip-hash` 是无状态哈希，原实例恢复后按当前可用实例集合重新计算，可能回到原实例。若所有实例都不可用，入口拒绝新连接。
 
-示例：`ROTATE_RESTART_MODE=connections` 且 `ROTATE_RESTART_THRESHOLD=1000`，表示每个实例从上次成功启动或重启后累计接入 1000 条连接就排队重启。也可以通过 `--restart-mode users --restart-threshold 100` 启动。运行中在面板选择策略并应用，或访问 `/api/restart-policy?mode=users&threshold=100` 修改；切换模式时从零开始统计，单独降低阈值会立即检查现有计数并按需入队。`mode=scheduled` 恢复原有定时计划。
+`RESTART_PROBE_TIMEOUT` 默认 `90s`，控制单次重连的出口验证时长；`RESTART_CONCURRENCY` 默认 `1`，只限制实际重连及重试并发，不限制排空队列长度。运行时降低阈值会立即检查已有统计并按需摘流。启用之前关闭的用户数阈值时，从启用时起重新统计去重身份。
 
-**定时计划**：以下定时参数仅在 `ROTATE_RESTART_MODE=scheduled` 时生效。
+运行中可以在管理面板同时修改三个阈值，或调用：
 
-一轮是定时器到点，或调用立即执行之后的这一次计划。它从按 `ROTATE_RESTART_BATCH` 选出账号开始，到这批里每个账号都有一次结果为止。下一轮的时间在这一轮开始时就按间隔定好。这一轮里每个账号只排空并探测一次。没通过记为本轮失败，并发名额马上释放，账号自己在后台继续重试，不挡住下一轮，也不再占并发名额。
+```sh
+curl -H "X-Warp-Token: <token>" \
+  "http://127.0.0.1:47100/api/restart-policy?max_uptime_seconds=86400&max_users=1000&max_connections=10000"
+```
 
-如果这一轮结束时已经过了下次时间，由 `ROTATE_RESTART_MISFIRE` 决定：
+上述 API 任一参数都可省略（代表保留原值），为 `0` 则关闭对应条件。**三个阈值全部关闭时，尚在排空队列或待重启队列、未取得执行权的自动任务会取消，并在旧隧道仍可用时恢复接入。** 此时取消任务的实例会清零本轮统计并重新开始运行时间计时，避免以后重新开启阈值时立刻重复排空。已开始执行的自动重连及失败后的恢复重试继续完成；手动强制重启也不受影响。`/api/status` 返回当前三个阈值、排空队列 `drain_queue`、待重启队列 `restart_queue`、各实例本轮累计值和活跃连接数。
 
-- `fire`（默认）：立刻补跑一轮。错过的多个整点合成这一次，不会把错过的轮次全部补完。
-- `skip`：不补跑。下次排到仍在未来的下一个间隔点。已经延后的账号仍按自己的时间再试。
+管理员仍可调用 `/api/restart?slot=1` **手动强制重连**：立即摘流并取得同一重启并发名额，不等待活跃连接归零，因此可能打断已有连接；`slot=0` 顺序处理所有实例。`/api/reconnect`、`/api/rotate` 和隧道故障恢复属于独立的直接重建路径，也不提供自动排空保证。
 
-- `ROTATE_RESTART_INTERVAL` / `--restart-interval`：多久开始一轮。默认 `0`，表示不定时重启。
-- `ROTATE_RESTART_BATCH` / `--restart-batch`：这一轮选进几个账号，默认 1。账号按编号轮流，下一轮从上次停下的位置继续。`0` 表示这一轮包含当前全部账号。
-- `ROTATE_RESTART_CONCURRENCY` / `--restart-concurrency`：这一轮里最多同时重连几个，默认 1。小于 1 时仍按 1 处理。选中的账号先排队，拿到名额才开始排空和重连；排队期间隧道仍然接收连接。
-- `ROTATE_RESTART_DEFER` / `--restart-defer`：计划到点时账号还有连接，就延后这段时间再试。到点仍然有连接会继续延后，不进入排空。`0` 表示不延后，到点就排空。手动重启不受这个设置影响。
-- `ROTATE_RESTART_FORCE_AFTER` / `--restart-force-after`：取得重启名额后的排空等待时间。用户阈值模式会完整等待这段时间，以允许已统计用户续连；连接阈值和定时模式在连接排空后可以提前重启。默认 `300s`。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 和 `--restart-drain` 仍可用。只写旧名时会提示弃用；新旧同时配置时采用新值，并提示旧名已被忽略。
-- `ROTATE_RESTART_PROBE_TIMEOUT` / `--restart-probe-timeout`：确认 `warp=on` 或 `warp=plus` 的时间，默认 `90s`。
-- `ROTATE_RESTART_MISFIRE` / `--restart-misfire`：上一轮拖过下次时间时怎么处理。`fire` 立刻补跑，`skip` 跳到下一个间隔点。默认 `fire`。
-
-`BATCH` 决定这一轮有谁，`CONCURRENCY` 决定这些账号里同时做几个。每轮只选 1 个时，把并发调大也不会多重启账号。`BATCH=0` 且 `CONCURRENCY=4` 时，每一轮都选中当前全部账号，但同时最多重连 4 个：10 个账号会先跑 4 个，完成一个补上下一个，直到 10 个都有结果。仍有连接的账号按 `ROTATE_RESTART_DEFER` 延后，不占这次的并发名额。
-
-`/api/restart-plan?seconds=1800&batch=2&defer=300&misfire=skip` 可以在运行中修改间隔、批量、延后和错过策略。`seconds=0` 关闭计划。修改间隔、批量或延后后按新间隔重新计时，并取消已经延后的重启。只改 `misfire` 不会重新计时。`/api/restart-plan?action=now` 即使关闭定时计划也会执行一轮，并继续处理这轮的延后账号；后续轮次不会覆盖已有账号的延后截止时间。`/api/restart?slot=1` 手动做一次保身份重启。`slot=0` 会按顺序处理全部账号。
+**旧配置迁移：**旧的 `ROTATE_RESTART_MODE`、`ROTATE_RESTART_THRESHOLD`、`ROTATE_RESTART_INTERVAL`、`ROTATE_RESTART_BATCH`、`ROTATE_RESTART_MISFIRE`、`ROTATE_RESTART_DEFER`、`ROTATE_RESTART_DRAIN_TIMEOUT`、`ROTATE_RESTART_FORCE_AFTER` 等环境变量已移除；发现遗留环境变量时程序会提示并忽略，不会再启用旧策略。旧的同名命令行参数会明确报错。`/api/select`（固定实例）已删除；旧的 `/api/restart-plan` 返回迁移提示。
 
 ## Docker
 
@@ -272,16 +266,12 @@ docker logs warp-proxy
 | `LB_STICKY_MODE` | `username-round` | 见上方「黏性」。`client-ip-hash` 与 `ip-hash` 相同 |
 | `LB_ROTATE_INTERVAL` | `5m` | 仅 `LB_STRATEGY=rotate` 时的换账号时间窗，见「调度」 |
 | `LB_ACCESS_LOG` | `0` | `1` 把连接记到标准错误，不记录密码 |
-| `ROTATE_RESTART_ENABLED` | `1` | `0` 关闭定时计划，阈值模式不受影响 |
-| `ROTATE_RESTART_MODE` | `scheduled` | `scheduled` 定时、`users` 累计去重用户、`connections` 累计连接 |
-| `ROTATE_RESTART_THRESHOLD` | `0` | 阈值模式每个实例达到多少用户/连接后重启，阈值模式必须大于 0 |
-| `ROTATE_RESTART_INTERVAL` | `0` | 保身份重连的间隔，不是 `LB_ROTATE_INTERVAL`。见「保身份重启」 |
-| `ROTATE_RESTART_BATCH` | `1` | 这一轮选进几个账号，`0` 表示全部。见「保身份重启」 |
-| `ROTATE_RESTART_DEFER` | `0` | 账号仍有连接时延后多久再试，`0` 表示立即排空 |
-| `ROTATE_RESTART_FORCE_AFTER` | `300s` | 开始重连后最多再等现有连接多久，到点强制重连。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 已弃用 |
-| `ROTATE_RESTART_PROBE_TIMEOUT` | `90s` | 重连后确认 `warp=on` 的时间 |
-| `ROTATE_RESTART_MISFIRE` | `fire` | 上一轮超过间隔时，`fire` 立刻补跑，`skip` 跳到下一个间隔点 |
-| `ROTATE_RESTART_CONCURRENCY` | `1` | 这一轮里最多同时重连几个。见「保身份重启」 |
+| `RESTART_MAX_UPTIME` | `0` | 实例运行时长阈值，`24h` 等；`0` 关闭 |
+| `RESTART_MAX_USERS` | `0` | 每轮累计去重用户上限，最大 `1000000`，`0` 关闭 |
+| `RESTART_MAX_CONNECTIONS` | `0` | 每轮累计接入连接数上限，`0` 关闭 |
+| `RESTART_DRAIN_CHECK_INTERVAL` | `10s` | 排空队列检测间隔，必须大于 `0`；无排空超时 |
+| `RESTART_PROBE_TIMEOUT` | `90s` | 重连后确认 `warp=on` 或 `warp=plus` 的时间 |
+| `RESTART_CONCURRENCY` | `1` | 实际重连和后台重试的并发上限 |
 
 时长可以写秒数，也可以写 `30s`、`5m`、`1h`。命令行参数仍然可以覆盖这些环境变量。
 

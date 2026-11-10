@@ -1,4 +1,4 @@
-//! 本机回环上的控制接口，用来查看状态、开关 WARP、固定或轮换账号、重连、
+//! 本机回环上的控制接口，用来查看状态、开关 WARP、轮换账号、重连、
 //! 保身份重启、刷新出口，以及增删账号。`GET /` 同时提供管理页面。
 //!
 //! 只实现了够用的 HTTP/1.1，避免再加一套网页框架。除了管理页面本身，
@@ -99,56 +99,29 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
             return serde_json::to_string(&pool.logs()).map_err(|e| e.to_string());
         }
         "/api/toggle" => pool.set_enabled(bool_param(query, "on", true)),
-        "/api/select" => pool.select(int_param(query, "slot").unwrap_or(0) as usize),
         "/api/reconnect" => pool.reconnect(int_param(query, "slot").unwrap_or(0) as usize),
         "/api/restart" => {
             pool.restart(int_param(query, "slot").unwrap_or(0) as usize)
                 .await?
         }
         "/api/restart-plan" => {
-            if let Some(action) = param(query, "action") {
-                match action.as_str() {
-                    "pause" => pool.set_plan_paused(true),
-                    "resume" => pool.set_plan_paused(false),
-                    "now" => pool.run_plan_now(),
-                    other => return Err(format!("未知操作 {other}")),
-                }
-            }
-            let seconds = int_param(query, "seconds");
-            let batch = int_param(query, "batch");
-            let defer = int_param(query, "defer");
-            let misfire_raw = param(query, "misfire");
-            if seconds.is_some() || batch.is_some() || defer.is_some() || misfire_raw.is_some() {
-                let misfire = match misfire_raw.as_deref() {
-                    Some(value) => Some(crate::pool::parse_misfire(value)?),
-                    None => None,
-                };
-                pool.set_restart_plan(
-                    seconds.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
-                    batch.map(|count| count.max(0) as usize),
-                    defer.map(|secs| std::time::Duration::from_secs(secs.max(0) as u64)),
-                    misfire,
-                );
-            } else if param(query, "action").is_none() {
-                return Err("需要 seconds、batch、defer、misfire 或 action".into());
-            }
+            return Err("旧定时计划已移除，请使用 /api/restart-policy 配置三个独立阈值".into())
         }
         "/api/restart-policy" => {
-            let mode = param(query, "mode")
-                .as_deref()
-                .map(crate::pool::parse_restart_mode)
-                .transpose()?;
-            let threshold = param(query, "threshold")
-                .map(|value| {
-                    value
-                        .parse::<usize>()
-                        .map_err(|_| "阈值必须是非负整数".to_string())
-                })
-                .transpose()?;
-            if mode.is_none() && threshold.is_none() {
-                return Err("需要 mode 或 threshold".into());
+            if param(query, "mode").is_some() || param(query, "threshold").is_some() {
+                return Err("旧 mode/threshold 参数已移除，请使用 max_uptime_seconds、max_users、max_connections".into());
             }
-            pool.set_restart_policy(mode, threshold)?;
+            let uptime = u64_param(query, "max_uptime_seconds")?;
+            let users = usize_param(query, "max_users")?;
+            let connections = u64_param(query, "max_connections")?;
+            if uptime.is_none() && users.is_none() && connections.is_none() {
+                return Err("至少需要 max_uptime_seconds、max_users 或 max_connections".into());
+            }
+            pool.set_restart_policy(
+                uptime.map(std::time::Duration::from_secs),
+                users,
+                connections,
+            )?;
         }
         "/api/rotate" => pool
             .rotate(int_param(query, "slot").unwrap_or(0) as usize)
@@ -196,6 +169,26 @@ fn bool_param(query: &str, key: &str, default: bool) -> bool {
 
 fn int_param(query: &str, key: &str) -> Option<i64> {
     param(query, key)?.parse().ok()
+}
+
+fn u64_param(query: &str, key: &str) -> Result<Option<u64>, String> {
+    param(query, key)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{key} 必须是非负整数"))
+        })
+        .transpose()
+}
+
+fn usize_param(query: &str, key: &str) -> Result<Option<usize>, String> {
+    param(query, key)
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("{key} 必须是非负整数"))
+        })
+        .transpose()
 }
 
 fn param(query: &str, key: &str) -> Option<String> {
@@ -301,9 +294,7 @@ mod tests {
         for path in [
             "/api/status",
             "/api/toggle",
-            "/api/select",
             "/api/restart",
-            "/api/restart-plan",
             "/api/restart-policy",
             "/api/rotate",
             "/api/account/add",
