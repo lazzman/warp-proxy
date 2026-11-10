@@ -312,7 +312,6 @@ mod tests {
             "/api/restart",
             "/api/restart-graceful",
             "/api/restart-policy",
-            "/api/rotate",
             "/api/account/add",
             "/api/account/manual",
             "/api/logs",
@@ -324,6 +323,9 @@ mod tests {
         assert!(PANEL_HTML.contains("X-Warp-Token"));
         assert!(PANEL_HTML.contains("立即触发重启"));
         assert!(PANEL_HTML.contains("检测出口 IP"));
+        assert!(!PANEL_HTML.contains("rotate-seconds"));
+        assert!(!PANEL_HTML.contains(r#"data-act="rotate""#));
+        assert!(!PANEL_HTML.contains(r#"data-act="interval""#));
         assert!(PANEL_HTML.contains("temporary=1&count="));
         assert!(PANEL_HTML.contains("localStorage"));
         assert!(PANEL_HTML.contains("warp-token"));

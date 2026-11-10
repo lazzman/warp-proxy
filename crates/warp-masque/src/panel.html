@@ -187,7 +187,7 @@
 </main>
 <script src="/assets/bootstrap.bundle.min.js"></script>
 <script>
-const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0, temps: [], focusId: "", drafts: {}, restartDraft: null, busy: false, tempCount: "1" };
+const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0, temps: [], focusId: "", restartDraft: null, busy: false, tempCount: "1" };
 const tokenInput = document.querySelector("#token");
 function readCachedToken() {
   try {
@@ -283,7 +283,6 @@ function actionText(name, button) {
   const slot = button && button.dataset.slot;
   if (name === "restart") return slot ? "重连实例 " + slot : "重连";
   if (name === "manual") return (button.dataset.on === "1" ? "启用" : "停用") + (slot ? "实例 " + slot : "");
-  if (name === "rotate") return "换出口";
   if (name === "trace") return "检测出口 IP";
   if (name === "graceful-restart") return "触发全部实例优雅重启";
   if (name === "restart-policy") return "更新重启策略";
@@ -294,7 +293,6 @@ function actionText(name, button) {
   if (name === "remove-temp") return "移除临时实例";
   if (name === "toggle") return button.dataset.on === "1" ? "恢复入口" : "暂停入口";
   if (name === "http2") return button.dataset.on === "1" ? "切换到 HTTP/2" : "切换到 HTTP/3";
-  if (name === "interval") return "设置换出口间隔";
   return ((button && button.textContent) || "操作").trim();
 }
 function setBusy(on) {
@@ -337,12 +335,7 @@ function capture() {
   const active = document.activeElement;
   const tempCount = document.getElementById("temp-count");
   if (tempCount) state.tempCount = tempCount.value;
-  state.focusId = active && ["rotate-seconds", "temp-count", "restart-uptime", "restart-users", "restart-connections"].includes(active.id) ? active.id : "";
-  for (const id of ["rotate-seconds"]) {
-    const node = document.getElementById(id);
-    if (node && active === node) state.drafts[id] = node.value;
-    else delete state.drafts[id];
-  }
+  state.focusId = active && ["temp-count", "restart-uptime", "restart-users", "restart-connections"].includes(active.id) ? active.id : "";
 }
 function render() {
   const data = state.status;
@@ -392,7 +385,6 @@ function overview(data) {
     : data.ready === total && total > 0 ? "全部实例运行正常"
     : bad ? bad + " 个实例需要关注" : "没有可调度的实例";
   const mode = data.mixed ? "MIXED" : "SOCKS5";
-  const rotateValue = state.drafts["rotate-seconds"] != null ? state.drafts["rotate-seconds"] : data.rotate_seconds;
   const draft = state.restartDraft || {};
   const uptime = draft.uptime ?? String(data.restart_max_uptime_seconds);
   const users = draft.users ?? String(data.restart_max_users);
@@ -422,12 +414,6 @@ function overview(data) {
         <div class="cluster"><div class="cluster-label">入口</div><div class="d-flex flex-wrap align-items-center gap-2">
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "改用 HTTP/3" : "改用 HTTP/2"}</button>
-        </div></div>
-        <div class="cluster"><div class="cluster-label">出口</div><div class="d-flex flex-wrap align-items-center gap-2">
-          <label class="d-flex align-items-center gap-2 mb-0">换出口 <input id="rotate-seconds" class="form-control form-control-sm" inputmode="numeric" value="${escapeHtml(rotateValue)}" style="width:5rem"> 秒</label>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="interval">设置</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="rotate">立即换出口（首实例）</button>
-          <span class="text-body-secondary small">换出口会重新注册身份，独立于自动排空。</span>
         </div></div>
         <div class="cluster"><div class="cluster-label">实例维护</div><div class="d-flex flex-wrap align-items-center gap-2">
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-restart" title="全部实例等待活跃连接结束后按并发限制重启">立即触发重启（全部实例）</button>
@@ -597,8 +583,6 @@ async function act(name, button) {
     let successText = text + "完成";
     if (name === "toggle") await api("/api/toggle?on=" + button.dataset.on);
     if (name === "http2") await api("/api/http2?on=" + button.dataset.on);
-    if (name === "interval") await api("/api/interval?seconds=" + (document.querySelector("#rotate-seconds").value || "0"));
-    if (name === "rotate") await api("/api/rotate?slot=0");
     if (name === "trace") await api("/api/trace?slot=0");
     if (name === "graceful-restart") {
       const result = await api("/api/restart-graceful");
