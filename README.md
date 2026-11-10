@@ -93,7 +93,7 @@ curl -H "X-Warp-Token: <token>" http://127.0.0.1:47100/api/status
 curl -H "X-Warp-Token: <token>" "http://127.0.0.1:47100/api/rotate?slot=1"   # new egress IP
 ```
 
-控制接口（需通过 `X-Warp-Token` 认证）：`/api/status`、`/api/sessions`、`/api/logs`、`/api/toggle`、`/api/rotate`、`/api/reconnect`、`/api/restart`、`/api/restart-policy`、`/api/http2`、`/api/interval`、`/api/trace`、`/api/account/add`、`/api/account/manual`、`/api/account/remove`。
+控制接口（需通过 `X-Warp-Token` 认证）：`/api/status`、`/api/sessions`、`/api/logs`、`/api/toggle`、`/api/rotate`、`/api/reconnect`、`/api/restart`、`/api/restart-graceful`、`/api/restart-policy`、`/api/http2`、`/api/interval`、`/api/trace`、`/api/account/add`、`/api/account/manual`、`/api/account/remove`。
 浏览器打开 `panelUrl` 可以执行同样的操作，还可以查看活跃连接和环形日志。管理密码由 `CONTROL_PASSWORD` 设置，默认 `admin`；页面不会嵌入密码。
 
 
@@ -226,7 +226,13 @@ curl -H "X-Warp-Token: <token>" \
   "http://127.0.0.1:47100/api/restart-policy?max_uptime_seconds=86400&max_users=1000&max_connections=10000"
 ```
 
-上述 API 任一参数都可省略（代表保留原值），为 `0` 则关闭对应条件。**三个阈值全部关闭时，尚在排空队列或待重启队列、未取得执行权的自动任务会取消，并在旧隧道仍可用时恢复接入。** 此时取消任务的实例会清零本轮统计并重新开始运行时间计时，避免以后重新开启阈值时立刻重复排空。已开始执行的自动重连及失败后的恢复重试继续完成；手动强制重启也不受影响。`/api/status` 返回当前三个阈值、排空队列 `drain_queue`、待重启队列 `restart_queue`、各实例本轮累计值和活跃连接数。
+上述 API 任一参数都可省略（代表保留原值），为 `0` 则关闭对应条件。**三个阈值全部关闭时，尚在排空队列或待重启队列、未取得执行权的自动任务会取消，并在旧隧道仍可用时恢复接入。** 此时取消任务的实例会清零本轮统计并重新开始运行时间计时，避免以后重新开启阈值时立刻重复排空。已开始执行的自动重连及失败后的恢复重试继续完成；手动触发的优雅重启和强制重连不受影响。`/api/status` 返回当前三个阈值、排空队列 `drain_queue`、待重启队列 `restart_queue`、各实例本轮累计值和活跃连接数。
+
+管理面板的「立即触发重启」或 `/api/restart-graceful` 会为所有实例立即发起一次**保身份优雅重启**：停止接入新连接，等待已有连接自然结束，再进入现有重启队列，按 `RESTART_CONCURRENCY` 限制执行。不更改自动重启阈值；重复触发不会重复排队。接口返回本次新增（含从自动排空转为手动触发）的排队实例数，例如 `{"queued":75}`。**全部实例同时排空时，已有连接不会被主动中断，但新连接可能暂时无法建立。**
+
+```sh
+curl -H "X-Warp-Token: <token>" "http://127.0.0.1:47100/api/restart-graceful"
+```
 
 管理员仍可调用 `/api/restart?slot=1` **手动强制重连**：立即摘流并取得同一重启并发名额，不等待活跃连接归零，因此可能打断已有连接；`slot=0` 顺序处理所有实例。`/api/reconnect`、`/api/rotate` 和隧道故障恢复属于独立的直接重建路径，也不提供自动排空保证。
 

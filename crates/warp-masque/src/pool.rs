@@ -266,6 +266,7 @@ pub struct Worker {
     restart_tx: mpsc::UnboundedSender<RestartJob>,
     draining: AtomicBool,
     restart_pending: AtomicBool,
+    manual_drain_requested: AtomicBool,
     restart_busy: AtomicBool,
     restart_attempted: AtomicBool,
     usage: Mutex<RestartUsage>,
@@ -325,6 +326,7 @@ impl Worker {
             restart_tx,
             draining: AtomicBool::new(false),
             restart_pending: AtomicBool::new(false),
+            manual_drain_requested: AtomicBool::new(false),
             restart_busy: AtomicBool::new(false),
             restart_attempted: AtomicBool::new(false),
             usage: Mutex::new(RestartUsage::default()),
@@ -457,11 +459,30 @@ impl Worker {
         true
     }
 
+    fn queue_manual_drain(&self) -> bool {
+        let _inner = self.inner.lock().unwrap();
+        if self.stopped.load(Ordering::Relaxed)
+            || self.restart_busy.load(Ordering::Relaxed)
+            || self.restart_attempted.load(Ordering::Relaxed)
+            || self.manual_drain_requested.load(Ordering::Relaxed)
+        {
+            return false;
+        }
+        self.manual_drain_requested.store(true, Ordering::Release);
+        if !self.restart_pending.swap(true, Ordering::AcqRel) {
+            self.draining.store(true, Ordering::Release);
+            self.set_stage("等待现有连接排空");
+        }
+        self.note("手动触发优雅重启，等待排空");
+        true
+    }
+
     fn reset_usage(&self) {
         let _inner = self.inner.lock().unwrap();
         *self.usage.lock().unwrap() = RestartUsage::default();
         *self.ready_since.lock().unwrap() = Some(Instant::now());
         self.restart_pending.store(false, Ordering::Relaxed);
+        self.manual_drain_requested.store(false, Ordering::Relaxed);
         self.restart_attempted.store(false, Ordering::Relaxed);
         self.draining.store(false, Ordering::Relaxed);
         self.drain_finished.notify_one();
@@ -472,6 +493,7 @@ impl Worker {
         let inner = self.inner.lock().unwrap();
         let mut usage = self.usage.lock().unwrap();
         if !self.restart_pending.load(Ordering::Acquire)
+            || self.manual_drain_requested.load(Ordering::Acquire)
             || self.restart_busy.load(Ordering::Acquire)
             || self.restart_attempted.load(Ordering::Acquire)
             || self.stopped.load(Ordering::Relaxed)
@@ -854,6 +876,40 @@ impl Pool {
             worker.drain_finished.notify_one();
         }
         self.restart_wake.notify_one();
+    }
+
+    pub fn queue_graceful_restart_all(&self) -> usize {
+        let policy_guard = self.restart_policy.read().unwrap();
+        let workers = self.snapshot();
+        let mut queued = Vec::new();
+        {
+            let mut queues = self.restart_queues.lock().unwrap();
+            for worker in &workers {
+                if !worker.queue_manual_drain() {
+                    continue;
+                }
+                if !queues.draining.contains(&worker.id) && !queues.ready.contains(&worker.id) {
+                    queues.draining.push_back(worker.id);
+                }
+                queued.push(worker);
+            }
+        }
+        drop(policy_guard);
+        for worker in &queued {
+            self.scheduler.forget_users(worker.id);
+            worker.drain_finished.notify_one();
+        }
+        if !queued.is_empty() {
+            self.console.log(
+                "plan",
+                format!(
+                    "手动触发全量优雅重启，{} 个实例进入排空与重启队列",
+                    queued.len()
+                ),
+            );
+            self.restart_wake.notify_one();
+        }
+        queued.len()
     }
 
     /// 外部操作要触碰隧道时先判断是否处于自动排空，避免打断已有连接。
@@ -2722,6 +2778,62 @@ mod restart_queue_tests {
         assert!(!usage.reached(policy));
         policy.max_connections = 4;
         assert!(usage.reached(policy));
+    }
+
+    #[tokio::test]
+    async fn manual_graceful_restart_all_waits_for_every_active_connection() {
+        let (pool, workers, mut jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let first = pool
+            .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
+            .unwrap();
+        let second = pool
+            .lease(workers[1].clone(), Some("bob"), "192.0.2.2")
+            .unwrap();
+
+        assert_eq!(pool.queue_graceful_restart_all(), 2);
+        assert_eq!(pool.status().drain_queue, vec![1, 2]);
+        assert!(pool.checkout(Some("carol"), "192.0.2.3").is_err());
+        pool.inspect_restart_queues();
+        assert_eq!(pool.status().drain_queue, vec![1, 2]);
+        assert!(pool.status().restart_queue.is_empty());
+
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        drop(first);
+        pool.inspect_restart_queues();
+        assert_eq!(pool.status().drain_queue, vec![2]);
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        drop(second);
+        pool.inspect_restart_queues();
+        assert!(pool.status().drain_queue.is_empty());
+        assert_eq!(pool.status().restart_queue, vec![1, 2]);
+
+        drop(permit);
+        pool.inspect_restart_queues();
+        let first_job = tokio::time::timeout(Duration::from_secs(1), jobs[0].recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(jobs[1].try_recv().is_err());
+        assert!(!workers[1].restart_busy.load(Ordering::Relaxed));
+        first_job.reply.send(Ok(())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn manual_graceful_restart_promotes_auto_queue_and_survives_disabled_thresholds() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        assert_eq!(pool.status().drain_queue, vec![1]);
+
+        assert_eq!(pool.queue_graceful_restart_all(), 2);
+        assert_eq!(pool.queue_graceful_restart_all(), 0);
+        assert_eq!(pool.status().drain_queue, vec![1, 2]);
+        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        assert_eq!(pool.status().restart_max_connections, 0);
+        assert_eq!(pool.status().drain_queue, vec![1, 2]);
+        assert!(workers
+            .iter()
+            .all(|worker| worker.restart_pending.load(Ordering::Relaxed)));
+        drop(lease);
     }
 
     #[tokio::test]

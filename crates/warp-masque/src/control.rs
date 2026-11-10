@@ -1,5 +1,5 @@
 //! 本机回环上的控制接口，用来查看状态、开关 WARP、轮换账号、重连、
-//! 保身份重启、刷新出口，以及增删账号。`GET /` 同时提供管理页面。
+//! 保身份重启、检测出口 IP，以及增删账号。`GET /` 同时提供管理页面。
 //!
 //! 只实现了够用的 HTTP/1.1，避免再加一套网页框架。除了管理页面本身，
 //! 每个接口都要带 `X-Warp-Token`。页面可以被浏览器直接打开，但不能在里面
@@ -103,6 +103,10 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
         "/api/restart" => {
             pool.restart(int_param(query, "slot").unwrap_or(0) as usize)
                 .await?
+        }
+        "/api/restart-graceful" => {
+            let queued = pool.queue_graceful_restart_all();
+            return Ok(serde_json::json!({ "queued": queued }).to_string());
         }
         "/api/restart-plan" => {
             return Err("旧定时计划已移除，请使用 /api/restart-policy 配置三个独立阈值".into())
@@ -280,6 +284,17 @@ async fn write_resp(conn: &mut TcpStream, status: &str, body: &str) -> std::io::
 mod tests {
     use super::{is_panel_path, panel_asset, PANEL_HTML};
 
+    #[tokio::test]
+    async fn graceful_restart_route_returns_queue_count() {
+        let pool = crate::pool::Pool::start(Vec::new(), crate::pool::PoolOptions::basic(false))
+            .await
+            .unwrap();
+        let response = super::route(&pool, "/api/restart-graceful", "")
+            .await
+            .unwrap();
+        assert_eq!(response, r#"{"queued":0}"#);
+    }
+
     #[test]
     fn panel_paths_are_only_the_html_pages() {
         assert!(is_panel_path("/"));
@@ -295,6 +310,7 @@ mod tests {
             "/api/status",
             "/api/toggle",
             "/api/restart",
+            "/api/restart-graceful",
             "/api/restart-policy",
             "/api/rotate",
             "/api/account/add",
@@ -306,6 +322,8 @@ mod tests {
             assert!(PANEL_HTML.contains(path), "{path}");
         }
         assert!(PANEL_HTML.contains("X-Warp-Token"));
+        assert!(PANEL_HTML.contains("立即触发重启"));
+        assert!(PANEL_HTML.contains("检测出口 IP"));
         assert!(PANEL_HTML.contains("temporary=1&count="));
         assert!(PANEL_HTML.contains("localStorage"));
         assert!(PANEL_HTML.contains("warp-token"));

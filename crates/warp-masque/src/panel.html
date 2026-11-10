@@ -284,7 +284,8 @@ function actionText(name, button) {
   if (name === "restart") return slot ? "重连实例 " + slot : "重连";
   if (name === "manual") return (button.dataset.on === "1" ? "启用" : "停用") + (slot ? "实例 " + slot : "");
   if (name === "rotate") return "换出口";
-  if (name === "trace") return "刷新出口";
+  if (name === "trace") return "检测出口 IP";
+  if (name === "graceful-restart") return "触发全部实例优雅重启";
   if (name === "restart-policy") return "更新重启策略";
   if (name === "add-temp") {
     const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
@@ -426,8 +427,12 @@ function overview(data) {
           <label class="d-flex align-items-center gap-2 mb-0">换出口 <input id="rotate-seconds" class="form-control form-control-sm" inputmode="numeric" value="${escapeHtml(rotateValue)}" style="width:5rem"> 秒</label>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="interval">设置</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="rotate">立即换出口（首实例）</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">刷新出口</button>
           <span class="text-body-secondary small">换出口会重新注册身份，独立于自动排空。</span>
+        </div></div>
+        <div class="cluster"><div class="cluster-label">实例维护</div><div class="d-flex flex-wrap align-items-center gap-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-restart" title="全部实例等待活跃连接结束后按并发限制重启">立即触发重启（全部实例）</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">检测出口 IP</button>
+          <span class="text-body-secondary small">全部实例会停止接入新连接，排空期间新连接可能失败。</span>
         </div></div>
       </div>
     </div></div>
@@ -577,6 +582,7 @@ async function act(name, button) {
     return;
   }
   if (state.busy) return;
+  if (name === "graceful-restart" && !window.confirm("全部实例将停止接入新连接，已有连接结束后按队列重启。排空期间可能无法建立新连接，确定继续吗？")) return;
   clearTimeout(feedbackTimer);
   const pickedTemps = [...document.querySelectorAll("[data-temp]:checked")].map((item) => item.dataset.temp);
   const tempCount = document.querySelector("#temp-count");
@@ -588,11 +594,16 @@ async function act(name, button) {
   showError("");
   render();
   try {
+    let successText = text + "完成";
     if (name === "toggle") await api("/api/toggle?on=" + button.dataset.on);
     if (name === "http2") await api("/api/http2?on=" + button.dataset.on);
     if (name === "interval") await api("/api/interval?seconds=" + (document.querySelector("#rotate-seconds").value || "0"));
     if (name === "rotate") await api("/api/rotate?slot=0");
     if (name === "trace") await api("/api/trace?slot=0");
+    if (name === "graceful-restart") {
+      const result = await api("/api/restart-graceful");
+      successText = result.queued ? "已提交 " + result.queued + " 个实例" : "没有新增排空任务";
+    }
     if (name === "restart-policy") {
       const uptime = document.getElementById("restart-uptime").value;
       const users = document.getElementById("restart-users").value;
@@ -615,7 +626,7 @@ async function act(name, button) {
     }
     if (name === "restart") await api("/api/restart?slot=" + button.dataset.slot);
     if (name === "manual") await api("/api/account/manual?slot=" + button.dataset.slot + "&on=" + button.dataset.on);
-    state.feedback = { key: key, text: text + "完成", error: false };
+    state.feedback = { key: key, text: successText, error: false };
     await refresh();
   } catch (err) {
     const message = String(err.message || err);
