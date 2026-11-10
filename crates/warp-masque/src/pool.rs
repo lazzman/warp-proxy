@@ -269,7 +269,7 @@ impl Default for RestartConfig {
             threshold: 0,
             interval: Duration::ZERO,
             probe_timeout: Duration::from_secs(15),
-            force_after: Duration::from_secs(60),
+            force_after: Duration::from_secs(300),
             concurrency: 1,
             batch: 1,
             defer: Duration::ZERO,

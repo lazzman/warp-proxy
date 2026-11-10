@@ -78,7 +78,7 @@ fn parse_args() -> anyhow::Result<Args> {
         )
         .map_err(anyhow::Error::msg)?,
         restart_threshold: env_usize("ROTATE_RESTART_THRESHOLD", 0),
-        restart_force_after: Duration::from_secs(600),
+        restart_force_after: RestartConfig::default().force_after,
         restart_misfire: parse_misfire(
             &env_string("ROTATE_RESTART_MISFIRE").unwrap_or_else(|| "fire".into()),
         )
@@ -267,7 +267,7 @@ fn resolve_force_after_sources(
             vec!["ROTATE_RESTART_DRAIN_TIMEOUT 已弃用，请改用 ROTATE_RESTART_FORCE_AFTER".into()],
         ));
     }
-    Ok((Duration::from_secs(660), Vec::new()))
+    Ok((RestartConfig::default().force_after, Vec::new()))
 }
 
 fn parse_optional_duration(value: Option<&str>) -> anyhow::Result<Option<Duration>> {
@@ -766,7 +766,8 @@ mod tests {
         );
 
         let (value, notices) = resolve_force_after_sources(None, None, None, None).unwrap();
-        assert_eq!(value, Duration::from_secs(660));
+        assert_eq!(value, Duration::from_secs(300));
+        assert_eq!(value, RestartConfig::default().force_after);
         assert!(notices.is_empty());
 
         let (value, notices) = resolve_force_after_sources(None, Some("15s"), None, None).unwrap();

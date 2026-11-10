@@ -120,7 +120,7 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
   --resolve ipv6_prefer \
   --access-log \
   --restart-interval 30m \
-  --restart-force-after 660s \
+  --restart-force-after 300s \
   --restart-probe-timeout 90s \
   --restart-misfire fire
 ```
@@ -230,7 +230,7 @@ services:
 - `ROTATE_RESTART_BATCH` / `--restart-batch`：这一轮选进几个账号，默认 1。账号按编号轮流，下一轮从上次停下的位置继续。`0` 表示这一轮包含当前全部账号。
 - `ROTATE_RESTART_CONCURRENCY` / `--restart-concurrency`：这一轮里最多同时重连几个，默认 1。小于 1 时仍按 1 处理。选中的账号先排队，拿到名额才开始排空和重连；排队期间隧道仍然接收连接。
 - `ROTATE_RESTART_DEFER` / `--restart-defer`：计划到点时账号还有连接，就延后这段时间再试。到点仍然有连接会继续延后，不进入排空。`0` 表示不延后，到点就排空。手动重启不受这个设置影响。
-- `ROTATE_RESTART_FORCE_AFTER` / `--restart-force-after`：取得重启名额后的排空等待时间。用户阈值模式会完整等待这段时间，以允许已统计用户续连；连接阈值和定时模式在连接排空后可以提前重启。默认 `660s`。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 和 `--restart-drain` 仍可用。只写旧名时会提示弃用；新旧同时配置时采用新值，并提示旧名已被忽略。
+- `ROTATE_RESTART_FORCE_AFTER` / `--restart-force-after`：取得重启名额后的排空等待时间。用户阈值模式会完整等待这段时间，以允许已统计用户续连；连接阈值和定时模式在连接排空后可以提前重启。默认 `300s`。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 和 `--restart-drain` 仍可用。只写旧名时会提示弃用；新旧同时配置时采用新值，并提示旧名已被忽略。
 - `ROTATE_RESTART_PROBE_TIMEOUT` / `--restart-probe-timeout`：确认 `warp=on` 或 `warp=plus` 的时间，默认 `90s`。
 - `ROTATE_RESTART_MISFIRE` / `--restart-misfire`：上一轮拖过下次时间时怎么处理。`fire` 立刻补跑，`skip` 跳到下一个间隔点。默认 `fire`。
 
@@ -278,7 +278,7 @@ docker logs warp-proxy
 | `ROTATE_RESTART_INTERVAL` | `0` | 保身份重连的间隔，不是 `LB_ROTATE_INTERVAL`。见「保身份重启」 |
 | `ROTATE_RESTART_BATCH` | `1` | 这一轮选进几个账号，`0` 表示全部。见「保身份重启」 |
 | `ROTATE_RESTART_DEFER` | `0` | 账号仍有连接时延后多久再试，`0` 表示立即排空 |
-| `ROTATE_RESTART_FORCE_AFTER` | `660s` | 开始重连后最多再等现有连接多久，到点强制重连。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 已弃用 |
+| `ROTATE_RESTART_FORCE_AFTER` | `300s` | 开始重连后最多再等现有连接多久，到点强制重连。旧名 `ROTATE_RESTART_DRAIN_TIMEOUT` 已弃用 |
 | `ROTATE_RESTART_PROBE_TIMEOUT` | `90s` | 重连后确认 `warp=on` 的时间 |
 | `ROTATE_RESTART_MISFIRE` | `fire` | 上一轮超过间隔时，`fire` 立刻补跑，`skip` 跳到下一个间隔点 |
 | `ROTATE_RESTART_CONCURRENCY` | `1` | 这一轮里最多同时重连几个。见「保身份重启」 |
