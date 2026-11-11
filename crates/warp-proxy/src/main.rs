@@ -38,6 +38,7 @@ struct Args {
     restart_max_users: usize,
     restart_max_connections: u64,
     restart_drain_check_interval: Duration,
+    restart_drain_timeout: Duration,
     restart_probe: Duration,
     restart_concurrency: usize,
     resolve: String,
@@ -73,6 +74,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "RESTART_DRAIN_CHECK_INTERVAL",
             Duration::from_secs(10),
         )?,
+        restart_drain_timeout: env_duration("RESTART_DRAIN_TIMEOUT", Duration::from_secs(300))?,
         restart_probe: env_duration("RESTART_PROBE_TIMEOUT", Duration::from_secs(90))?,
         restart_concurrency: env_usize_checked("RESTART_CONCURRENCY", 1)?.max(1),
         resolve: env_string("RESOLVE_PREFERENCE").unwrap_or_else(|| "auto".into()),
@@ -134,6 +136,9 @@ fn parse_args() -> anyhow::Result<Args> {
             "--restart-drain-check-interval" => {
                 args.restart_drain_check_interval = parse_duration(&next_value(&mut it, &arg)?)?
             }
+            "--restart-drain-timeout" => {
+                args.restart_drain_timeout = parse_duration(&next_value(&mut it, &arg)?)?
+            }
             "--restart-probe-timeout" => {
                 args.restart_probe = parse_duration(&next_value(&mut it, &arg)?)?
             }
@@ -147,7 +152,6 @@ fn parse_args() -> anyhow::Result<Args> {
             "--restart-interval"
             | "--restart-mode"
             | "--restart-threshold"
-            | "--restart-drain-timeout"
             | "--restart-force-after"
             | "--restart-drain"
             | "--restart-retries"
@@ -271,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
             max_users: args.restart_max_users,
             max_connections: args.restart_max_connections,
             drain_check_interval: args.restart_drain_check_interval,
+            drain_timeout: args.restart_drain_timeout,
             probe_timeout: args.restart_probe,
             concurrency: args.restart_concurrency,
         },

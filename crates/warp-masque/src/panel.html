@@ -389,6 +389,7 @@ function overview(data) {
   const uptime = draft.uptime ?? String(data.restart_max_uptime_seconds);
   const users = draft.users ?? String(data.restart_max_users);
   const connections = draft.connections ?? String(data.restart_max_connections);
+  const drainTimeout = draft.drainTimeout ?? String(data.restart_drain_timeout_seconds);
   const triggers = [
     data.restart_max_uptime_seconds > 0 ? "运行 " + duration(data.restart_max_uptime_seconds) : null,
     data.restart_max_users > 0 ? "用户 " + data.restart_max_users : null,
@@ -416,24 +417,25 @@ function overview(data) {
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "改用 HTTP/3" : "改用 HTTP/2"}</button>
         </div></div>
         <div class="cluster"><div class="cluster-label">实例维护</div><div class="d-flex flex-wrap align-items-center gap-2">
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-restart" title="全部实例等待活跃连接结束后按并发限制重启">立即触发重启（全部实例）</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-restart" title="全部实例等待活跃连接结束或排空到上限后按并发限制重启">立即触发重启（全部实例）</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">检测出口 IP</button>
-          <span class="text-body-secondary small">全部实例会停止接入新连接，排空期间新连接可能失败。</span>
+          <span class="text-body-secondary small">全部实例会停止接入新连接，排空期间新连接可能失败；到排空上限会断开剩余连接。</span>
         </div></div>
       </div>
     </div></div>
     <div class="card mt-3"><div class="card-body">
       <h2 class="h5">自动重启 · 条件可组合</h2>
-      <p class="text-body-secondary small">任意一个条件达到即刻摘流，已建立的连接自然结束；0 表示关闭该条件，全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
+      <p class="text-body-secondary small">任意一个条件达到即刻摘流，已建立的连接自然结束；排空到上限后会断开剩余连接。0 表示关闭该条件或排空超时，三个阈值全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
       <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
         <label class="d-flex align-items-center gap-2 mb-0">运行超过 <input id="restart-uptime" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(uptime)}" style="width:7rem"> 秒</label>
         <label class="d-flex align-items-center gap-2 mb-0">累计用户 <input id="restart-users" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(users)}" style="width:7rem"></label>
         <label class="d-flex align-items-center gap-2 mb-0">累计连接 <input id="restart-connections" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(connections)}" style="width:8rem"></label>
+        <label class="d-flex align-items-center gap-2 mb-0">排空上限 <input id="restart-drain-timeout" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(drainTimeout)}" style="width:7rem"> 秒</label>
         <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart-policy">应用条件</button>
       </div>
       <div class="metrics">
         <div class="metric"><div class="k">触发条件（任意满足）</div><div class="v">${triggers.length ? triggers.join(" / ") : "全部关闭"}</div><div class="s">三个阈值独立，所有统计按实例分别计算</div></div>
-        <div class="metric"><div class="k">排空队列 · ${drains.length}</div><div class="v">${idList(drains)}</div><div class="s">每 ${data.restart_drain_check_seconds} 秒检测；有活跃连接继续等待，不设超时</div></div>
+        <div class="metric"><div class="k">排空队列 · ${drains.length}</div><div class="v">${idList(drains)}</div><div class="s">每 ${data.restart_drain_check_seconds} 秒检测；${data.restart_drain_timeout_seconds > 0 ? "超过 " + duration(data.restart_drain_timeout_seconds) + " 断开剩余连接" : "不设超时"}</div></div>
         <div class="metric"><div class="k">重启队列 · ${restarts.length}</div><div class="v">${idList(restarts)}</div><div class="s">同时最多重连 ${data.restart_concurrency} 个实例；无活跃连接才进入队列</div></div>
       </div>
       <p class="text-body-secondary small mt-3 mb-0">排空后新请求只选择其他可用实例：username-round / username-least 会保存新绑定、不自动迁回；username-hash / ip-hash 无状态，原实例恢复后可能重新选中。所有实例都不可用时才拒绝新连接。实例页“强制重连”可中断已有连接。</p>
@@ -535,13 +537,14 @@ function logs() {
 function bind() {
   document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; render(); }));
   document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => { state.logKind = button.dataset.log; render(); }));
-  for (const id of ["restart-uptime", "restart-users", "restart-connections"]) {
+  for (const id of ["restart-uptime", "restart-users", "restart-connections", "restart-drain-timeout"]) {
     const field = document.getElementById(id);
     if (field) field.addEventListener("input", () => {
       state.restartDraft = {
         uptime: document.getElementById("restart-uptime").value,
         users: document.getElementById("restart-users").value,
         connections: document.getElementById("restart-connections").value,
+        drainTimeout: document.getElementById("restart-drain-timeout").value,
       };
     });
   }
@@ -592,8 +595,9 @@ async function act(name, button) {
       const uptime = document.getElementById("restart-uptime").value;
       const users = document.getElementById("restart-users").value;
       const connections = document.getElementById("restart-connections").value;
-      if (![uptime, users, connections].every((value) => /^[0-9]+$/.test(value))) throw new Error("阈值必须是非负整数，0 表示关闭");
-      await api("/api/restart-policy?max_uptime_seconds=" + uptime + "&max_users=" + users + "&max_connections=" + connections);
+      const drainTimeout = document.getElementById("restart-drain-timeout").value;
+      if (![uptime, users, connections, drainTimeout].every((value) => /^[0-9]+$/.test(value))) throw new Error("阈值和排空上限必须是非负整数，0 表示关闭");
+      await api("/api/restart-policy?max_uptime_seconds=" + uptime + "&max_users=" + users + "&max_connections=" + connections + "&drain_timeout_seconds=" + drainTimeout);
       state.restartDraft = null;
     }
     if (name === "add-temp") {

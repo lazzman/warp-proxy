@@ -166,13 +166,15 @@ pub struct ProxyAuth {
 }
 
 /// 三种自动重启触发条件可以同时启用，0 表示禁用该条件。
-/// 自动排空等待已有连接自然结束，只有实际重连和探测受并发名额限制。
+/// 自动排空等待已有连接自然结束，超过排空超时后断开剩余连接；
+/// 只有实际重连和探测受并发名额限制。
 #[derive(Clone, Debug)]
 pub struct RestartConfig {
     pub max_uptime: Duration,
     pub max_users: usize,
     pub max_connections: u64,
     pub drain_check_interval: Duration,
+    pub drain_timeout: Duration,
     pub probe_timeout: Duration,
     pub concurrency: usize,
 }
@@ -205,6 +207,7 @@ impl Default for RestartConfig {
             max_users: 0,
             max_connections: 0,
             drain_check_interval: Duration::from_secs(10),
+            drain_timeout: Duration::from_secs(300),
             probe_timeout: Duration::from_secs(90),
             concurrency: 1,
         }
@@ -259,6 +262,37 @@ struct RestartJob {
     probe_timeout: Duration,
 }
 
+enum DrainSignalState {
+    Waiting,
+    Aborted,
+}
+
+pub(crate) struct DrainSignal {
+    receiver: watch::Receiver<DrainSignalState>,
+}
+
+impl DrainSignal {
+    pub(crate) fn never() -> Self {
+        Self {
+            receiver: watch::channel(DrainSignalState::Waiting).1,
+        }
+    }
+
+    pub(crate) async fn aborted(mut self) {
+        loop {
+            if matches!(
+                *self.receiver.borrow_and_update(),
+                DrainSignalState::Aborted
+            ) {
+                return;
+            }
+            if self.receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
 /// 一个账号：配置、隧道、以及当前是否接新连接。
 pub struct Worker {
     id: usize,
@@ -283,6 +317,8 @@ pub struct Worker {
     /// 实例进入排空后冻结旧隧道：监督器不得执行其他主动重建操作。
     drain_finished: Notify,
     ready_since: Mutex<Option<Instant>>,
+    drain_since: Mutex<Option<Instant>>,
+    drain_signal: watch::Sender<DrainSignalState>,
     stage: Mutex<String>,
     stage_at: Mutex<Option<Instant>>,
     last_action: Mutex<String>,
@@ -339,6 +375,8 @@ impl Worker {
             warp_ready: AtomicBool::new(false),
             drain_finished: Notify::new(),
             ready_since: Mutex::new(None),
+            drain_since: Mutex::new(None),
+            drain_signal: watch::channel(DrainSignalState::Waiting).0,
             stage: Mutex::new(String::new()),
             stage_at: Mutex::new(None),
             last_action: Mutex::new(String::new()),
@@ -422,7 +460,32 @@ impl Worker {
 
     fn begin_draining(&self) {
         let _inner = self.inner.lock().unwrap();
+        *self.drain_since.lock().unwrap() = Some(Instant::now());
         self.draining.store(true, Ordering::Relaxed);
+    }
+
+    fn clear_drain(&self) {
+        *self.drain_since.lock().unwrap() = None;
+        self.drain_signal.send_replace(DrainSignalState::Waiting);
+    }
+
+    fn abort_drain(&self) {
+        self.drain_signal.send_replace(DrainSignalState::Aborted);
+    }
+
+    fn drain_signal(&self) -> DrainSignal {
+        DrainSignal {
+            receiver: self.drain_signal.subscribe(),
+        }
+    }
+
+    fn drain_timed_out(&self, timeout: Duration) -> bool {
+        !timeout.is_zero()
+            && self
+                .drain_since
+                .lock()
+                .unwrap()
+                .is_some_and(|started| started.elapsed() >= timeout)
     }
 
     fn uptime(&self) -> Duration {
@@ -454,6 +517,7 @@ impl Worker {
         }
         self.restart_pending.store(true, Ordering::Relaxed);
         self.draining.store(true, Ordering::Relaxed);
+        *self.drain_since.lock().unwrap() = Some(Instant::now());
         self.set_stage("等待现有连接排空");
         self.note("达到重启条件，停止接入新连接");
         true
@@ -471,6 +535,7 @@ impl Worker {
         self.manual_drain_requested.store(true, Ordering::Release);
         if !self.restart_pending.swap(true, Ordering::AcqRel) {
             self.draining.store(true, Ordering::Release);
+            *self.drain_since.lock().unwrap() = Some(Instant::now());
             self.set_stage("等待现有连接排空");
         }
         self.note("手动触发优雅重启，等待排空");
@@ -481,6 +546,7 @@ impl Worker {
         let _inner = self.inner.lock().unwrap();
         *self.usage.lock().unwrap() = RestartUsage::default();
         *self.ready_since.lock().unwrap() = Some(Instant::now());
+        self.clear_drain();
         self.restart_pending.store(false, Ordering::Relaxed);
         self.manual_drain_requested.store(false, Ordering::Relaxed);
         self.restart_attempted.store(false, Ordering::Relaxed);
@@ -507,6 +573,7 @@ impl Worker {
         // 取消一次排队意味着结束这一轮计数；否则重新开启旧阈值会立即再次摘流。
         *usage = RestartUsage::default();
         *self.ready_since.lock().unwrap() = reusable.then(Instant::now);
+        self.clear_drain();
         self.restart_pending.store(false, Ordering::Release);
         self.draining.store(!reusable, Ordering::Release);
         self.clear_stage();
@@ -558,6 +625,10 @@ impl ConnLease {
     pub(crate) fn egress_v6(&self) -> &str {
         &self.egress_v6
     }
+
+    pub(crate) fn drain_signal(&self) -> DrainSignal {
+        self.worker.drain_signal()
+    }
 }
 
 #[cfg(test)]
@@ -605,6 +676,7 @@ pub struct Pool {
     scheduler: Scheduler,
     restart: RestartConfig,
     restart_policy: RwLock<RestartPolicy>,
+    drain_timeout: RwLock<Duration>,
     restart_queues: Mutex<RestartQueues>,
     health_interval: Duration,
     health_timeout: Duration,
@@ -749,6 +821,7 @@ impl Pool {
             scheduler: Scheduler::new(),
             restart: opts.restart.clone(),
             restart_policy: RwLock::new(RestartPolicy::from_config(&opts.restart)),
+            drain_timeout: RwLock::new(opts.restart.drain_timeout),
             restart_queues: Mutex::new(RestartQueues::default()),
             health_interval: opts.health_interval,
             health_timeout: opts.health_timeout,
@@ -927,6 +1000,7 @@ impl Pool {
         let workers = self.snapshot();
         // 持有策略读锁直至队列调度结束，避免关闭阈值和领取名额交错。
         let policy = *policy_guard;
+        let drain_timeout = *self.drain_timeout.read().unwrap();
         for worker in &workers {
             let inner = worker.inner.lock().unwrap();
             let usage = worker.usage.lock().unwrap();
@@ -948,9 +1022,21 @@ impl Pool {
                         && !worker.stopped.load(Ordering::Relaxed)
                         && !worker.restart_attempted.load(Ordering::Relaxed) =>
                 {
-                    if worker.active.load(Ordering::Relaxed) == 0
-                        && !worker.restart_busy.load(Ordering::Relaxed)
-                    {
+                    let active = worker.active.load(Ordering::Relaxed);
+                    if active > 0 && worker.drain_timed_out(drain_timeout) {
+                        worker.abort_drain();
+                        worker.note("排空超时，断开剩余连接");
+                        worker.set_stage("排空超时，等待连接退出");
+                        *worker.drain_since.lock().unwrap() = None;
+                        let text = format!(
+                            "[pool] 账号 {id} 排空超过 {} 秒，断开 {} 条剩余连接",
+                            drain_timeout.as_secs(),
+                            active
+                        );
+                        eprintln!("{text}");
+                        self.console.log("plan", text);
+                    }
+                    if active == 0 && !worker.restart_busy.load(Ordering::Relaxed) {
                         worker.set_stage("等待重启名额");
                         queues.ready.push_back(id);
                     } else {
@@ -1225,14 +1311,16 @@ impl Pool {
         worker.reset_usage();
     }
 
-    /// 运行中修改任意重启条件；未指定的阈值保持原值，0 表示关闭。
+    /// 运行中修改任意重启条件或排空超时；未指定的参数保持原值，0 表示关闭。
     pub fn set_restart_policy(
         &self,
         max_uptime: Option<Duration>,
         max_users: Option<usize>,
         max_connections: Option<u64>,
+        drain_timeout: Option<Duration>,
     ) -> Result<(), String> {
         let mut policy = self.restart_policy.write().unwrap();
+        let mut timeout = self.drain_timeout.write().unwrap();
         let next = RestartPolicy {
             max_uptime: max_uptime.unwrap_or(policy.max_uptime),
             max_users: max_users.unwrap_or(policy.max_users),
@@ -1241,11 +1329,16 @@ impl Pool {
         if next.max_users > MAX_RESTART_USERS {
             return Err(format!("单实例累计用户阈值不能超过 {MAX_RESTART_USERS}"));
         }
-        if next == *policy {
-            return Ok(());
-        }
+        let policy_changed = next != *policy;
         let users_enabled = policy.max_users == 0 && next.max_users > 0;
         *policy = next;
+        if let Some(value) = drain_timeout {
+            *timeout = value;
+        }
+        if !policy_changed {
+            self.restart_wake.notify_one();
+            return Ok(());
+        }
         let workers = self.snapshot();
         for worker in &workers {
             let inner = worker.inner.lock().unwrap();
@@ -1804,6 +1897,7 @@ impl Pool {
             restart_max_users: policy.max_users,
             restart_max_connections: policy.max_connections,
             restart_drain_check_seconds: self.restart.drain_check_interval.as_secs_f64(),
+            restart_drain_timeout_seconds: self.drain_timeout.read().unwrap().as_secs(),
             restart_concurrency: self.restart.concurrency.max(1),
             drain_queue,
             restart_queue,
@@ -2620,6 +2714,7 @@ pub struct PoolStatus {
     pub restart_max_users: usize,
     pub restart_max_connections: u64,
     pub restart_drain_check_seconds: f64,
+    pub restart_drain_timeout_seconds: u64,
     pub restart_concurrency: usize,
     pub drain_queue: Vec<usize>,
     pub restart_queue: Vec<usize>,
@@ -2747,6 +2842,7 @@ mod restart_queue_tests {
         options.restart.max_uptime = uptime;
         options.restart.concurrency = concurrency;
         options.restart.drain_check_interval = Duration::from_secs(3600);
+        options.restart.drain_timeout = Duration::ZERO;
         let pool = Pool::start(Vec::new(), options).await.unwrap();
         let mut workers = Vec::new();
         let mut jobs = Vec::new();
@@ -2827,7 +2923,7 @@ mod restart_queue_tests {
         assert_eq!(pool.queue_graceful_restart_all(), 2);
         assert_eq!(pool.queue_graceful_restart_all(), 0);
         assert_eq!(pool.status().drain_queue, vec![1, 2]);
-        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        pool.set_restart_policy(None, None, Some(0), None).unwrap();
         assert_eq!(pool.status().restart_max_connections, 0);
         assert_eq!(pool.status().drain_queue, vec![1, 2]);
         assert!(workers
@@ -2885,6 +2981,35 @@ mod restart_queue_tests {
     }
 
     #[tokio::test]
+    async fn drain_timeout_aborts_remaining_connections_and_exposes_status() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        assert_eq!(pool.status().restart_drain_timeout_seconds, 0);
+        pool.set_restart_policy(None, None, None, Some(Duration::ZERO))
+            .unwrap();
+        *workers[0].drain_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(11));
+        pool.inspect_restart_queues();
+        assert_eq!(pool.status().drain_queue, vec![1]);
+
+        pool.set_restart_policy(None, None, None, Some(Duration::from_secs(10)))
+            .unwrap();
+        assert_eq!(pool.status().restart_drain_timeout_seconds, 10);
+        pool.inspect_restart_queues();
+        assert_eq!(pool.status().drain_queue, vec![1]);
+        assert!(matches!(
+            *workers[0].drain_signal.subscribe().borrow(),
+            super::DrainSignalState::Aborted
+        ));
+        assert!(workers[0].drain_since.lock().unwrap().is_none());
+        assert!(pool
+            .logs()
+            .lines
+            .iter()
+            .any(|line| line.text.contains("排空超过 10 秒")));
+        drop(lease);
+    }
+
+    #[tokio::test]
     async fn pending_always_blocks_new_leases_even_if_draining_flag_is_cleared() {
         let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
         workers[0].restart_pending.store(true, Ordering::Release);
@@ -2929,7 +3054,7 @@ mod restart_queue_tests {
         assert!(workers[0].draining.load(Ordering::Relaxed));
         assert!(workers[0].restart_busy.load(Ordering::Relaxed));
         assert!(jobs[0].try_recv().is_err());
-        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        pool.set_restart_policy(None, None, Some(0), None).unwrap();
         // 关闭自动阈值不能取消正在等待并发名额的手动强制重启。
         assert!(workers[0].restart_pending.load(Ordering::Relaxed));
         assert!(workers[0].restart_busy.load(Ordering::Relaxed));
@@ -3003,7 +3128,7 @@ mod restart_queue_tests {
     async fn runtime_changes_apply_to_current_usage() {
         let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
         let _lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
-        pool.set_restart_policy(None, None, Some(1)).unwrap();
+        pool.set_restart_policy(None, None, Some(1), None).unwrap();
         assert!(workers[0].draining.load(Ordering::Relaxed));
         assert_eq!(pool.status().drain_queue, vec![1]);
         assert_eq!(pool.status().restart_max_connections, 1);
@@ -3017,7 +3142,7 @@ mod restart_queue_tests {
             .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
             .unwrap();
         assert_eq!(pool.status().drain_queue, vec![1]);
-        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        pool.set_restart_policy(None, None, Some(0), None).unwrap();
         assert!(pool.status().drain_queue.is_empty());
         assert!(pool.status().restart_queue.is_empty());
         assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
@@ -3030,7 +3155,7 @@ mod restart_queue_tests {
         assert_eq!(next.worker_id, old.worker_id);
         drop((old, next));
         // 关闭后建立的连接也在累计统计里，重新启用时会应用现有累计值。
-        pool.set_restart_policy(None, None, Some(2)).unwrap();
+        pool.set_restart_policy(None, None, Some(2), None).unwrap();
         assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
         let next = pool
             .lease(workers[0].clone(), Some("bob"), "192.0.2.2")
@@ -3050,7 +3175,7 @@ mod restart_queue_tests {
         drop(lease);
         pool.inspect_restart_queues();
         assert_eq!(pool.status().restart_queue, vec![1]);
-        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        pool.set_restart_policy(None, None, Some(0), None).unwrap();
         assert!(pool.status().drain_queue.is_empty());
         assert!(pool.status().restart_queue.is_empty());
         assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
@@ -3066,7 +3191,7 @@ mod restart_queue_tests {
         let old = pool
             .lease(workers[0].clone(), Some("alice"), "192.0.2.1")
             .unwrap();
-        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        pool.set_restart_policy(None, None, Some(0), None).unwrap();
         assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
         assert!(workers[0].draining.load(Ordering::Relaxed));
         assert!(workers[0].ready_since.lock().unwrap().is_none());
@@ -3169,7 +3294,7 @@ mod restart_queue_tests {
             .lease(worker.clone(), Some("alice"), "192.0.2.1")
             .unwrap();
         assert!(worker.restart_pending.load(Ordering::Relaxed));
-        pool.set_restart_policy(None, None, Some(0)).unwrap();
+        pool.set_restart_policy(None, None, Some(0), None).unwrap();
         assert!(!worker.restart_pending.load(Ordering::Relaxed));
         assert!(worker.is_ready());
         tokio::task::yield_now().await;
@@ -3289,9 +3414,9 @@ mod restart_queue_tests {
         let (pool, workers, _jobs) = mock_pool(100, 0, Duration::ZERO, 1).await;
         let _lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
         assert_eq!(workers[0].usage.lock().unwrap().identities.len(), 1);
-        pool.set_restart_policy(None, Some(0), None).unwrap();
+        pool.set_restart_policy(None, Some(0), None, None).unwrap();
         assert!(workers[0].usage.lock().unwrap().identities.is_empty());
-        pool.set_restart_policy(None, Some(1_000_001), None)
+        pool.set_restart_policy(None, Some(1_000_001), None, None)
             .unwrap_err();
         assert_eq!(pool.status().restart_max_users, 0);
     }

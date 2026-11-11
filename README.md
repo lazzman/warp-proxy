@@ -115,6 +115,7 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
   --restart-max-users 1000 \
   --restart-max-connections 10000 \
   --restart-drain-check-interval 10s \
+  --restart-drain-timeout 300s \
   --restart-probe-timeout 90s \
   --restart-concurrency 2
 ```
@@ -129,7 +130,8 @@ cargo run -p warp-proxy -- --http2 --accounts 2 \
 - `--restart-max-uptime` / `RESTART_MAX_UPTIME`：实例成功连接后的运行时长阈值，例如 `24h`。
 - `--restart-max-users` / `RESTART_MAX_USERS`：本轮去重用户阈值，例如 `1000`。
 - `--restart-max-connections` / `RESTART_MAX_CONNECTIONS`：本轮累计分配连接数阈值，例如 `10000`。
-- `--restart-drain-check-interval` / `RESTART_DRAIN_CHECK_INTERVAL`：排空检测间隔，默认 `10s`；排空没有超时。
+- `--restart-drain-check-interval` / `RESTART_DRAIN_CHECK_INTERVAL`：排空检测间隔，默认 `10s`，必须大于 `0`。
+- `--restart-drain-timeout` / `RESTART_DRAIN_TIMEOUT`：单个实例进入排空后的最长等待时间，默认 `300s`；`0` 表示一直等待。到点仍有活跃连接时，先断开这些连接，再进入重启队列，避免长连接把自动重启永久卡住。运行时可通过管理面板或 `/api/restart-policy` 的 `drain_timeout_seconds` 调整。
 - `--restart-concurrency` / `RESTART_CONCURRENCY`：最多同时重连实例数，默认 `1`。
 - `--health-interval` / `HEALTH_CHECK_INTERVAL`：多久经隧道检查一次出口，默认 `60s`。`0` 关闭。见「出口检查」。
 - `--health-timeout` / `HEALTH_CHECK_TIMEOUT`：单次出口检查的最长时间，默认 `20s`。
@@ -210,23 +212,23 @@ services:
 
 每个阈值 `0` 表示关闭；三个都为 `0` 表示完全关闭**自动**重启，不影响手动重连、换出口和故障恢复。阈值是按实例分别计算的，不是整个池的总计。入口若只有一组 `SOCKS_USER`，所有认证请求都计为一个用户；用户数不代表同时在线人数。为控制长期运行内存，单实例用户阈值上限为 `1000000`，超出时拒绝配置。
 
-**排空和重启是两个队列，不存在排空超时：**
+**排空和重启是两个队列，排空有可配置上限：**
 
 1. 任意阈值达到时，触发的那条连接先被接收，实例随后立即摘流，进入排空队列；此后新用户和老用户都不能再建立到该实例的连接。
-2. 已建立的连接继续传输，不会因为自动重启而被强制中断。默认每 `10s`（`RESTART_DRAIN_CHECK_INTERVAL`）检查排空队列；实例活跃连接数归零后移到重启队列。某个长连接一直不结束，实例就一直排空等待。
+2. 已建立的连接继续传输，默认每 `10s`（`RESTART_DRAIN_CHECK_INTERVAL`）检查排空队列；实例活跃连接数归零后移到重启队列。单个实例从摘流起最多排空 `RESTART_DRAIN_TIMEOUT`（默认 `300s`）；到期仍有连接时断开剩余连接，随后按原有重启队列执行，这属于超时后的强制中断。设为 `0` 则保持无超时等待。
 3. 重启队列由 `RESTART_CONCURRENCY` 控制实际同时重连的实例数。重连并确认 WARP 正常后，该实例的运行时间、去重用户、累计连接和旧黏性映射重置，恢复接入。失败时实例保持不可接入，后台持续重试。排空检查不会每轮刷日志，也不会为每个排队实例开一个等待任务。
 4. 老用户再次发起新请求时，只会选择其他可用实例。`username-round` 和 `username-least` 会在改派后保存新绑定，原实例恢复也不会自动迁回；`username-hash` 和 `ip-hash` 是无状态哈希，原实例恢复后按当前可用实例集合重新计算，可能回到原实例。若所有实例都不可用，入口拒绝新连接。
 
-`RESTART_PROBE_TIMEOUT` 默认 `90s`，控制单次重连的出口验证时长；`RESTART_CONCURRENCY` 默认 `1`，只限制实际重连及重试并发，不限制排空队列长度。运行时降低阈值会立即检查已有统计并按需摘流。启用之前关闭的用户数阈值时，从启用时起重新统计去重身份。
+`RESTART_PROBE_TIMEOUT` 默认 `90s`，控制单次重连的出口验证时长；`RESTART_CONCURRENCY` 默认 `1`，只限制实际重连及重试并发，不限制排空队列长度。运行时降低阈值会立即检查已有统计并按需摘流；调整排空超时会保留当前排空起点，不会重新计时。启用之前关闭的用户数阈值时，从启用时起重新统计去重身份。
 
 运行中可以在管理面板同时修改三个阈值，或调用：
 
 ```sh
 curl -H "X-Warp-Token: <token>" \
-  "http://127.0.0.1:47100/api/restart-policy?max_uptime_seconds=86400&max_users=1000&max_connections=10000"
+  "http://127.0.0.1:47100/api/restart-policy?max_uptime_seconds=86400&max_users=1000&max_connections=10000&drain_timeout_seconds=300"
 ```
 
-上述 API 任一参数都可省略（代表保留原值），为 `0` 则关闭对应条件。**三个阈值全部关闭时，尚在排空队列或待重启队列、未取得执行权的自动任务会取消，并在旧隧道仍可用时恢复接入。** 此时取消任务的实例会清零本轮统计并重新开始运行时间计时，避免以后重新开启阈值时立刻重复排空。已开始执行的自动重连及失败后的恢复重试继续完成；手动触发的优雅重启和强制重连不受影响。`/api/status` 返回当前三个阈值、排空队列 `drain_queue`、待重启队列 `restart_queue`、各实例本轮累计值和活跃连接数。
+上述 API 任一参数都可省略（代表保留原值），为 `0` 则关闭对应条件或排空超时。**三个阈值全部关闭时，尚在排空队列或待重启队列、未取得执行权的自动任务会取消，并在旧隧道仍可用时恢复接入。** 此时取消任务的实例会清零本轮统计并重新开始运行时间计时，避免以后重新开启阈值时立刻重复排空。已开始执行的自动重连及失败后的恢复重试继续完成；手动触发的优雅重启和强制重连不受影响。`/api/status` 返回当前三个阈值、`restart_drain_timeout_seconds`、排空队列 `drain_queue`、待重启队列 `restart_queue`、各实例本轮累计值和活跃连接数。
 
 管理面板的「立即触发重启」或 `/api/restart-graceful` 会为所有实例立即发起一次**保身份优雅重启**：停止接入新连接，等待已有连接自然结束，再进入现有重启队列，按 `RESTART_CONCURRENCY` 限制执行。不更改自动重启阈值；重复触发不会重复排队。接口返回本次新增（含从自动排空转为手动触发）的排队实例数，例如 `{"queued":75}`。**全部实例同时排空时，已有连接不会被主动中断，但新连接可能暂时无法建立。**
 
@@ -275,7 +277,8 @@ docker logs warp-proxy
 | `RESTART_MAX_UPTIME` | `0` | 实例运行时长阈值，`24h` 等；`0` 关闭 |
 | `RESTART_MAX_USERS` | `0` | 每轮累计去重用户上限，最大 `1000000`，`0` 关闭 |
 | `RESTART_MAX_CONNECTIONS` | `0` | 每轮累计接入连接数上限，`0` 关闭 |
-| `RESTART_DRAIN_CHECK_INTERVAL` | `10s` | 排空队列检测间隔，必须大于 `0`；无排空超时 |
+| `RESTART_DRAIN_CHECK_INTERVAL` | `10s` | 排空队列检测间隔，必须大于 `0` |
+| `RESTART_DRAIN_TIMEOUT` | `300s` | 单实例排空最长等待；`0` 关闭超时。超时断开剩余连接 |
 | `RESTART_PROBE_TIMEOUT` | `90s` | 重连后确认 `warp=on` 或 `warp=plus` 的时间 |
 | `RESTART_CONCURRENCY` | `1` | 实际重连和后台重试的并发上限 |
 

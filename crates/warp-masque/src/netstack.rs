@@ -140,6 +140,9 @@ enum Cmd {
     Close {
         handle: SocketHandle,
     },
+    Abort {
+        handle: SocketHandle,
+    },
     Resolve {
         name: String,
         reply: oneshot::Sender<Result<IpAddr, String>>,
@@ -276,6 +279,14 @@ impl TcpConn {
         });
     }
 
+    /// 生成一个可稍后强制断开该连接的轻量句柄。
+    pub fn abort_handle(&self) -> TcpAbort {
+        TcpAbort {
+            cmd: self.cmd.clone(),
+            handle: self.handle,
+        }
+    }
+
     /// Split into independent read/write halves for concurrent relaying.
     pub fn into_split(self) -> (TcpReader, TcpWriter) {
         (
@@ -325,9 +336,28 @@ impl TcpWriter {
     }
 }
 
+pub struct TcpAbort {
+    cmd: smpsc::Sender<Cmd>,
+    handle: SocketHandle,
+}
+
+impl TcpAbort {
+    pub fn abort(&self) {
+        let _ = self.cmd.send(Cmd::Abort {
+            handle: self.handle,
+        });
+    }
+}
+
 impl Drop for TcpWriter {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+impl Drop for TcpReader {
+    fn drop(&mut self) {
+        self.from_net.close();
     }
 }
 
@@ -528,6 +558,13 @@ impl Actor {
             Cmd::Close { handle } => {
                 if let Some(conn) = self.conns.get_mut(&handle) {
                     conn.closing = true;
+                }
+            }
+            Cmd::Abort { handle } => {
+                if let Some(conn) = self.conns.remove(&handle) {
+                    self.sockets.get_mut::<tcp::Socket>(handle).abort();
+                    self.sockets.remove(handle);
+                    drop(conn);
                 }
             }
             Cmd::Resolve { name, reply } => self.handle_resolve(name, reply),

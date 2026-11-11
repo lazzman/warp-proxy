@@ -232,7 +232,7 @@ async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -
             if client.write_all(&reply(0x00)).await.is_err() {
                 record.result = "write-failed".into();
             } else {
-                let (up, down) = relay_session(&pool, client, conn, &mut record).await;
+                let (up, down) = relay_session(&pool, client, conn, &lease, &mut record).await;
                 record.up = up;
                 record.down = down;
                 record.result = "ok".into();
@@ -281,7 +281,8 @@ async fn via_netstack(
     };
     client.write_all(&reply(0x00)).await?;
     let meter = Arc::new(crate::console::TrafficMeter::new());
-    relay_counted(client, conn, meter).await;
+    let signal = crate::pool::DrainSignal::never();
+    relay_counted(client, conn, meter, signal).await;
     Ok(())
 }
 
@@ -289,12 +290,13 @@ pub(crate) async fn relay_session(
     pool: &Arc<Pool>,
     client: TcpStream,
     conn: TcpConn,
+    lease: &crate::pool::ConnLease,
     record: &mut AccessRecord,
 ) -> (u64, u64) {
     let meter = std::sync::Arc::new(crate::console::TrafficMeter::new());
     let guard = pool.track_session(session_open(record, Arc::clone(&meter)));
     record.id = guard.id();
-    let counts = relay_counted(client, conn, meter).await;
+    let counts = relay_counted(client, conn, meter, lease.drain_signal()).await;
     drop(guard);
     counts
 }
@@ -303,8 +305,10 @@ pub(crate) async fn relay_counted(
     client: TcpStream,
     conn: TcpConn,
     meter: Arc<crate::console::TrafficMeter>,
+    drain_signal: crate::pool::DrainSignal,
 ) -> (u64, u64) {
     let (mut reader_client, mut writer_client) = client.into_split();
+    let net_abort = conn.abort_handle();
     let (mut reader_net, writer_net) = conn.into_split();
     let up_meter = Arc::clone(&meter);
     let down_meter = Arc::clone(&meter);
@@ -339,6 +343,9 @@ pub(crate) async fn relay_counted(
     tokio::select! {
         _ = net_to_client => {}
         _ = client_to_net => {}
+        _ = drain_signal.aborted() => {
+            net_abort.abort();
+        }
     }
     (
         meter.up.load(Ordering::Relaxed),

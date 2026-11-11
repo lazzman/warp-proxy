@@ -121,7 +121,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
             let _ = conn_write(&conn, &request.rest);
             record.up += request.rest.len() as u64;
         }
-        let (up, down) = socks::relay_session(&pool, client, conn, &mut record).await;
+        let (up, down) = socks::relay_session(&pool, client, conn, &lease, &mut record).await;
         record.up += up;
         record.down += down;
         record.result = "ok".into();
@@ -161,7 +161,7 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
             return record;
         }
         record.up += forward.head.len() as u64;
-        let (up, down) = socks::relay_session(&pool, client, conn, &mut record).await;
+        let (up, down) = socks::relay_session(&pool, client, conn, &lease, &mut record).await;
         record.up += up;
         record.down += down;
         record.result = "ok".into();

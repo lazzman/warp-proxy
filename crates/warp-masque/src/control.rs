@@ -118,13 +118,19 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
             let uptime = u64_param(query, "max_uptime_seconds")?;
             let users = usize_param(query, "max_users")?;
             let connections = u64_param(query, "max_connections")?;
-            if uptime.is_none() && users.is_none() && connections.is_none() {
-                return Err("至少需要 max_uptime_seconds、max_users 或 max_connections".into());
+            let drain_timeout = u64_param(query, "drain_timeout_seconds")?;
+            if uptime.is_none()
+                && users.is_none()
+                && connections.is_none()
+                && drain_timeout.is_none()
+            {
+                return Err("至少需要 max_uptime_seconds、max_users、max_connections 或 drain_timeout_seconds".into());
             }
             pool.set_restart_policy(
                 uptime.map(std::time::Duration::from_secs),
                 users,
                 connections,
+                drain_timeout.map(std::time::Duration::from_secs),
             )?;
         }
         "/api/rotate" => pool
@@ -295,6 +301,17 @@ mod tests {
         assert_eq!(response, r#"{"queued":0}"#);
     }
 
+    #[tokio::test]
+    async fn restart_policy_route_accepts_drain_timeout_alone() {
+        let pool = crate::pool::Pool::start(Vec::new(), crate::pool::PoolOptions::basic(false))
+            .await
+            .unwrap();
+        let response = super::route(&pool, "/api/restart-policy", "drain_timeout_seconds=10")
+            .await
+            .unwrap();
+        assert!(response.contains("\"restart_drain_timeout_seconds\":10"));
+    }
+
     #[test]
     fn panel_paths_are_only_the_html_pages() {
         assert!(is_panel_path("/"));
@@ -323,6 +340,8 @@ mod tests {
         assert!(PANEL_HTML.contains("X-Warp-Token"));
         assert!(PANEL_HTML.contains("立即触发重启"));
         assert!(PANEL_HTML.contains("检测出口 IP"));
+        assert!(PANEL_HTML.contains("restart-drain-timeout"));
+        assert!(PANEL_HTML.contains("drain_timeout_seconds="));
         assert!(!PANEL_HTML.contains("rotate-seconds"));
         assert!(!PANEL_HTML.contains(r#"data-act="rotate""#));
         assert!(!PANEL_HTML.contains(r#"data-act="interval""#));

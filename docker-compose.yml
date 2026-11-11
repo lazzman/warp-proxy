@@ -40,8 +40,9 @@ services:
       RESTART_MAX_UPTIME: "0"
       RESTART_MAX_USERS: "0"
       RESTART_MAX_CONNECTIONS: "0"
-      # 排空无超时；活跃连接归零后进入并发受控的重启队列。
+      # 排空超过 300 秒会断开剩余连接；0 表示不设超时。
       RESTART_DRAIN_CHECK_INTERVAL: 10s
+      RESTART_DRAIN_TIMEOUT: 300s
       RESTART_PROBE_TIMEOUT: 90s
       RESTART_CONCURRENCY: "1"
       HEALTH_CHECK_INTERVAL: 60s
