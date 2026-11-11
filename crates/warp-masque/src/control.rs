@@ -63,10 +63,6 @@ async fn handle(mut conn: TcpStream, pool: Arc<Pool>, token: Arc<String>) -> std
             return write_asset(&mut conn, content_type, body).await;
         }
     }
-    if method == "GET" && path == "/favicon.ico" {
-        return write_resp(&mut conn, "204 No Content", "").await;
-    }
-
     let presented = lines
         .find_map(|l| {
             let (k, v) = l.split_once(':')?;
@@ -239,6 +235,8 @@ fn panel_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
             "text/javascript; charset=utf-8",
             include_bytes!("assets/bootstrap.bundle.min.js"),
         )),
+        "/assets/favicon.svg" => Some(("image/svg+xml", include_bytes!("assets/favicon.svg"))),
+        "/favicon.ico" => Some(("image/x-icon", include_bytes!("assets/favicon.ico"))),
         _ => None,
     }
 }
@@ -379,11 +377,22 @@ mod tests {
             "warp-theme",
             "/api/restart-graceful?slot=",
             "/api/trace?slot=",
+            "/assets/favicon.svg",
+            "总览 · Warp Proxy",
         ] {
             assert!(PANEL_HTML.contains(feature), "{feature}");
         }
         assert!(panel_asset("/assets/bootstrap.min.css").is_some());
         assert!(panel_asset("/assets/bootstrap.bundle.min.js").is_some());
+        assert_eq!(
+            panel_asset("/assets/favicon.svg").unwrap().0,
+            "image/svg+xml"
+        );
+        assert_eq!(panel_asset("/favicon.ico").unwrap().0, "image/x-icon");
+        assert!(panel_asset("/favicon.ico")
+            .unwrap()
+            .1
+            .starts_with(&[0, 0, 1, 0]));
         assert!(panel_asset("/api/status").is_none());
     }
 

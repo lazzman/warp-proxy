@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>warp-proxy</title>
+<title>总览 · Warp Proxy</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#f3f4f2">
 <link rel="stylesheet" href="/assets/bootstrap.min.css">
 <style>
   :root, [data-bs-theme="light"] {
@@ -28,7 +30,8 @@
   }
   body { background: var(--paper); color: var(--ink); font-weight: 400; }
   .navbar { min-height: 52px; background: var(--panel) !important; border-bottom-color: var(--hair) !important; }
-  .navbar-brand { font-weight: 600; letter-spacing: -.01em; }
+  .navbar-brand { font-weight: 600; letter-spacing: -.02em; }
+  .brand-mark { width: 18px; height: 18px; display: block; flex: none; }
   #views .nav-link { border-radius: 8px; color: var(--bs-secondary-color); padding: 6px 10px; display: inline-flex; align-items: center; gap: 6px; }
   #views .nav-link.active { color: var(--ink); background: var(--bs-tertiary-bg); font-weight: 500; }
   .nav-pill { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--pill-bg); color: var(--bs-secondary-color); font-variant-numeric: tabular-nums; }
@@ -177,7 +180,7 @@
 <body>
 <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom sticky-top">
   <div class="container-fluid gap-3">
-    <span class="navbar-brand mb-0 h1 fs-6 d-inline-flex align-items-center gap-2"><i class="lamp" id="lamp"></i>warp-proxy</span>
+    <span class="navbar-brand mb-0 h1 fs-6 d-inline-flex align-items-center gap-2"><img class="brand-mark" src="/assets/favicon.svg" alt="" width="18" height="18"><span>Warp Proxy</span><i class="lamp" id="lamp" title="控制面连接状态"></i></span>
     <ul class="nav flex-row flex-nowrap" id="views">
       <li class="nav-item"><button type="button" class="nav-link active" data-view="overview"><span>总览</span><span class="nav-pill d-none" id="badge-overview"></span></button></li>
       <li class="nav-item"><button type="button" class="nav-link" data-view="instances"><span>实例</span><span class="nav-pill d-none" id="badge-instances"></span></button></li>
@@ -300,6 +303,8 @@ function applyTheme() {
   const mode = state.themeMode;
   const dark = mode === "dark" || (mode === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.setAttribute("data-bs-theme", dark ? "dark" : "light");
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+  if (themeColor) themeColor.setAttribute("content", dark ? "#111210" : "#f3f4f2");
   const btn = document.querySelector("#theme-btn");
   if (btn) {
     const label = mode === "auto" ? "自动" : mode === "dark" ? "深色" : "浅色";
@@ -336,8 +341,13 @@ tokenToggleBtn.addEventListener("click", () => {
   tokenInput.select();
 });
 
+const VIEW_LABELS = { overview: "总览", instances: "实例", connections: "连接", logs: "日志" };
+function setDocumentTitle() {
+  document.title = (VIEW_LABELS[state.view] || "总览") + " · Warp Proxy";
+}
 function switchView(viewName) {
   state.view = viewName;
+  setDocumentTitle();
   document.querySelectorAll("#views button").forEach((item) => item.classList.toggle("active", item.dataset.view === viewName));
   for (const id of ["overview", "instances", "connections", "logs"]) {
     document.querySelector("#" + id).classList.toggle("d-none", id !== state.view);
@@ -1386,6 +1396,7 @@ function bytes(value) {
 function escapeHtml(value) {
   return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
 }
+setDocumentTitle();
 refresh();
 </script>
 </body>

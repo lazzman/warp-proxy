@@ -74,7 +74,7 @@ mod deferred_start_tests {
 
         assert!(request(addr, "/", None)
             .await
-            .contains("<title>warp-proxy</title>"));
+            .contains("<title>总览 · Warp Proxy</title>"));
         let status = request(addr, "/api/status", Some("secret")).await;
         assert!(status.contains("\"initializing\":true"));
         assert!(status.contains("\"expected_accounts\":2"));
