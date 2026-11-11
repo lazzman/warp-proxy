@@ -105,7 +105,8 @@ async fn route(pool: &Arc<Pool>, path: &str, query: &str) -> Result<String, Stri
                 .await?
         }
         "/api/restart-graceful" => {
-            let queued = pool.queue_graceful_restart_all();
+            let slot = usize_param(query, "slot")?.unwrap_or(0);
+            let queued = pool.queue_graceful_restart(slot)?;
             return Ok(serde_json::json!({ "queued": queued }).to_string());
         }
         "/api/restart-plan" => {
@@ -299,6 +300,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response, r#"{"queued":0}"#);
+        assert!(super::route(&pool, "/api/restart-graceful", "slot=-1")
+            .await
+            .is_err());
+        assert!(super::route(&pool, "/api/restart-graceful", "slot=abc")
+            .await
+            .is_err());
+        assert_eq!(
+            super::route(&pool, "/api/restart-graceful", "slot=2")
+                .await
+                .unwrap_err(),
+            "没有账号 2"
+        );
     }
 
     #[tokio::test]
@@ -352,8 +365,47 @@ mod tests {
         assert!(PANEL_HTML.contains("/assets/bootstrap.min.css"));
         assert!(PANEL_HTML.contains("/assets/bootstrap.bundle.min.js"));
         assert!(!PANEL_HTML.contains("controlToken"));
+        for feature in [
+            "FOCUSABLE_INPUTS",
+            "graceful-slot",
+            "trace-slot",
+            "select-all-temps",
+            "inst-query",
+            "conn-query",
+            "conn-sort",
+            "log-query",
+            "log-only-bad",
+            "toggle-stick",
+            "warp-theme",
+            "/api/restart-graceful?slot=",
+            "/api/trace?slot=",
+        ] {
+            assert!(PANEL_HTML.contains(feature), "{feature}");
+        }
         assert!(panel_asset("/assets/bootstrap.min.css").is_some());
         assert!(panel_asset("/assets/bootstrap.bundle.min.js").is_some());
         assert!(panel_asset("/api/status").is_none());
+    }
+
+    #[test]
+    fn panel_html_prioritizes_restart_queue_and_defers_copy_repaint() {
+        let (_, queue_badges) = PANEL_HTML
+            .split_once("function queueBadges")
+            .expect("缺少队列状态渲染");
+        let (queue_badges, _) = queue_badges
+            .split_once("function instances")
+            .expect("队列状态渲染范围不完整");
+        assert!(
+            queue_badges.find("restart_queue").unwrap()
+                < queue_badges.find("account.draining").unwrap()
+        );
+
+        let (_, copy_handler) = PANEL_HTML
+            .split_once("document.querySelectorAll(\"[data-copy]\")")
+            .expect("缺少复制事件处理");
+        let (copy_handler, _) = copy_handler
+            .split_once("document.querySelectorAll(\"[data-act]\")")
+            .expect("复制事件处理范围不完整");
+        assert!(copy_handler.contains("state.copiedKey = \"\";\n          scheduleRender();"));
     }
 }

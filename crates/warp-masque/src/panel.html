@@ -13,6 +13,8 @@
     --ink: #1a1c19;
     --accent: #1d3c31;
     --alert-wash: #fbf7f2;
+    --pill-bg: rgba(24, 26, 23, .06);
+    --copy-hover: rgba(29, 60, 49, .08);
   }
   [data-bs-theme="dark"] {
     --paper: #111210;
@@ -21,12 +23,17 @@
     --ink: #eceee8;
     --accent: #e7ebe4;
     --alert-wash: #241f18;
+    --pill-bg: rgba(236, 237, 230, .09);
+    --copy-hover: rgba(231, 235, 228, .1);
   }
   body { background: var(--paper); color: var(--ink); font-weight: 400; }
   .navbar { min-height: 52px; background: var(--panel) !important; border-bottom-color: var(--hair) !important; }
   .navbar-brand { font-weight: 600; letter-spacing: -.01em; }
-  #views .nav-link { border-radius: 8px; color: var(--bs-secondary-color); padding: 6px 10px; }
-  #views .nav-link.active { color: var(--ink); background: var(--bs-tertiary-bg); }
+  #views .nav-link { border-radius: 8px; color: var(--bs-secondary-color); padding: 6px 10px; display: inline-flex; align-items: center; gap: 6px; }
+  #views .nav-link.active { color: var(--ink); background: var(--bs-tertiary-bg); font-weight: 500; }
+  .nav-pill { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--pill-bg); color: var(--bs-secondary-color); font-variant-numeric: tabular-nums; }
+  .nav-pill.warn { background: rgba(184, 106, 26, .16); color: #b86a1a; }
+  [data-bs-theme="dark"] .nav-pill.warn { color: #f0a85c; }
   #online { font-size: 13px; color: var(--bs-secondary-color); }
   main.container-fluid { padding: 24px 28px 48px; }
   .lamp { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--bs-secondary-color); flex: none; }
@@ -37,6 +44,7 @@
   .form-control, .form-select { border-color: var(--hair); }
   .btn { font-weight: 500; }
   .btn-sm { padding: 4px 10px; }
+  .btn-xs { padding: 1px 6px; font-size: 11px; border-radius: 6px; }
   .btn-primary {
     --bs-btn-bg: var(--accent);
     --bs-btn-border-color: var(--accent);
@@ -102,8 +110,8 @@
   .metric .v { font-size: 18px; line-height: 1.4; margin-top: 4px; overflow-wrap: anywhere; }
   .metric .s { margin-top: 4px; }
   .sheet { border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); overflow: auto; }
-  .connections-scroll { max-height: 36rem; }
-  .connections-scroll thead th { position: sticky; top: 0; z-index: 1; }
+  .connections-scroll, .instance-scroll { max-height: 38rem; }
+  .connections-scroll thead th, .instance-scroll thead th { position: sticky; top: 0; z-index: 1; }
   .data-table { font-size: 13px; }
   .data-table th { font-size: 12px; font-weight: 500; color: var(--bs-secondary-color); }
   .data-table td, .data-table th { padding: 8px 10px; border-color: var(--hair); }
@@ -117,11 +125,27 @@
   tr.row-alert td { background: var(--alert-wash); }
   .table-hover > tbody > tr.row-alert:hover > * { background: #f6f0e8; }
   [data-bs-theme="dark"] .table-hover > tbody > tr.row-alert:hover > * { background: #2c261e; }
-  .status-cell { display: flex; align-items: center; gap: 8px; }
-  .probe { color: var(--bs-secondary-color); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  tr.row-focus td { outline: 1px solid #2f7d57; }
+  .status-cell { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+  .probe { color: var(--bs-secondary-color); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; padding: 1px 5px; border-radius: 4px; background: var(--pill-bg); }
+  .tag-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 500; background: var(--pill-bg); color: var(--bs-secondary-color); }
+  .tag-pill.drain { background: rgba(184, 106, 26, .15); color: #b86a1a; }
+  .tag-pill.queue { background: rgba(47, 125, 87, .15); color: #2f7d57; }
+  .tag-pill.dirty { background: rgba(184, 106, 26, .16); color: #b86a1a; }
+  [data-bs-theme="dark"] .tag-pill.drain, [data-bs-theme="dark"] .tag-pill.dirty { color: #f0a85c; }
+  [data-bs-theme="dark"] .tag-pill.queue { color: #7cd4a6; }
+  .slot-jump { cursor: pointer; text-decoration: none; border: 1px solid var(--hair); background: var(--paper); color: var(--ink); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; display: inline-block; margin: 2px 3px 2px 0; }
+  .slot-jump:hover { background: var(--copy-hover); }
+  .copyable { cursor: pointer; border-radius: 4px; transition: background-color .12s ease; }
+  .copyable:hover { background: var(--copy-hover); }
   .clip { max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .clip-wide { max-width: 220px; }
   .row-actions .btn { padding: 2px 8px; }
+  .policy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+  .policy-box { padding: 10px 12px; border: 1px solid var(--hair); border-radius: 10px; background: var(--paper); display: flex; flex-direction: column; gap: 6px; }
+  .policy-box .hint { font-size: 11.5px; color: var(--bs-secondary-color); font-variant-numeric: tabular-nums; }
+  .rule-details { font-size: 12.5px; color: var(--bs-secondary-color); border-top: 1px solid var(--hair); padding-top: 10px; }
+  .rule-details summary { cursor: pointer; user-select: none; font-weight: 500; }
   .log {
     max-height: 36rem;
     margin: 0;
@@ -140,8 +164,9 @@
   .log .sep { color: #6e706a; }
   .log .ok { color: #8fbf9f; }
   .log .bad { color: #d7a08a; }
+  .log mark { background: rgba(240, 168, 92, .32); color: #fff; padding: 0 2px; border-radius: 3px; }
   :focus-visible { outline: 2px solid #2f7d57; outline-offset: 2px; }
-  #token { width: 160px; }
+  #token { width: 150px; }
   @media (max-width: 768px) {
     main.container-fluid { padding: 16px 16px 32px; }
     .metrics { grid-template-columns: 1fr; gap: 12px; }
@@ -154,18 +179,24 @@
   <div class="container-fluid gap-3">
     <span class="navbar-brand mb-0 h1 fs-6 d-inline-flex align-items-center gap-2"><i class="lamp" id="lamp"></i>warp-proxy</span>
     <ul class="nav flex-row flex-nowrap" id="views">
-      <li class="nav-item"><button type="button" class="nav-link active" data-view="overview">总览</button></li>
-      <li class="nav-item"><button type="button" class="nav-link" data-view="instances">实例</button></li>
-      <li class="nav-item"><button type="button" class="nav-link" data-view="connections">连接</button></li>
-      <li class="nav-item"><button type="button" class="nav-link" data-view="logs">日志</button></li>
+      <li class="nav-item"><button type="button" class="nav-link active" data-view="overview"><span>总览</span><span class="nav-pill d-none" id="badge-overview"></span></button></li>
+      <li class="nav-item"><button type="button" class="nav-link" data-view="instances"><span>实例</span><span class="nav-pill d-none" id="badge-instances"></span></button></li>
+      <li class="nav-item"><button type="button" class="nav-link" data-view="connections"><span>连接</span><span class="nav-pill d-none" id="badge-connections"></span></button></li>
+      <li class="nav-item"><button type="button" class="nav-link" data-view="logs"><span>日志</span><span class="nav-pill d-none" id="badge-logs"></span></button></li>
     </ul>
     <div class="ms-lg-auto d-flex flex-wrap align-items-center gap-2">
       <form class="d-flex align-items-center gap-2" id="login">
         <input id="token" class="form-control form-control-sm" type="password" placeholder="管理密码" autocomplete="current-password" aria-label="管理密码">
-        <button class="btn btn-primary btn-sm" type="submit">连接</button>
+        <button class="btn btn-primary btn-sm" type="submit" id="login-submit">连接</button>
       </form>
+      <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="token-toggle" title="修改或清除管理密码">密码</button>
       <span id="online">控制面离线</span>
-      <select id="refresh" class="form-select form-select-sm" style="width: 7rem" aria-label="自动刷新">
+      <div class="btn-group btn-group-sm" role="group" aria-label="刷新与主题">
+        <button type="button" class="btn btn-outline-secondary" id="top-refresh" title="立即刷新当前视图">刷新</button>
+        <button type="button" class="btn btn-outline-secondary" id="theme-btn" title="切换颜色主题">主题: 自动</button>
+      </div>
+      <select id="refresh" class="form-select form-select-sm" style="width: 7.2rem" aria-label="自动刷新">
+        <option value="0">暂停刷新</option>
         <option value="1">1 秒</option>
         <option value="3">3 秒</option>
         <option value="5" selected>5 秒</option>
@@ -187,8 +218,56 @@
 </main>
 <script src="/assets/bootstrap.bundle.min.js"></script>
 <script>
-const state = { view: "overview", filter: "all", logKind: "all", status: null, sessions: [], logs: null, stick: true, timer: 0, temps: [], focusId: "", restartDraft: null, busy: false, tempCount: "1" };
+const FOCUSABLE_INPUTS = [
+  "temp-count",
+  "restart-uptime",
+  "restart-users",
+  "restart-connections",
+  "restart-drain-timeout",
+  "inst-query",
+  "conn-query",
+  "log-query"
+];
+const state = {
+  view: "overview",
+  filter: "all",
+  instQuery: "",
+  connFilter: "all",
+  connQuery: "",
+  connSort: "newest",
+  logKind: "all",
+  logQuery: "",
+  logOnlyBad: false,
+  status: null,
+  sessions: [],
+  logs: null,
+  stick: true,
+  timer: 0,
+  temps: [],
+  focusId: "",
+  selectionRange: null,
+  composing: false,
+  restartDraft: null,
+  rulesOpen: false,
+  busy: false,
+  busyKeys: new Set(),
+  feedbackMap: {},
+  copiedKey: "",
+  highlightSlot: 0,
+  pendingRender: false,
+  scrollToSlot: 0,
+  suppressLogScroll: false,
+  logScrollTimer: 0,
+  tempCount: "1",
+  authCollapsed: false,
+  authLockedOpen: false,
+  lastUpdatedAt: 0,
+  themeMode: "auto"
+};
 const tokenInput = document.querySelector("#token");
+const loginForm = document.querySelector("#login");
+const tokenToggleBtn = document.querySelector("#token-toggle");
+
 function readCachedToken() {
   try {
     const saved = localStorage.getItem("warp-token");
@@ -209,31 +288,117 @@ function writeCachedToken(token) {
 }
 state.token = readCachedToken().trim();
 tokenInput.value = state.token;
-const theme = () => document.documentElement.setAttribute("data-bs-theme", matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-theme();
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", theme);
 
-document.querySelectorAll("#views button").forEach((button) => {
-  button.addEventListener("click", () => {
-    state.view = button.dataset.view;
-    document.querySelectorAll("#views button").forEach((item) => item.classList.toggle("active", item === button));
-    for (const id of ["overview", "instances", "connections", "logs"]) {
-      document.querySelector("#" + id).classList.toggle("d-none", id !== state.view);
-    }
-    refresh();
-  });
+function readThemeMode() {
+  try {
+    return localStorage.getItem("warp-theme") || "auto";
+  } catch (_) {
+    return "auto";
+  }
+}
+function applyTheme() {
+  const mode = state.themeMode;
+  const dark = mode === "dark" || (mode === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-bs-theme", dark ? "dark" : "light");
+  const btn = document.querySelector("#theme-btn");
+  if (btn) {
+    const label = mode === "auto" ? "自动" : mode === "dark" ? "深色" : "浅色";
+    btn.textContent = "主题: " + label;
+  }
+}
+state.themeMode = readThemeMode();
+applyTheme();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+document.querySelector("#theme-btn").addEventListener("click", () => {
+  const order = ["auto", "light", "dark"];
+  state.themeMode = order[(order.indexOf(state.themeMode) + 1) % order.length];
+  try { localStorage.setItem("warp-theme", state.themeMode); } catch (_) {}
+  applyTheme();
 });
-document.querySelector("#login").addEventListener("submit", (event) => {
+
+function syncAuthBar(connected) {
+  if (connected && state.token && !state.authCollapsed && !state.authLockedOpen && document.activeElement !== tokenInput) {
+    state.authCollapsed = true;
+  }
+  if (!connected) {
+    state.authCollapsed = false;
+    state.authLockedOpen = false;
+  }
+  loginForm.classList.toggle("d-none", state.authCollapsed);
+  tokenToggleBtn.classList.toggle("d-none", !state.authCollapsed);
+}
+tokenToggleBtn.addEventListener("click", () => {
+  state.authLockedOpen = true;
+  state.authCollapsed = false;
+  loginForm.classList.remove("d-none");
+  tokenToggleBtn.classList.add("d-none");
+  tokenInput.focus();
+  tokenInput.select();
+});
+
+function switchView(viewName) {
+  state.view = viewName;
+  document.querySelectorAll("#views button").forEach((item) => item.classList.toggle("active", item.dataset.view === viewName));
+  for (const id of ["overview", "instances", "connections", "logs"]) {
+    document.querySelector("#" + id).classList.toggle("d-none", id !== state.view);
+  }
+  refresh(true);
+}
+document.querySelectorAll("#views button").forEach((button) => {
+  button.addEventListener("click", () => switchView(button.dataset.view));
+});
+loginForm.addEventListener("submit", (event) => {
   event.preventDefault();
   state.token = tokenInput.value.trim();
+  state.authCollapsed = true;
+  state.authLockedOpen = false;
   if (!state.token) writeCachedToken("");
-  refresh();
+  refresh(true);
 });
 document.querySelector("#refresh").addEventListener("change", schedule);
+document.querySelector("#top-refresh").addEventListener("click", () => refresh(true));
+
+document.addEventListener("compositionstart", () => { state.composing = true; });
+document.addEventListener("compositionend", () => {
+  state.composing = false;
+  flushPendingRender();
+});
+document.addEventListener("selectionchange", () => {
+  flushPendingRender();
+});
+
+function hasUserSelection() {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed) return false;
+  const text = String(sel.toString() || "").trim();
+  return text.length > 0;
+}
+function flushPendingRender() {
+  if (!state.pendingRender || state.composing || hasUserSelection()) return;
+  state.pendingRender = false;
+  render();
+}
+function scheduleRender() {
+  if (state.composing || hasUserSelection()) {
+    state.pendingRender = true;
+    return;
+  }
+  state.pendingRender = false;
+  render();
+}
+function requestRender() {
+  if (state.composing) {
+    state.pendingRender = true;
+    return;
+  }
+  state.pendingRender = false;
+  render();
+}
 
 function schedule() {
   clearTimeout(state.timer);
   let seconds = Number(document.querySelector("#refresh").value);
+  if (seconds <= 0) return;
   if (state.status && state.status.tasks && state.status.tasks.length) seconds = Math.min(seconds, 1);
   state.timer = setTimeout(refresh, seconds * 1000);
 }
@@ -250,38 +415,58 @@ function showError(message) {
   error.classList.toggle("d-none", !message);
 }
 function feedbackKey(name, button) {
-  if (button && button.dataset.slot && (name === "restart" || name === "manual")) return "slot:" + button.dataset.slot;
+  if (button && button.dataset.slot && (name === "restart" || name === "manual" || name === "graceful-slot" || name === "trace-slot")) {
+    return "slot:" + button.dataset.slot;
+  }
   return "act:" + name;
 }
+function setFeedback(key, text, error, ttlMs = 1600) {
+  const prev = state.feedbackMap[key];
+  if (prev && prev.timer) clearTimeout(prev.timer);
+  const entry = { text, error: Boolean(error), timer: 0 };
+  if (ttlMs > 0) {
+    entry.timer = setTimeout(() => {
+      delete state.feedbackMap[key];
+      if (!state.busyKeys.has(key)) scheduleRender();
+    }, ttlMs);
+  }
+  state.feedbackMap[key] = entry;
+}
 function rowStatus(account) {
-  const live = state.feedback && state.feedback.key === "slot:" + account.id ? state.feedback : null;
+  const live = state.feedbackMap["slot:" + account.id];
   if (!live) return escapeHtml(account.last_action || "—");
-  const tone = live.error ? "text-danger" : "text-primary";
+  const tone = live.error ? "text-danger fw-medium" : "text-primary fw-medium";
   return '<span class="' + tone + '" title="' + escapeHtml(live.text) + '">' + escapeHtml(live.text) + "</span>";
 }
-let feedbackTimer = 0;
-let refreshSeq = 0;
-function scheduleFeedbackClear() {
-  clearTimeout(feedbackTimer);
-  feedbackTimer = setTimeout(() => {
-    feedbackTimer = 0;
-    state.feedback = null;
-    if (!state.busy) render();
-  }, 1200);
-}
+const buttonLabels = new WeakMap();
+const buttonTitles = new WeakMap();
+const buttonDisabled = new WeakMap();
 function applyFeedback() {
-  const live = state.feedback;
-  if (!live || String(live.key).indexOf("act:") !== 0) return;
-  const name = live.key.slice(4);
-  document.querySelectorAll('[data-act="' + name + '"]').forEach((button) => {
-    if (!button.dataset.label) button.dataset.label = button.textContent;
-    button.textContent = live.error ? "失败" : live.text;
-    button.title = live.text;
+  document.querySelectorAll("[data-act]").forEach((button) => {
+    const key = feedbackKey(button.dataset.act, button);
+    if (!buttonLabels.has(button)) {
+      buttonLabels.set(button, button.textContent);
+      buttonTitles.set(button, button.getAttribute("title") || "");
+      buttonDisabled.set(button, button.disabled);
+    }
+    const live = key.indexOf("act:") === 0 ? state.feedbackMap[key] : null;
+    const originalTitle = buttonTitles.get(button);
+    if (live) {
+      button.textContent = live.error ? "失败" : live.text;
+      button.setAttribute("title", live.text);
+    } else {
+      button.textContent = buttonLabels.get(button);
+      if (originalTitle) button.setAttribute("title", originalTitle);
+      else button.removeAttribute("title");
+    }
+    button.disabled = buttonDisabled.get(button) || state.busyKeys.has(key);
   });
 }
 function actionText(name, button) {
   const slot = button && button.dataset.slot;
-  if (name === "restart") return slot ? "重连实例 " + slot : "重连";
+  if (name === "restart") return slot ? "强制重连实例 " + slot : "强制重连";
+  if (name === "graceful-slot") return slot ? "排空重连实例 " + slot : "排空重连";
+  if (name === "trace-slot") return slot ? "探测实例 " + slot + " 出口" : "探测出口";
   if (name === "manual") return (button.dataset.on === "1" ? "启用" : "停用") + (slot ? "实例 " + slot : "");
   if (name === "trace") return "检测出口 IP";
   if (name === "graceful-restart") return "触发全部实例优雅重启";
@@ -295,11 +480,50 @@ function actionText(name, button) {
   if (name === "http2") return button.dataset.on === "1" ? "切换到 HTTP/2" : "切换到 HTTP/3";
   return ((button && button.textContent) || "操作").trim();
 }
-function setBusy(on) {
-  state.busy = on;
-  document.querySelectorAll("[data-act]").forEach((item) => { item.disabled = on; });
+function setKeyBusy(key, on) {
+  if (on) state.busyKeys.add(key);
+  else state.busyKeys.delete(key);
+  state.busy = state.busyKeys.size > 0;
 }
-async function refresh() {
+
+function updateNavBadges() {
+  const data = state.status;
+  if (!data) return;
+  const total = data.accounts.length;
+  const bad = data.attention + data.unknown;
+  const instBadge = document.querySelector("#badge-instances");
+  if (instBadge) {
+    instBadge.textContent = data.ready + "/" + total;
+    instBadge.className = "nav-pill" + (bad > 0 ? " warn" : "");
+    instBadge.classList.remove("d-none");
+  }
+  const ovBadge = document.querySelector("#badge-overview");
+  if (ovBadge) {
+    const taskCount = (data.tasks || []).length;
+    if (taskCount > 0) {
+      ovBadge.textContent = taskCount + " 任务";
+      ovBadge.className = "nav-pill warn";
+      ovBadge.classList.remove("d-none");
+    } else {
+      ovBadge.classList.add("d-none");
+    }
+  }
+  const connBadge = document.querySelector("#badge-connections");
+  if (connBadge) {
+    connBadge.textContent = String(data.active_connections || 0);
+    connBadge.className = "nav-pill";
+    connBadge.classList.remove("d-none");
+  }
+  const logBadge = document.querySelector("#badge-logs");
+  if (logBadge && state.logs && state.logs.lines) {
+    logBadge.textContent = String(state.logs.lines.length);
+    logBadge.className = "nav-pill";
+    logBadge.classList.remove("d-none");
+  }
+}
+
+let refreshSeq = 0;
+async function refresh(forceRender = false) {
   const seq = ++refreshSeq;
   try {
     const status = await api("/api/status");
@@ -315,14 +539,27 @@ async function refresh() {
       if (seq !== refreshSeq) return;
       state.logs = logs;
     }
+    state.lastUpdatedAt = Date.now();
     writeCachedToken(state.token);
     showError("");
+    syncAuthBar(true);
+    updateNavBadges();
     const online = document.querySelector("#online");
-    online.textContent = status.initializing ? "正在准备账号" : "控制面在线";
+    const paused = Number(document.querySelector("#refresh").value) <= 0;
+    const baseText = status.initializing ? "正在准备账号" : "控制面在线";
+    online.textContent = baseText + " · " + clock(state.lastUpdatedAt) + (paused ? " (已暂停)" : "");
     document.querySelector("#lamp").className = "lamp on";
-    render();
+    if (state.composing) {
+      state.pendingRender = true;
+    } else if (forceRender || !hasUserSelection()) {
+      state.pendingRender = false;
+      render();
+    } else {
+      state.pendingRender = true;
+    }
   } catch (err) {
     if (seq !== refreshSeq) return;
+    syncAuthBar(false);
     const online = document.querySelector("#online");
     online.textContent = "控制面离线";
     document.querySelector("#lamp").className = "lamp";
@@ -330,19 +567,60 @@ async function refresh() {
   }
   if (seq === refreshSeq) schedule();
 }
+
 function capture() {
-  state.temps = [...document.querySelectorAll("[data-temp]:checked")].map((item) => item.dataset.temp);
+  const boxes = [...document.querySelectorAll("[data-temp]")];
+  const currentIds = boxes.map((box) => String(box.dataset.temp));
+  const checkedIds = boxes.filter((box) => box.checked).map((box) => String(box.dataset.temp));
+  const merged = new Set([
+    ...state.temps.filter((id) => !currentIds.includes(String(id))),
+    ...checkedIds,
+  ]);
+  state.temps = [...merged];
+  if (state.status && state.status.accounts) {
+    const validTemps = new Set(state.status.accounts.filter((account) => account.temporary).map((account) => String(account.id)));
+    state.temps = state.temps.filter((id) => validTemps.has(String(id)));
+  }
   const active = document.activeElement;
   const tempCount = document.getElementById("temp-count");
   if (tempCount) state.tempCount = tempCount.value;
-  state.focusId = active && ["temp-count", "restart-uptime", "restart-users", "restart-connections"].includes(active.id) ? active.id : "";
+  const rulesDetails = document.querySelector("#rules-details");
+  if (rulesDetails) state.rulesOpen = rulesDetails.open;
+  if (active && FOCUSABLE_INPUTS.includes(active.id)) {
+    state.focusId = active.id;
+    try {
+      state.selectionRange = typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
+    } catch (_) {
+      state.selectionRange = null;
+    }
+  } else {
+    state.focusId = "";
+    state.selectionRange = null;
+  }
 }
+
 function render() {
   const data = state.status;
   if (!data) return;
   capture();
   if (state.view === "overview") document.querySelector("#overview").innerHTML = overview(data);
-  if (state.view === "instances") document.querySelector("#instances").innerHTML = instances(data);
+  if (state.view === "instances") {
+    const panel = document.querySelector("#instances");
+    const prev = panel.querySelector(".instance-scroll");
+    const top = prev ? prev.scrollTop : 0;
+    const left = prev ? prev.scrollLeft : 0;
+    panel.innerHTML = instances(data);
+    const next = panel.querySelector(".instance-scroll");
+    if (next) {
+      next.scrollTop = top;
+      next.scrollLeft = left;
+      if (state.highlightSlot && state.scrollToSlot) {
+        const targetRow = next.querySelector('tr[data-slot-row="' + state.highlightSlot + '"]');
+        if (targetRow) targetRow.scrollIntoView({ block: "nearest" });
+      }
+    }
+    state.scrollToSlot = 0;
+  }
   if (state.view === "connections") {
     const panel = document.querySelector("#connections");
     const previous = panel.querySelector(".connections-scroll");
@@ -364,17 +642,47 @@ function render() {
   }
   if (state.view === "logs") {
     const box = document.querySelector("#logs pre");
-    const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    const prevTop = box ? box.scrollTop : 0;
     document.querySelector("#logs").innerHTML = logs();
     const next = document.querySelector("#logs pre");
-    if (next && (state.stick || atBottom)) next.scrollTop = next.scrollHeight;
+    if (next) {
+      clearTimeout(state.logScrollTimer);
+      state.suppressLogScroll = true;
+      if (state.stick) {
+        next.scrollTop = next.scrollHeight;
+      } else next.scrollTop = prevTop;
+      state.logScrollTimer = setTimeout(() => { state.suppressLogScroll = false; }, 50);
+    }
   }
   if (state.focusId) {
     const node = document.getElementById(state.focusId);
-    if (node) node.focus();
+    if (node) {
+      node.focus();
+      if (state.selectionRange && typeof node.setSelectionRange === "function") {
+        try { node.setSelectionRange(state.selectionRange[0], state.selectionRange[1]); } catch (_) {}
+      }
+    }
   }
   bind();
 }
+
+function isPolicyDirty(data) {
+  if (!state.restartDraft) return false;
+  const d = state.restartDraft;
+  return (
+    String(d.uptime ?? data.restart_max_uptime_seconds) !== String(data.restart_max_uptime_seconds) ||
+    String(d.users ?? data.restart_max_users) !== String(data.restart_max_users) ||
+    String(d.connections ?? data.restart_max_connections) !== String(data.restart_max_connections) ||
+    String(d.drainTimeout ?? data.restart_drain_timeout_seconds) !== String(data.restart_drain_timeout_seconds)
+  );
+}
+
+function secondsHint(valStr, zeroLabel) {
+  const n = Number(valStr);
+  if (!Number.isFinite(n) || n <= 0) return zeroLabel || "0 = 关闭";
+  return "≈ " + duration(n);
+}
+
 function overview(data) {
   const total = data.accounts.length;
   const bad = data.attention + data.unknown;
@@ -390,6 +698,7 @@ function overview(data) {
   const users = draft.users ?? String(data.restart_max_users);
   const connections = draft.connections ?? String(data.restart_max_connections);
   const drainTimeout = draft.drainTimeout ?? String(data.restart_drain_timeout_seconds);
+  const dirty = isPolicyDirty(data);
   const triggers = [
     data.restart_max_uptime_seconds > 0 ? "运行 " + duration(data.restart_max_uptime_seconds) : null,
     data.restart_max_users > 0 ? "用户 " + data.restart_max_users : null,
@@ -408,37 +717,101 @@ function overview(data) {
     </div>
     <div class="card mt-3"><div class="card-body">
       <div class="d-flex flex-wrap justify-content-between align-items-baseline gap-2">
-        <h2 class="h5 mb-0">调度</h2>
+        <h2 class="h5 mb-0">调度与全局维护</h2>
         <div class="text-body-secondary small">${data.enabled ? "入口开启" : "入口已暂停"} · ${data.http2 ? "HTTP/2" : "HTTP/3"} · 按负载策略自动选路</div>
       </div>
       <div class="d-flex flex-wrap gap-3 mt-3">
-        <div class="cluster"><div class="cluster-label">入口</div><div class="d-flex flex-wrap align-items-center gap-2">
+        <div class="cluster"><div class="cluster-label">入口控制</div><div class="d-flex flex-wrap align-items-center gap-2">
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "改用 HTTP/3" : "改用 HTTP/2"}</button>
         </div></div>
         <div class="cluster"><div class="cluster-label">实例维护</div><div class="d-flex flex-wrap align-items-center gap-2">
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-restart" title="全部实例等待活跃连接结束或排空到上限后按并发限制重启">立即触发重启（全部实例）</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">检测出口 IP</button>
-          <span class="text-body-secondary small">全部实例会停止接入新连接，排空期间新连接可能失败；到排空上限会断开剩余连接。</span>
+          <span class="text-body-secondary small">排空期间停止接入新连接，到排空上限后断开剩余连接。</span>
         </div></div>
       </div>
     </div></div>
     <div class="card mt-3"><div class="card-body">
-      <h2 class="h5">自动重启 · 条件可组合</h2>
-      <p class="text-body-secondary small">任意一个条件达到即刻摘流，已建立的连接自然结束；排空到上限后会断开剩余连接。0 表示关闭该条件或排空超时，三个阈值全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
-      <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
-        <label class="d-flex align-items-center gap-2 mb-0">运行超过 <input id="restart-uptime" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(uptime)}" style="width:7rem"> 秒</label>
-        <label class="d-flex align-items-center gap-2 mb-0">累计用户 <input id="restart-users" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(users)}" style="width:7rem"></label>
-        <label class="d-flex align-items-center gap-2 mb-0">累计连接 <input id="restart-connections" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(connections)}" style="width:8rem"></label>
-        <label class="d-flex align-items-center gap-2 mb-0">排空上限 <input id="restart-drain-timeout" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(drainTimeout)}" style="width:7rem"> 秒</label>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart-policy">应用条件</button>
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2">
+          <h2 class="h5 mb-0">自动重启 · 条件可组合</h2>
+          ${dirty ? '<span class="tag-pill dirty">有未保存修改</span>' : ""}
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          ${dirty ? '<button type="button" class="btn btn-outline-secondary btn-sm" data-act="reset-policy">重置修改</button>' : ""}
+          <button type="button" class="btn ${dirty ? "btn-primary" : "btn-outline-secondary"} btn-sm" data-act="restart-policy">应用条件</button>
+        </div>
+      </div>
+      <div class="policy-grid mt-3">
+        <div class="policy-box">
+          <div class="d-flex justify-content-between align-items-center">
+            <label class="small text-body-secondary mb-0" for="restart-uptime">运行超过（秒）</label>
+            <span class="hint">${escapeHtml(secondsHint(uptime, "0 = 关闭"))}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <input id="restart-uptime" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(uptime)}">
+            <div class="btn-group btn-group-sm">
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:0">关</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:3600">1h</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:21600">6h</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:86400">24h</button>
+            </div>
+          </div>
+        </div>
+        <div class="policy-box">
+          <div class="d-flex justify-content-between align-items-center">
+            <label class="small text-body-secondary mb-0" for="restart-users">累计用户数</label>
+            <span class="hint">${Number(users) > 0 ? "满 " + escapeHtml(users) + " 用户摘流" : "0 = 关闭"}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <input id="restart-users" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(users)}">
+            <div class="btn-group btn-group-sm">
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:0">关</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:100">100</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:1000">1k</button>
+            </div>
+          </div>
+        </div>
+        <div class="policy-box">
+          <div class="d-flex justify-content-between align-items-center">
+            <label class="small text-body-secondary mb-0" for="restart-connections">累计连接数</label>
+            <span class="hint">${Number(connections) > 0 ? "满 " + escapeHtml(connections) + " 连接摘流" : "0 = 关闭"}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <input id="restart-connections" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(connections)}">
+            <div class="btn-group btn-group-sm">
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:0">关</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:1000">1k</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:10000">10k</button>
+            </div>
+          </div>
+        </div>
+        <div class="policy-box">
+          <div class="d-flex justify-content-between align-items-center">
+            <label class="small text-body-secondary mb-0" for="restart-drain-timeout">排空上限（秒）</label>
+            <span class="hint">${escapeHtml(secondsHint(drainTimeout, "0 = 不设超时"))}</span>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <input id="restart-drain-timeout" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(drainTimeout)}">
+            <div class="btn-group btn-group-sm">
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:0">无</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:60">1m</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:300">5m</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="metrics">
-        <div class="metric"><div class="k">触发条件（任意满足）</div><div class="v">${triggers.length ? triggers.join(" / ") : "全部关闭"}</div><div class="s">三个阈值独立，所有统计按实例分别计算</div></div>
+        <div class="metric"><div class="k">已生效触发条件（任意满足）</div><div class="v">${triggers.length ? triggers.join(" / ") : "全部关闭"}</div><div class="s">三个阈值独立，按实例分别累计</div></div>
         <div class="metric"><div class="k">排空队列 · ${drains.length}</div><div class="v">${idList(drains)}</div><div class="s">每 ${data.restart_drain_check_seconds} 秒检测；${data.restart_drain_timeout_seconds > 0 ? "超过 " + duration(data.restart_drain_timeout_seconds) + " 断开剩余连接" : "不设超时"}</div></div>
         <div class="metric"><div class="k">重启队列 · ${restarts.length}</div><div class="v">${idList(restarts)}</div><div class="s">同时最多重连 ${data.restart_concurrency} 个实例；无活跃连接才进入队列</div></div>
       </div>
-      <p class="text-body-secondary small mt-3 mb-0">排空后新请求只选择其他可用实例：username-round / username-least 会保存新绑定、不自动迁回；username-hash / ip-hash 无状态，原实例恢复后可能重新选中。所有实例都不可用时才拒绝新连接。实例页“强制重连”可中断已有连接。</p>
+      <details id="rules-details" class="rule-details mt-3" ${state.rulesOpen ? "open" : ""}>
+        <summary>查看排空与黏性改派规则说明</summary>
+        <p class="mt-2 mb-1">任意一个条件达到即刻摘流，已建立的连接自然结束；排空到上限后会断开剩余连接。0 表示关闭该条件或排空超时，三个阈值全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
+        <p class="mb-0">排空后新请求只选择其他可用实例：username-round / username-least 会保存新绑定、不自动迁回；username-hash / ip-hash 无状态，原实例恢复后可能重新选中。所有实例都不可用时才拒绝新连接。点击队列中的实例编号可直接跳转到实例列表。</p>
+      </details>
     </div></div>
     <div class="card mt-3"><div class="card-body"><h2 class="h5">进行中的任务</h2>${tasks(data.tasks)}</div></div>`;
 }
@@ -446,7 +819,8 @@ function stat(label, value, note) {
   return `<div class="col-6 col-lg-3"><div class="card stat h-100"><div class="card-body"><div class="text-body-secondary small">${label}</div><div class="fs-3 num">${value}</div><div class="text-body-secondary small">${note || ""}</div></div></div></div>`;
 }
 function idList(rows) {
-  return rows && rows.length ? rows.join("、") : "无";
+  if (!rows || !rows.length) return "无";
+  return rows.map((id) => `<button type="button" class="slot-jump" data-jump-slot="${id}" title="跳转到实例 #${id}">#${id}</button>`).join("");
 }
 function interfaceV4(account) {
   return account.ip && account.ip !== "0.0.0.0" ? account.ip : "未分配";
@@ -454,10 +828,13 @@ function interfaceV4(account) {
 function interfaceV6(account) {
   return account.assigned_v6 || "未分配";
 }
-function egressCell(ip, iface) {
+function egressCell(accountId, family, ip, iface) {
   const shown = ip || "未测到";
-  const title = "出口 " + shown + " · 接口 " + iface;
-  return '<td class="font-monospace clip clip-wide" title="' + escapeHtml(title) + '">' + escapeHtml(shown) + "</td>";
+  const key = "egress:" + accountId + ":" + family;
+  const copied = state.copiedKey === key;
+  const title = (ip ? "点击复制 " + ip + " · " : "") + "出口 " + shown + " · 接口 " + iface;
+  const copyAttr = ip ? `data-copy="${escapeHtml(ip)}" data-copy-key="${escapeHtml(key)}"` : "";
+  return `<td class="font-monospace clip clip-wide ${ip ? "copyable" : "text-body-secondary"}" ${copyAttr} title="${escapeHtml(title)}">${copied ? '<span class="text-success fw-medium">已复制 ' + escapeHtml(shown) + "</span>" : escapeHtml(shown)}</td>`;
 }
 function placeText(account) {
   const place = [account.country, account.colo].filter(Boolean).join(" · ");
@@ -465,35 +842,103 @@ function placeText(account) {
 }
 function tasks(rows) {
   if (!rows || !rows.length) return `<p class="text-body-secondary mb-0">没有进行中的任务。完成后会从这里消失</p>`;
-  return `<div class="table-responsive"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>实例</th><th>阶段</th><th class="text-end">剩余连接</th><th class="text-end">已耗时</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace">${row.id}</td><td>${escapeHtml(row.stage)}</td><td class="text-end font-monospace">${row.active}</td><td class="text-end font-monospace">${duration(row.elapsed_seconds)}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-responsive"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>实例</th><th>阶段</th><th class="text-end">剩余连接</th><th class="text-end">已耗时</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace"><button type="button" class="slot-jump" data-jump-slot="${row.id}">#${row.id}</button></td><td>${escapeHtml(row.stage)}</td><td class="text-end font-monospace">${row.active}</td><td class="text-end font-monospace">${duration(row.elapsed_seconds)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function matchCategory(account, data, filterId) {
+  const busy = (data.tasks || []).some((task) => task.id === account.id) || account.draining || account.restart_pending;
+  if (filterId === "attention") return account.health === "attention" || account.health === "down" || account.health === "unknown" || account.health === "connecting" || account.health === "retrying";
+  if (filterId === "busy") return busy;
+  if (filterId === "healthy") return account.health === "healthy";
+  if (filterId === "disabled") return !account.manual;
+  if (filterId === "temporary") return account.temporary;
+  return true;
+}
+function matchFilter(account, data) {
+  if (!matchCategory(account, data, state.filter)) return false;
+  const q = (state.instQuery || "").trim().toLowerCase();
+  if (!q) return true;
+  const hay = [
+    "#" + account.id,
+    String(account.id),
+    account.ipv4 || "",
+    account.ipv6 || "",
+    account.country || "",
+    account.colo || "",
+    account.health || "",
+    healthText(account.health),
+    account.last_action || ""
+  ].join(" ").toLowerCase();
+  return hay.includes(q);
+}
+function queueBadges(account, data) {
+  const tags = [];
+  if ((data.restart_queue || []).includes(account.id)) {
+    tags.push('<span class="tag-pill queue">排队重连</span>');
+  } else if (account.draining || (data.drain_queue || []).includes(account.id)) {
+    tags.push('<span class="tag-pill drain">排空中</span>');
+  } else if (account.restart_pending) {
+    tags.push('<span class="tag-pill queue">待重启</span>');
+  }
+  if (account.temporary) {
+    tags.push('<span class="tag-pill">临时</span>');
+  }
+  return tags.join(" ");
 }
 function instances(data) {
-  const filters = [["all", "全部"], ["attention", "需要关注"], ["busy", "操作中"], ["healthy", "健康"], ["disabled", "已停用"], ["temporary", "临时实例"]];
+  const filters = [
+    ["all", "全部"],
+    ["attention", "需要关注"],
+    ["busy", "操作中"],
+    ["healthy", "健康"],
+    ["disabled", "已停用"],
+    ["temporary", "临时实例"]
+  ];
+  const counts = {};
+  for (const [id] of filters) {
+    counts[id] = data.accounts.filter((acc) => matchCategory(acc, data, id)).length;
+  }
   const rows = data.accounts.filter((account) => matchFilter(account, data));
+  const visibleTemps = rows.filter((acc) => acc.temporary);
+  const pickedVisibleCount = visibleTemps.filter((acc) => state.temps.includes(String(acc.id))).length;
+  const allVisibleTempsChecked = visibleTemps.length > 0 && pickedVisibleCount === visibleTemps.length;
+  const totalPickedCount = state.temps.filter((id) => data.accounts.some((acc) => acc.temporary && String(acc.id) === id)).length;
+
   return `
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-      <div class="btn-group btn-group-sm" role="group">${filters.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.filter === id ? " is-on" : ""}" data-filter="${id}">${label}</button>`).join("")}</div>
       <div class="d-flex flex-wrap align-items-center gap-2">
-        <label class="d-flex align-items-center gap-2 mb-0">数量
-          <input id="temp-count" class="form-control form-control-sm" type="number" min="1" max="100" step="1" value="${state.tempCount || "1"}" style="width: 4.5rem" aria-label="临时实例数量">
+        <div class="btn-group btn-group-sm" role="group">${filters.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.filter === id ? " is-on" : ""}" data-filter="${id}">${label} (${counts[id]})</button>`).join("")}</div>
+        <input id="inst-query" class="form-control form-control-sm" type="search" placeholder="搜实例号 / 出口 IP / 地区…" value="${escapeHtml(state.instQuery)}" style="width: 13.5rem" aria-label="搜索实例">
+      </div>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <label class="d-flex align-items-center gap-2 mb-0 small text-body-secondary">数量
+          <input id="temp-count" class="form-control form-control-sm" type="number" min="1" max="100" step="1" value="${escapeHtml(state.tempCount || "1")}" style="width: 4.5rem" aria-label="临时实例数量">
         </label>
         <div class="btn-group btn-group-sm">
           <button type="button" class="btn btn-primary" data-act="add-temp">添加临时实例</button>
-          <button type="button" class="btn btn-outline-danger" data-act="remove-temp">批量移除</button>
+          <button type="button" class="btn btn-outline-danger" data-act="remove-temp" ${totalPickedCount === 0 ? "disabled" : ""} title="${totalPickedCount ? "移除已勾选的临时实例" : "请先在表格左侧勾选要移除的临时实例"}">批量移除${totalPickedCount ? " (" + totalPickedCount + ")" : ""}</button>
           <button type="button" class="btn btn-outline-secondary" data-act="refresh">刷新数据</button>
         </div>
       </div>
     </div>
-    <div class="sheet table-responsive"><table class="table table-sm table-hover align-middle mb-0 instance-table data-table">
-      <thead><tr><th></th><th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口</th><th>IPv6 出口</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end" title="当前黏性用户名映射数；实例成功重连后清零">黏性用户数</th><th class="text-end">重启统计（用户 / 连接）</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight"></th></tr></thead>
-      <tbody>${rows.map((account) => `<tr class="${["down", "attention", "retrying"].includes(account.health) ? "row-alert" : ""}">
+    <div class="sheet table-responsive instance-scroll"><table class="table table-sm table-hover align-middle mb-0 instance-table data-table">
+      <thead><tr>
+        <th>${visibleTemps.length ? `<input class="form-check-input" type="checkbox" id="select-all-temps" ${allVisibleTempsChecked ? "checked" : ""} title="全选/取消当前列表中的临时实例" aria-label="全选临时实例">` : ""}</th>
+        <th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口 (点击复制)</th><th>IPv6 出口 (点击复制)</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end" title="当前黏性用户名映射数；实例成功重连后清零">黏性用户数</th><th class="text-end">重启统计（用户 / 连接）</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight">操作</th>
+      </tr></thead>
+      <tbody>${rows.map((account) => {
+        const slotBusy = state.busyKeys.has("slot:" + account.id);
+        const rowCls = [
+          ["down", "attention", "retrying"].includes(account.health) ? "row-alert" : "",
+          state.highlightSlot === account.id ? "row-focus" : ""
+        ].filter(Boolean).join(" ");
+        return `<tr class="${rowCls}" data-slot-row="${account.id}">
         <td>${account.temporary ? `<input class="form-check-input" type="checkbox" data-temp="${account.id}" ${state.temps.includes(String(account.id)) ? "checked" : ""} aria-label="选择 ${account.id}">` : ""}</td>
-        <td class="font-monospace">${account.id}</td>
+        <td class="font-monospace">#${account.id}</td>
         <td class="${account.tunnel ? "" : "text-body-secondary"}">${account.health === "connecting" ? "启动中" : (account.health === "retrying" ? "重试中" : (account.tunnel ? "运行" : "停止"))}</td>
         <td class="${account.manual ? "" : "text-body-secondary"}">${account.manual ? "启用" : "停用"}</td>
-        <td><span class="status-cell"><span class="lamp ${account.health}"></span><span>${healthText(account.health)}</span>${account.warp ? '<span class="probe">' + escapeHtml(account.warp) + '</span>' : ""}</span></td>
-                ${egressCell(account.ipv4, interfaceV4(account))}
-        ${egressCell(account.ipv6, interfaceV6(account))}
+        <td><span class="status-cell"><span class="lamp ${account.health}"></span><span>${healthText(account.health)}</span>${account.warp ? '<span class="probe">' + escapeHtml(account.warp) + '</span>' : ""}${queueBadges(account, data)}</span></td>
+        ${egressCell(account.id, "v4", account.ipv4, interfaceV4(account))}
+        ${egressCell(account.id, "v6", account.ipv6, interfaceV6(account))}
         <td>${escapeHtml(placeText(account))}</td>
         <td class="${account.pooled ? "" : "text-body-secondary"}">${account.pooled ? "已入池" : "未入池"}</td>
         <td class="text-end font-monospace">${account.active}</td>
@@ -501,42 +946,217 @@ function instances(data) {
         <td class="text-end font-monospace">${account.restart_users} / ${account.restart_connections}</td>
         <td class="text-end font-monospace">${duration(account.uptime_seconds)}</td>
         <td class="text-end">${rowStatus(account)}</td>
-        <td class="text-nowrap row-actions col-tight"><button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}" title="手动强制重连，不等待排空">强制重连</button> <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}">${account.manual ? "停用" : "启用"}</button></td>
-      </tr>`).join("") || `<tr><td colspan="15" class="text-body-secondary">没有符合筛选的实例</td></tr>`}</tbody>
+        <td class="text-nowrap row-actions col-tight">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="停止接入新连接，等待活跃连接结束后按队列重连">优雅重连</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="手动强制重连，不等待排空，会中断已有连接">强制重连</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="单独探测该实例的出口 IP">测出口</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}" ${slotBusy ? "disabled" : ""}>${account.manual ? "停用" : "启用"}</button>
+        </td>
+      </tr>`;
+      }).join("") || `<tr><td colspan="15" class="text-body-secondary">没有符合筛选的实例</td></tr>`}</tbody>
     </table></div>`;
 }
 function connections() {
-  const rows = state.sessions;
-  if (!rows.length) return `<div class="card"><div class="card-body"><h2 class="h5">最近连接</h2><p class="text-body-secondary mb-0">暂无连接记录。这里最多保留最近 300 条连接，包括已关闭的连接。</p></div></div>`;
+  const allRows = state.sessions || [];
+  const activeCount = allRows.filter((r) => r.active).length;
+  const closedCount = allRows.length - activeCount;
+  const q = (state.connQuery || "").trim().toLowerCase();
+  let rows = allRows.filter((row) => {
+    if (state.connFilter === "active" && !row.active) return false;
+    if (state.connFilter === "closed" && row.active) return false;
+    if (!q) return true;
+    const hay = [
+      String(row.id),
+      row.protocol || "",
+      row.client || "",
+      row.user || "",
+      row.target || "",
+      row.egress || "",
+      row.family || "",
+      "#" + row.account,
+      String(row.account)
+    ].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+  if (state.connSort === "traffic") {
+    rows = [...rows].sort((a, b) => ((b.up || 0) + (b.down || 0)) - ((a.up || 0) + (a.down || 0)));
+  } else if (state.connSort === "duration") {
+    rows = [...rows].sort((a, b) => (b.age_ms || 0) - (a.age_ms || 0));
+  } else if (state.connSort === "idle") {
+    rows = [...rows].sort((a, b) => (b.idle_ms || 0) - (a.idle_ms || 0));
+  }
+  const sumUp = rows.reduce((acc, r) => acc + (Number(r.up) || 0), 0);
+  const sumDown = rows.reduce((acc, r) => acc + (Number(r.down) || 0), 0);
+
   return `<div class="card"><div class="card-body">
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2"><h2 class="h5 mb-0">最近连接</h2><span class="text-body-secondary small">${rows.length} 条 · 最新在前 · 最多 300 条</span></div>
-    <div class="sheet table-responsive connections-scroll mt-3"><table class="table table-sm table-hover align-middle mb-0 data-table"><thead><tr><th>请求</th><th>活跃状态</th><th>协议</th><th>客户端</th><th>用户</th><th>目标</th><th>出口</th><th>地址族</th><th>后端</th><th class="text-end">已持续</th><th class="text-end">空闲</th><th class="text-end">上行</th><th class="text-end">下行</th></tr></thead><tbody>${rows.map((row) => `<tr data-session="${row.id}"><td class="font-monospace">${row.id}</td><td><span class="status-cell"><span class="lamp ${row.active ? "on" : ""}"></span>${row.active ? "活跃" : "已关闭"}</span></td><td>${escapeHtml(row.protocol)}</td><td class="font-monospace">${escapeHtml(row.client)}</td><td>${escapeHtml(row.user)}</td><td class="font-monospace clip clip-wide" title="${escapeHtml(row.target)}">${escapeHtml(row.target)}</td><td class="font-monospace">${escapeHtml(row.egress || "—")}</td><td>${escapeHtml(row.family || "—")}</td><td class="font-monospace">${row.account}</td><td class="text-end font-monospace">${duration(Math.floor(row.age_ms / 1000))}</td><td class="text-end font-monospace">${duration(Math.floor(row.idle_ms / 1000))}</td><td class="text-end font-monospace">${bytes(row.up)}</td><td class="text-end font-monospace">${bytes(row.down)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <div class="d-flex align-items-center gap-2">
+        <h2 class="h5 mb-0">最近连接</h2>
+        <span class="text-body-secondary small">匹配 ${rows.length}/${allRows.length} 条 · 上行 ${bytes(sumUp)} · 下行 ${bytes(sumDown)}</span>
+      </div>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <div class="btn-group btn-group-sm" role="group">
+          <button type="button" class="btn btn-outline-secondary${state.connFilter === "all" ? " is-on" : ""}" data-conn-filter="all">全部 (${allRows.length})</button>
+          <button type="button" class="btn btn-outline-secondary${state.connFilter === "active" ? " is-on" : ""}" data-conn-filter="active">活跃 (${activeCount})</button>
+          <button type="button" class="btn btn-outline-secondary${state.connFilter === "closed" ? " is-on" : ""}" data-conn-filter="closed">已关闭 (${closedCount})</button>
+        </div>
+        <input id="conn-query" class="form-control form-control-sm" type="search" placeholder="搜用户 / 目标域名 / 客户端 / 实例…" value="${escapeHtml(state.connQuery)}" style="width: 14.5rem" aria-label="搜索连接">
+        <select id="conn-sort" class="form-select form-select-sm" style="width: 8.5rem" aria-label="排序方式">
+          <option value="newest" ${state.connSort === "newest" ? "selected" : ""}>最新建立</option>
+          <option value="traffic" ${state.connSort === "traffic" ? "selected" : ""}>总流量最高</option>
+          <option value="duration" ${state.connSort === "duration" ? "selected" : ""}>持续时间最长</option>
+          <option value="idle" ${state.connSort === "idle" ? "selected" : ""}>空闲时间最长</option>
+        </select>
+      </div>
+    </div>
+    ${!allRows.length ? `<p class="text-body-secondary mt-3 mb-0">暂无连接记录。这里最多保留最近 300 条连接，包括已关闭的连接。</p>` : `
+    <div class="sheet table-responsive connections-scroll mt-3"><table class="table table-sm table-hover align-middle mb-0 data-table"><thead><tr><th>请求</th><th>活跃状态</th><th>协议</th><th>客户端</th><th>用户</th><th>目标 (点击复制)</th><th>出口</th><th>地址族</th><th>后端</th><th class="text-end">已持续</th><th class="text-end">空闲</th><th class="text-end">上行</th><th class="text-end">下行</th></tr></thead><tbody>${rows.map((row) => {
+      const targetKey = "conn-target:" + row.id;
+      const targetCopied = state.copiedKey === targetKey;
+      return `<tr data-session="${row.id}">
+        <td class="font-monospace">${row.id}</td>
+        <td><span class="status-cell"><span class="lamp ${row.active ? "on" : ""}"></span>${row.active ? "活跃" : "已关闭"}</span></td>
+        <td>${escapeHtml(row.protocol)}</td>
+        <td class="font-monospace copyable" data-copy="${escapeHtml(row.client)}" data-copy-key="conn-client:${row.id}" title="点击复制客户端地址">${ state.copiedKey === "conn-client:" + row.id ? '<span class="text-success">已复制</span>' : escapeHtml(row.client) }</td>
+        <td>${escapeHtml(row.user)}</td>
+        <td class="font-monospace clip clip-wide copyable" data-copy="${escapeHtml(row.target)}" data-copy-key="${targetKey}" title="点击复制 ${escapeHtml(row.target)}">${targetCopied ? '<span class="text-success fw-medium">已复制 ' + escapeHtml(row.target) + "</span>" : escapeHtml(row.target)}</td>
+        <td class="font-monospace">${escapeHtml(row.egress || "—")}</td>
+        <td>${escapeHtml(row.family || "—")}</td>
+        <td class="font-monospace"><button type="button" class="slot-jump" data-jump-slot="${row.account}" title="跳转到实例 #${row.account}">#${row.account}</button></td>
+        <td class="text-end font-monospace">${duration(Math.floor(row.age_ms / 1000))}</td>
+        <td class="text-end font-monospace">${duration(Math.floor(row.idle_ms / 1000))}</td>
+        <td class="text-end font-monospace">${bytes(row.up)}</td>
+        <td class="text-end font-monospace">${bytes(row.down)}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="13" class="text-body-secondary">没有匹配筛选条件的连接</td></tr>`}</tbody></table></div>`}
   </div></div>`;
 }
-function paintLog(text) {
-  return escapeHtml(text)
-    .replace(/^\[([^\]]+)\]/, '<span class="tag">[$1]</span>')
-    .replace(/↗/g, '<span class="ok">↗</span>')
-    .replace(/×/g, '<span class="bad">×</span>')
-    .replace(/ \| /g, ' <span class="sep">|</span> ');
+function isBadLogLine(line) {
+  const t = (line && line.text) || "";
+  return t.includes("×") || t.includes("失败") || t.includes("错误") || t.includes("拒绝") || t.includes("中断") || /error|fail/i.test(t);
+}
+function paintLog(text, query) {
+  const expression = query ? new RegExp("(" + query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi") : null;
+  const parts = expression ? String(text).split(expression) : [String(text)];
+  return parts.map((part, index) => {
+    const html = escapeHtml(part)
+      .replace(/^\[([^\]]+)\]/, '<span class="tag">[$1]</span>')
+      .replace(/↗/g, '<span class="ok">↗</span>')
+      .replace(/×/g, '<span class="bad">×</span>')
+      .replace(/ \| /g, ' <span class="sep">|</span> ');
+    return expression && index % 2 === 1 ? '<mark>' + html + '</mark>' : html;
+  }).join("");
 }
 function logs() {
   const page = state.logs || { lines: [], ready: 0, attention: 0, maintenance: 0, unknown: 0 };
+  const allLines = page.lines || [];
   const kinds = [["all", "全部"], ["access", "访问"], ["plan", "计划"], ["account", "账号"]];
-  const lines = page.lines.filter((line) => state.logKind === "all" || line.kind === state.logKind);
+  const kindCounts = {
+    all: allLines.length,
+    access: allLines.filter((l) => l.kind === "access").length,
+    plan: allLines.filter((l) => l.kind === "plan").length,
+    account: allLines.filter((l) => l.kind === "account").length
+  };
+  const badCount = allLines.filter(isBadLogLine).length;
+  const q = (state.logQuery || "").trim().toLowerCase();
+  const lines = allLines.filter((line) => {
+    if (state.logKind !== "all" && line.kind !== state.logKind) return false;
+    if (state.logOnlyBad && !isBadLogLine(line)) return false;
+    if (q && !String(line.text || "").toLowerCase().includes(q)) return false;
+    return true;
+  });
   return `<div class="card"><div class="card-body">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-      <h2 class="h5 mb-0">控制台日志</h2>
-      <div class="d-flex align-items-center gap-2"><span class="text-body-secondary small">${lines.length}/${page.lines.length}</span><button type="button" class="btn btn-outline-secondary btn-sm" data-act="bottom">回到底部</button><button type="button" class="btn btn-outline-secondary btn-sm" data-act="copy">复制日志</button></div>
+      <div class="d-flex align-items-center gap-2">
+        <h2 class="h5 mb-0">控制台日志</h2>
+        <span class="text-body-secondary small">${lines.length}/${allLines.length} 条 · 就绪 ${page.ready} · 异常 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</span>
+      </div>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <button type="button" class="btn btn-outline-secondary btn-sm ${state.stick ? "is-on" : ""}" data-act="toggle-stick" title="切换日志自动跟随底部">${state.stick ? "自动滚底: 开" : "自动滚底: 暂停"}</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="bottom">回到底部</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="copy">复制日志</button>
+      </div>
     </div>
-    <p class="text-body-secondary mt-2 mb-2">就绪 ${page.ready} · 异常 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</p>
-    <div class="btn-group btn-group-sm mb-2">${kinds.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.logKind === id ? " is-on" : ""}" data-log="${id}">${label}</button>`).join("")}</div>
-    <pre class="log">${lines.map((line) => '<span class="t">' + escapeHtml(clock(line.at)) + '</span>  ' + paintLog(line.text)).join("\n") || "还没有日志"}</pre>
+    <div class="d-flex flex-wrap align-items-center gap-2 mt-2 mb-2">
+      <div class="btn-group btn-group-sm">${kinds.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.logKind === id ? " is-on" : ""}" data-log="${id}">${label} (${kindCounts[id] || 0})</button>`).join("")}</div>
+      <button type="button" class="btn btn-outline-secondary btn-sm ${state.logOnlyBad ? "is-on" : ""}" id="log-only-bad">仅看异常 (${badCount})</button>
+      <input id="log-query" class="form-control form-control-sm" type="search" placeholder="搜索日志关键字 / 实例 / 用户…" value="${escapeHtml(state.logQuery)}" style="width: 15rem" aria-label="搜索日志">
+    </div>
+    <pre class="log">${lines.map((line) => '<span class="t">' + escapeHtml(clock(line.at)) + '</span>  ' + paintLog(line.text, state.logQuery.trim())).join("\n") || "没有符合筛选条件的日志"}</pre>
   </div></div>`;
 }
+
 function bind() {
-  document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; render(); }));
-  document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => { state.logKind = button.dataset.log; render(); }));
+  document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => {
+    state.filter = button.dataset.filter;
+    state.highlightSlot = 0;
+    render();
+  }));
+  document.querySelectorAll("[data-conn-filter]").forEach((button) => button.addEventListener("click", () => {
+    state.connFilter = button.dataset.connFilter;
+    render();
+  }));
+  document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => {
+    state.logKind = button.dataset.log;
+    render();
+  }));
+  const badBtn = document.getElementById("log-only-bad");
+  if (badBtn) badBtn.addEventListener("click", () => {
+    state.logOnlyBad = !state.logOnlyBad;
+    render();
+  });
+  const instQuery = document.getElementById("inst-query");
+  if (instQuery) instQuery.addEventListener("input", () => {
+    state.instQuery = instQuery.value;
+    state.highlightSlot = 0;
+    requestRender();
+  });
+  const connQuery = document.getElementById("conn-query");
+  if (connQuery) connQuery.addEventListener("input", () => {
+    state.connQuery = connQuery.value;
+    requestRender();
+  });
+  const connSort = document.getElementById("conn-sort");
+  if (connSort) connSort.addEventListener("change", () => {
+    state.connSort = connSort.value;
+    render();
+  });
+  const logQuery = document.getElementById("log-query");
+  if (logQuery) logQuery.addEventListener("input", () => {
+    state.logQuery = logQuery.value;
+    requestRender();
+  });
+
+  const selectAllTemps = document.getElementById("select-all-temps");
+  if (selectAllTemps) {
+    const tempBoxes = [...document.querySelectorAll("[data-temp]")];
+    const checkedCount = tempBoxes.filter((b) => b.checked).length;
+    selectAllTemps.indeterminate = checkedCount > 0 && checkedCount < tempBoxes.length;
+    selectAllTemps.addEventListener("change", () => {
+      const checked = selectAllTemps.checked;
+      tempBoxes.forEach((box) => { box.checked = checked; });
+      const visibleIds = tempBoxes.map((b) => String(b.dataset.temp));
+      if (checked) {
+        const merged = new Set([...state.temps, ...visibleIds]);
+        state.temps = [...merged];
+      } else {
+        state.temps = state.temps.filter((id) => !visibleIds.includes(id));
+      }
+      render();
+    });
+  }
+  document.querySelectorAll("[data-temp]").forEach((box) => {
+    box.addEventListener("change", () => {
+      const id = String(box.dataset.temp);
+      if (box.checked) {
+        if (!state.temps.includes(id)) state.temps = [...state.temps, id];
+      } else {
+        state.temps = state.temps.filter((item) => item !== id);
+      }
+      render();
+    });
+  });
+
   for (const id of ["restart-uptime", "restart-users", "restart-connections", "restart-drain-timeout"]) {
     const field = document.getElementById(id);
     if (field) field.addEventListener("input", () => {
@@ -546,40 +1166,125 @@ function bind() {
         connections: document.getElementById("restart-connections").value,
         drainTimeout: document.getElementById("restart-drain-timeout").value,
       };
+      requestRender();
     });
   }
+  document.querySelectorAll("[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const [fieldId, val] = btn.dataset.preset.split(":");
+      const el = document.getElementById(fieldId);
+      if (el) {
+        el.value = val;
+        state.restartDraft = {
+          uptime: document.getElementById("restart-uptime").value,
+          users: document.getElementById("restart-users").value,
+          connections: document.getElementById("restart-connections").value,
+          drainTimeout: document.getElementById("restart-drain-timeout").value,
+        };
+        render();
+      }
+    });
+  });
+
+  const rulesDetails = document.getElementById("rules-details");
+  if (rulesDetails) {
+    rulesDetails.addEventListener("toggle", () => {
+      state.rulesOpen = rulesDetails.open;
+    });
+  }
+
+  document.querySelectorAll("[data-jump-slot]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const slot = Number(btn.dataset.jumpSlot) || 0;
+      state.filter = "all";
+      state.instQuery = "";
+      state.highlightSlot = slot;
+      state.scrollToSlot = slot;
+      switchView("instances");
+    });
+  });
+
+  document.querySelectorAll("[data-copy]").forEach((node) => {
+    node.addEventListener("click", async () => {
+      const text = node.dataset.copy;
+      const key = node.dataset.copyKey || "";
+      if (!text) return;
+      await copyText(text);
+      state.copiedKey = key;
+      render();
+      setTimeout(() => {
+        if (state.copiedKey === key) {
+          state.copiedKey = "";
+          scheduleRender();
+        }
+      }, 1200);
+    });
+  });
+
   document.querySelectorAll("[data-act]").forEach((button) => button.addEventListener("click", () => act(button.dataset.act, button)));
-  if (state.busy) setBusy(true);
   applyFeedback();
   const box = document.querySelector("#logs pre");
-  if (box) box.addEventListener("scroll", () => { state.stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40; });
+  if (box) box.addEventListener("scroll", () => {
+    if (state.suppressLogScroll) return;
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    if (state.stick !== nearBottom) {
+      state.stick = nearBottom;
+      const stickBtn = document.querySelector('[data-act="toggle-stick"]');
+      if (stickBtn) {
+        stickBtn.classList.toggle("is-on", state.stick);
+        stickBtn.textContent = state.stick ? "自动滚底: 开" : "自动滚底: 暂停";
+      }
+    }
+  });
 }
+
 async function act(name, button) {
-  if (name === "refresh") return refresh();
+  if (name === "refresh") return refresh(true);
+  if (name === "reset-policy") {
+    state.restartDraft = null;
+    render();
+    return;
+  }
+  if (name === "toggle-stick") {
+    state.stick = !state.stick;
+    if (state.stick) {
+      const box = document.querySelector("#logs pre");
+      if (box) box.scrollTop = box.scrollHeight;
+    }
+    render();
+    return;
+  }
   if (name === "bottom") {
     const box = document.querySelector("#logs pre");
     if (box) box.scrollTop = box.scrollHeight;
     state.stick = true;
+    render();
     return;
   }
   if (name === "copy") {
     const box = document.querySelector("#logs pre");
     if (box) await copyText(box.textContent);
-    state.feedback = { key: "act:copy", text: "已复制", error: false };
+    setFeedback("act:copy", "已复制", false);
     applyFeedback();
-    scheduleFeedbackClear();
     return;
   }
-  if (state.busy) return;
+
+  const key = feedbackKey(name, button);
+  if (state.busyKeys.has(key)) return;
+
   if (name === "graceful-restart" && !window.confirm("全部实例将停止接入新连接，已有连接结束后按队列重启。排空期间可能无法建立新连接，确定继续吗？")) return;
-  clearTimeout(feedbackTimer);
-  const pickedTemps = [...document.querySelectorAll("[data-temp]:checked")].map((item) => item.dataset.temp);
+  const pickedTemps = [...new Set(state.temps)];
+  if (name === "remove-temp") {
+    if (!pickedTemps.length) return;
+    if (pickedTemps.length > 1 && !window.confirm("确定要批量移除已勾选的 " + pickedTemps.length + " 个临时实例吗？")) return;
+  }
+
   const tempCount = document.querySelector("#temp-count");
   if (tempCount) state.tempCount = tempCount.value;
-  const text = name === "restart" ? "重连" : name === "manual" ? (button.dataset.on === "1" ? "启用" : "停用") : actionText(name, button);
-  const key = feedbackKey(name, button);
-  state.busy = true;
-  state.feedback = { key: key, text: "正在" + text + "…", error: false };
+  const text = name === "restart" ? "强制重连" : name === "graceful-slot" ? "优雅重连" : name === "trace-slot" ? "探测出口" : name === "manual" ? (button.dataset.on === "1" ? "启用" : "停用") : actionText(name, button);
+
+  setKeyBusy(key, true);
+  setFeedback(key, "正在" + text + "…", false, 0);
   showError("");
   render();
   try {
@@ -587,9 +1292,14 @@ async function act(name, button) {
     if (name === "toggle") await api("/api/toggle?on=" + button.dataset.on);
     if (name === "http2") await api("/api/http2?on=" + button.dataset.on);
     if (name === "trace") await api("/api/trace?slot=0");
+    if (name === "trace-slot") await api("/api/trace?slot=" + button.dataset.slot);
     if (name === "graceful-restart") {
       const result = await api("/api/restart-graceful");
       successText = result.queued ? "已提交 " + result.queued + " 个实例" : "没有新增排空任务";
+    }
+    if (name === "graceful-slot") {
+      const result = await api("/api/restart-graceful?slot=" + button.dataset.slot);
+      successText = result.queued ? "已进入排空队列" : "已在队列或无需排空";
     }
     if (name === "restart-policy") {
       const uptime = document.getElementById("restart-uptime").value;
@@ -599,6 +1309,7 @@ async function act(name, button) {
       if (![uptime, users, connections, drainTimeout].every((value) => /^[0-9]+$/.test(value))) throw new Error("阈值和排空上限必须是非负整数，0 表示关闭");
       await api("/api/restart-policy?max_uptime_seconds=" + uptime + "&max_users=" + users + "&max_connections=" + connections + "&drain_timeout_seconds=" + drainTimeout);
       state.restartDraft = null;
+      successText = "策略已生效";
     }
     if (name === "add-temp") {
       const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
@@ -606,26 +1317,33 @@ async function act(name, button) {
       await api("/api/account/add?temporary=1&count=" + count);
     }
     if (name === "remove-temp") {
-      for (const slot of pickedTemps) state.status = await api("/api/account/remove?slot=" + slot);
-      state.temps = [];
-      document.querySelectorAll("[data-temp]").forEach((item) => { item.checked = false; });
       refreshSeq += 1;
-      render();
+      let done = 0;
+      for (const slot of pickedTemps) {
+        done += 1;
+        setFeedback(key, "正在移除 (" + done + "/" + pickedTemps.length + ")…", false, 0);
+        render();
+        state.status = await api("/api/account/remove?slot=" + slot);
+      }
+      state.temps = [];
+      document.querySelectorAll("[data-temp]").forEach((box) => { box.checked = false; });
+      successText = "已移除 " + pickedTemps.length + " 个实例";
     }
     if (name === "restart") await api("/api/restart?slot=" + button.dataset.slot);
     if (name === "manual") await api("/api/account/manual?slot=" + button.dataset.slot + "&on=" + button.dataset.on);
-    state.feedback = { key: key, text: successText, error: false };
-    await refresh();
+    setKeyBusy(key, false);
+    setFeedback(key, successText, false, 1600);
+    await refresh(true);
   } catch (err) {
     const message = String(err.message || err);
-    state.feedback = { key: key, text: message, error: true };
+    setKeyBusy(key, false);
+    setFeedback(key, message, true, 3000);
     showError(message);
     render();
-  } finally {
-    setBusy(false);
-    scheduleFeedbackClear();
+    schedule();
   }
 }
+
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -637,15 +1355,6 @@ async function copyText(text) {
     document.execCommand("copy");
     area.remove();
   }
-}
-function matchFilter(account, data) {
-  const busy = (data.tasks || []).some((task) => task.id === account.id) || account.draining;
-  if (state.filter === "attention") return account.health === "attention" || account.health === "down" || account.health === "unknown" || account.health === "connecting" || account.health === "retrying";
-  if (state.filter === "busy") return busy;
-  if (state.filter === "healthy") return account.health === "healthy";
-  if (state.filter === "disabled") return !account.manual;
-  if (state.filter === "temporary") return account.temporary;
-  return true;
 }
 function healthText(health) {
   return { healthy: "健康", attention: "需关注", down: "中断", connecting: "连接中", retrying: "失败重试", maintenance: "维护", disabled: "已停用", unknown: "未知" }[health] || health;

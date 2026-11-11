@@ -952,12 +952,23 @@ impl Pool {
     }
 
     pub fn queue_graceful_restart_all(&self) -> usize {
+        self.queue_graceful_restart(0)
+            .expect("全量优雅重启不应找不到实例")
+    }
+
+    pub fn queue_graceful_restart(&self, id: usize) -> Result<usize, String> {
         let policy_guard = self.restart_policy.read().unwrap();
         let workers = self.snapshot();
+        if id != 0 && !workers.iter().any(|worker| worker.id == id) {
+            return Err(format!("没有账号 {id}"));
+        }
         let mut queued = Vec::new();
         {
             let mut queues = self.restart_queues.lock().unwrap();
             for worker in &workers {
+                if id != 0 && worker.id != id {
+                    continue;
+                }
                 if !worker.queue_manual_drain() {
                     continue;
                 }
@@ -973,16 +984,18 @@ impl Pool {
             worker.drain_finished.notify_one();
         }
         if !queued.is_empty() {
-            self.console.log(
-                "plan",
+            let message = if id == 0 {
                 format!(
                     "手动触发全量优雅重启，{} 个实例进入排空与重启队列",
                     queued.len()
-                ),
-            );
+                )
+            } else {
+                format!("手动触发实例 {id} 优雅重启，已进入排空与重启队列")
+            };
+            self.console.log("plan", message);
             self.restart_wake.notify_one();
         }
-        queued.len()
+        Ok(queued.len())
     }
 
     /// 外部操作要触碰隧道时先判断是否处于自动排空，避免打断已有连接。
@@ -2933,6 +2946,22 @@ mod restart_queue_tests {
     }
 
     #[tokio::test]
+    async fn manual_graceful_restart_single_slot_only_queues_that_slot() {
+        let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        assert_eq!(pool.queue_graceful_restart(2).unwrap(), 1);
+        assert_eq!(pool.queue_graceful_restart(2).unwrap(), 0);
+        assert_eq!(pool.status().drain_queue, vec![2]);
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        assert!(workers[1].restart_pending.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn manual_graceful_restart_single_slot_rejects_missing_slot() {
+        let (pool, _workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        assert_eq!(pool.queue_graceful_restart(3).unwrap_err(), "没有账号 3");
+    }
+
+    #[tokio::test]
     async fn threshold_immediately_drains_and_existing_user_moves_without_moving_back() {
         let (pool, workers, _jobs) = mock_pool(2, 0, Duration::ZERO, 1).await;
         let first = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
@@ -2977,6 +3006,7 @@ mod restart_queue_tests {
         pool.inspect_restart_queues();
         assert!(pool.status().drain_queue.is_empty());
         assert_eq!(pool.status().restart_queue, vec![1]);
+        assert!(pool.status().accounts[0].draining);
         drop(permit);
     }
 
