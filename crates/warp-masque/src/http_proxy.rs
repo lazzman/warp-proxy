@@ -79,52 +79,14 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
     }
 
     let username = (record.user != "-").then(|| record.user.clone());
-    if request.method == "CONNECT" {
+    let prepared = if request.method == "CONNECT" {
         let Some((host, port)) = split_connect_target(&request.target) else {
             let _ = write_simple(&mut client, "400 Bad Request", "").await;
             record.millis = started.elapsed().as_millis() as u64;
             return record;
         };
         record.target = format!("{host}:{port}");
-        let lease = match pool.checkout(username.as_deref(), &client_ip) {
-            Ok(lease) => lease,
-            Err(fail) => {
-                let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
-                record.result = pick_result(fail).into();
-                record.millis = started.elapsed().as_millis() as u64;
-                return record;
-            }
-        };
-        record.account = lease.worker_id.to_string();
-        record.egress = lease.egress.clone();
-        let conn = match open_tunnel(lease.net(), &host, port).await {
-            Ok((conn, family)) => {
-                socks::note_connected(&mut record, family, &lease);
-                conn
-            }
-            Err(result) => {
-                let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
-                record.result = result.into();
-                record.millis = started.elapsed().as_millis() as u64;
-                return record;
-            }
-        };
-        if write_simple(&mut client, "200 Connection Established", "")
-            .await
-            .is_err()
-        {
-            record.result = "write-failed".into();
-            record.millis = started.elapsed().as_millis() as u64;
-            return record;
-        }
-        if !request.rest.is_empty() {
-            let _ = conn_write(&conn, &request.rest);
-            record.up += request.rest.len() as u64;
-        }
-        let (up, down) = socks::relay_session(&pool, client, conn, &lease, &mut record).await;
-        record.up += up;
-        record.down += down;
-        record.result = "ok".into();
+        Prepared::Connect { host, port }
     } else {
         let Some(forward) = rewrite_origin(&request) else {
             let _ = write_simple(&mut client, "400 Bad Request", "").await;
@@ -132,42 +94,110 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
             return record;
         };
         record.target = format!("{}:{}", forward.host, forward.port);
-        let lease = match pool.checkout(username.as_deref(), &client_ip) {
-            Ok(lease) => lease,
-            Err(fail) => {
-                let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
-                record.result = pick_result(fail).into();
-                record.millis = started.elapsed().as_millis() as u64;
-                return record;
-            }
-        };
-        record.account = lease.worker_id.to_string();
-        record.egress = lease.egress.clone();
-        let mut conn = match open_tunnel(lease.net(), &forward.host, forward.port).await {
-            Ok((conn, family)) => {
-                socks::note_connected(&mut record, family, &lease);
-                conn
-            }
-            Err(result) => {
-                let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
-                record.result = result.into();
-                record.millis = started.elapsed().as_millis() as u64;
-                return record;
-            }
-        };
-        if conn_write_all(&mut conn, &forward.head).await.is_err() {
-            record.result = "connect".into();
+        Prepared::Forward(forward)
+    };
+
+    let lease = match pool.checkout(username.as_deref(), &client_ip) {
+        Ok(lease) => lease,
+        Err(fail) => {
+            let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
+            record.result = pick_result(fail).into();
             record.millis = started.elapsed().as_millis() as u64;
             return record;
         }
-        record.up += forward.head.len() as u64;
-        let (up, down) = socks::relay_session(&pool, client, conn, &lease, &mut record).await;
-        record.up += up;
-        record.down += down;
-        record.result = "ok".into();
+    };
+    record.account = lease.worker_id.to_string();
+    record.egress = lease.egress.clone();
+    // 与 SOCKS5 入口一致：建链/写响应由外层 select! 整体取消；
+    // 进入转发后交给 relay_counted 自身的中断信号，保留流量统计与 netstack abort。
+    let drain_signal = lease.drain_signal();
+    let aborted = record.clone();
+    let result = tokio::select! {
+        biased;
+        _ = drain_signal.aborted() => socks::aborted_record(aborted, started),
+        prepared = prepare_leased(client, &lease, request, prepared, record, started) => match prepared {
+            LeasePrepared::Failed(record) => record,
+            LeasePrepared::Relay { client, conn, mut record } => {
+                let (up, down, aborted) =
+                    socks::relay_session(&pool, client, conn, &lease, &mut record).await;
+                record.up += up;
+                record.down += down;
+                record.result = if aborted { "drain-aborted" } else { "ok" }.into();
+                record.millis = started.elapsed().as_millis() as u64;
+                record
+            }
+        },
+    };
+    drop(lease);
+    result
+}
+
+async fn prepare_leased(
+    mut client: TcpStream,
+    lease: &crate::pool::ConnLease,
+    request: Request,
+    prepared: Prepared,
+    mut record: AccessRecord,
+    started: Instant,
+) -> LeasePrepared {
+    match prepared {
+        Prepared::Connect { host, port } => {
+            let conn = match open_tunnel(lease.net(), &host, port).await {
+                Ok((conn, family)) => {
+                    socks::note_connected(&mut record, family, lease);
+                    conn
+                }
+                Err(result) => {
+                    let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
+                    record.result = result.into();
+                    record.millis = started.elapsed().as_millis() as u64;
+                    return LeasePrepared::Failed(record);
+                }
+            };
+            if write_simple(&mut client, "200 Connection Established", "")
+                .await
+                .is_err()
+            {
+                record.result = "write-failed".into();
+                record.millis = started.elapsed().as_millis() as u64;
+                return LeasePrepared::Failed(record);
+            }
+            if !request.rest.is_empty() {
+                let _ = conn_write(&conn, &request.rest);
+                record.up += request.rest.len() as u64;
+            }
+            LeasePrepared::Relay {
+                client,
+                conn,
+                record,
+            }
+        }
+        Prepared::Forward(forward) => {
+            let mut conn = match open_tunnel(lease.net(), &forward.host, forward.port).await {
+                Ok((conn, family)) => {
+                    socks::note_connected(&mut record, family, lease);
+                    conn
+                }
+                Err(result) => {
+                    let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
+                    record.result = result.into();
+                    record.millis = started.elapsed().as_millis() as u64;
+                    return LeasePrepared::Failed(record);
+                }
+            };
+            if conn_write_all(&mut conn, &forward.head).await.is_err() {
+                record.result = "connect".into();
+                record.millis = started.elapsed().as_millis() as u64;
+                return LeasePrepared::Failed(record);
+            }
+            record.up += forward.head.len() as u64;
+            LeasePrepared::Relay {
+                client,
+                conn,
+                record,
+            }
+        }
     }
-    record.millis = started.elapsed().as_millis() as u64;
-    record
 }
 
 struct Request {
@@ -182,6 +212,20 @@ struct OriginRequest {
     host: String,
     port: u16,
     head: Vec<u8>,
+}
+
+enum Prepared {
+    Connect { host: String, port: u16 },
+    Forward(OriginRequest),
+}
+
+enum LeasePrepared {
+    Failed(AccessRecord),
+    Relay {
+        client: TcpStream,
+        conn: crate::netstack::TcpConn,
+        record: AccessRecord,
+    },
 }
 
 enum Auth {

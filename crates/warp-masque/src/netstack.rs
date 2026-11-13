@@ -15,6 +15,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as smpsc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant as StdInstant};
@@ -143,6 +144,10 @@ enum Cmd {
     Abort {
         handle: SocketHandle,
     },
+    /// connect() 已取得 SocketHandle，确认后续由 TcpConn 接管。
+    Handoff {
+        handle: SocketHandle,
+    },
     Resolve {
         name: String,
         reply: oneshot::Sender<Result<IpAddr, String>>,
@@ -153,6 +158,18 @@ enum Cmd {
 #[derive(Clone)]
 pub struct NetHandle {
     cmd: smpsc::Sender<Cmd>,
+}
+
+/// 测试用：保留命令接收端但不启动 actor，让 resolve/connect 永远等不到回复。
+#[cfg(test)]
+pub(crate) struct PendingNetGuard {
+    _cmd: smpsc::Receiver<Cmd>,
+}
+
+#[cfg(test)]
+pub(crate) fn pending_test_handle() -> (NetHandle, PendingNetGuard) {
+    let (cmd, rx) = smpsc::channel();
+    (NetHandle { cmd }, PendingNetGuard { _cmd: rx })
 }
 
 impl NetHandle {
@@ -185,13 +202,23 @@ impl NetHandle {
                 reply,
             })
             .map_err(|_| "netstack stopped".to_string())?;
-        let handle = rx.await.map_err(|_| "netstack dropped".to_string())??;
+        let handle = rx.await.map_err(|_| "netstack stopped".to_string())??;
+        // 确认异步侧已接管；若请求在建立 TcpConn 前被取消，actor 会据
+        // handed_off=false 且 from_net 已关闭清理这个 socket。
+        self.cmd
+            .send(Cmd::Handoff { handle })
+            .map_err(|_| "netstack stopped".to_string())?;
         Ok(TcpConn {
             handle,
             cmd: self.cmd.clone(),
             from_net: from_net_rx,
             read_buf: Vec::new(),
             read_pos: 0,
+            abort_guard: AbortOnDrop {
+                cmd: self.cmd.clone(),
+                handle,
+                armed: AtomicBool::new(true),
+            },
         })
     }
 }
@@ -240,9 +267,10 @@ impl AsyncWrite for TcpConn {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let _ = self.cmd.send(Cmd::Close {
-            handle: self.handle,
-        });
+        let me = self.get_mut();
+        // 已请求优雅关闭，后续 Drop 不应再用 Abort 覆盖。
+        me.abort_guard.armed.store(false, Ordering::Relaxed);
+        let _ = me.cmd.send(Cmd::Close { handle: me.handle });
         Poll::Ready(Ok(()))
     }
 }
@@ -256,6 +284,9 @@ pub struct TcpConn {
     from_net: tmpsc::Receiver<Vec<u8>>,
     read_buf: Vec<u8>,
     read_pos: usize,
+    /// 若 TcpConn 在 into_split 之前被丢弃（例如排空超时取消请求），
+    /// 没有 TcpWriter/TcpReader 会发 Close，必须直接 abort 清理 actor 里的 socket。
+    abort_guard: AbortOnDrop,
 }
 
 impl TcpConn {
@@ -274,6 +305,7 @@ impl TcpConn {
 
     /// Ask the netstack to close the sending half once drained.
     pub fn close(&self) {
+        self.abort_guard.armed.store(false, Ordering::Relaxed);
         let _ = self.cmd.send(Cmd::Close {
             handle: self.handle,
         });
@@ -288,7 +320,9 @@ impl TcpConn {
     }
 
     /// Split into independent read/write halves for concurrent relaying.
-    pub fn into_split(self) -> (TcpReader, TcpWriter) {
+    pub fn into_split(mut self) -> (TcpReader, TcpWriter) {
+        // 之后由 TcpWriter::drop 发 Close，不再需要守卫强制 abort。
+        self.abort_guard.armed.store(false, Ordering::Relaxed);
         (
             TcpReader {
                 from_net: self.from_net,
@@ -349,6 +383,22 @@ impl TcpAbort {
     }
 }
 
+struct AbortOnDrop {
+    cmd: smpsc::Sender<Cmd>,
+    handle: SocketHandle,
+    armed: AtomicBool,
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if self.armed.load(Ordering::Relaxed) {
+            let _ = self.cmd.send(Cmd::Abort {
+                handle: self.handle,
+            });
+        }
+    }
+}
+
 impl Drop for TcpWriter {
     fn drop(&mut self) {
         self.close();
@@ -402,6 +452,8 @@ struct Conn {
     from_net: tmpsc::Sender<Vec<u8>>,
     out_buf: VecDeque<u8>,
     connect_reply: Option<oneshot::Sender<Result<SocketHandle, String>>>,
+    /// 异步侧已确认接管该 socket；未确认时 from_net 关闭说明请求被取消。
+    handed_off: bool,
     closing: bool,
 }
 
@@ -567,6 +619,11 @@ impl Actor {
                     drop(conn);
                 }
             }
+            Cmd::Handoff { handle } => {
+                if let Some(conn) = self.conns.get_mut(&handle) {
+                    conn.handed_off = true;
+                }
+            }
             Cmd::Resolve { name, reply } => self.handle_resolve(name, reply),
         }
     }
@@ -597,6 +654,7 @@ impl Actor {
                         from_net,
                         out_buf: VecDeque::new(),
                         connect_reply: Some(reply),
+                        handed_off: false,
                         closing: false,
                     },
                 );
@@ -682,48 +740,70 @@ impl Actor {
                 let sock = self.sockets.get_mut::<tcp::Socket>(h);
                 let conn = self.conns.get_mut(&h).expect("conn for handle");
 
-                // Resolve the pending connect once established or failed.
-                if conn.connect_reply.is_some() {
-                    if sock.state() == tcp::State::Established {
-                        let _ = conn.connect_reply.take().unwrap().send(Ok(h));
-                    } else if !sock.is_active() {
-                        let _ = conn
-                            .connect_reply
-                            .take()
-                            .unwrap()
-                            .send(Err("connection refused".into()));
+                // 入口请求被取消且没有任何 TcpConn/TcpWriter 接管时直接 abort，
+                // 避免半开 socket 和 conns 项留在 actor 里直到远端超时：
+                // 1) connect() 还没收到 reply；
+                // 2) reply 已发出，但异步侧尚未发 Handoff 确认接管。
+                let orphaned = conn
+                    .connect_reply
+                    .as_ref()
+                    .is_some_and(|reply| reply.is_closed())
+                    || (conn.connect_reply.is_none()
+                        && !conn.handed_off
+                        && conn.from_net.is_closed());
+                if orphaned {
+                    sock.abort();
+                    remove = true;
+                }
+
+                if !remove {
+                    // Resolve the pending connect once established or failed.
+                    if conn.connect_reply.is_some() {
+                        if sock.state() == tcp::State::Established {
+                            if conn.connect_reply.take().unwrap().send(Ok(h)).is_err() {
+                                // 接收端恰好在 send 时被丢弃，同样没有接管者。
+                                sock.abort();
+                                remove = true;
+                            }
+                        } else if !sock.is_active() {
+                            let _ = conn
+                                .connect_reply
+                                .take()
+                                .unwrap()
+                                .send(Err("connection refused".into()));
+                            remove = true;
+                        }
+                    }
+
+                    // socks -> net
+                    while sock.can_send() && !conn.out_buf.is_empty() {
+                        let (head, _) = conn.out_buf.as_slices();
+                        match sock.send_slice(head) {
+                            Ok(0) => break,
+                            Ok(n) => drop(conn.out_buf.drain(..n)),
+                            Err(_) => break,
+                        }
+                    }
+
+                    // net -> socks (bounded by the channel to apply TCP backpressure)
+                    while sock.can_recv() {
+                        let Ok(permit) = conn.from_net.try_reserve() else {
+                            break;
+                        };
+                        let mut buf = [0u8; RECV_CHUNK];
+                        match sock.recv_slice(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => permit.send(buf[..n].to_vec()),
+                            Err(_) => break,
+                        }
+                    }
+
+                    if conn.closing && conn.out_buf.is_empty() {
+                        sock.close();
+                    }
+                    if sock.state() == tcp::State::Closed {
                         remove = true;
                     }
-                }
-
-                // socks -> net
-                while sock.can_send() && !conn.out_buf.is_empty() {
-                    let (head, _) = conn.out_buf.as_slices();
-                    match sock.send_slice(head) {
-                        Ok(0) => break,
-                        Ok(n) => drop(conn.out_buf.drain(..n)),
-                        Err(_) => break,
-                    }
-                }
-
-                // net -> socks (bounded by the channel to apply TCP backpressure)
-                while sock.can_recv() {
-                    let Ok(permit) = conn.from_net.try_reserve() else {
-                        break;
-                    };
-                    let mut buf = [0u8; RECV_CHUNK];
-                    match sock.recv_slice(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => permit.send(buf[..n].to_vec()),
-                        Err(_) => break,
-                    }
-                }
-
-                if conn.closing && conn.out_buf.is_empty() {
-                    sock.close();
-                }
-                if sock.state() == tcp::State::Closed {
-                    remove = true;
                 }
             }
             if remove {
@@ -956,5 +1036,164 @@ mod resolve_tests {
             plan_resolve("example.com", ResolvePreference::Ipv6Only, false),
             ResolvePlan::Ready(Err("隧道没有 IPv6 地址".into()))
         );
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+    use std::sync::mpsc as smpsc;
+    use tokio::sync::{mpsc as tmpsc, oneshot};
+
+    fn socket_handle() -> SocketHandle {
+        let mut sockets = SocketSet::new(Vec::new());
+        sockets.add(tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0u8; 1024]),
+            tcp::SocketBuffer::new(vec![0u8; 1024]),
+        ))
+    }
+
+    fn tcp_conn(cmd: &smpsc::Sender<Cmd>, handle: SocketHandle) -> TcpConn {
+        let (_from_net_tx, from_net_rx) = tmpsc::channel(1);
+        TcpConn {
+            handle,
+            cmd: cmd.clone(),
+            from_net: from_net_rx,
+            read_buf: Vec::new(),
+            read_pos: 0,
+            abort_guard: AbortOnDrop {
+                cmd: cmd.clone(),
+                handle,
+                armed: AtomicBool::new(true),
+            },
+        }
+    }
+
+    #[test]
+    fn dropping_unsplit_tcp_conn_aborts_actor_socket() {
+        let (cmd, rx) = smpsc::channel();
+        let handle = socket_handle();
+        drop(tcp_conn(&cmd, handle));
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Abort { .. })));
+    }
+
+    #[test]
+    fn split_tcp_conn_leaves_close_to_writer() {
+        let (cmd, rx) = smpsc::channel();
+        let handle = socket_handle();
+        let (reader, writer) = tcp_conn(&cmd, handle).into_split();
+        drop((reader, writer));
+        let mut saw_abort = false;
+        while let Ok(queued) = rx.try_recv() {
+            if matches!(queued, Cmd::Abort { .. }) {
+                saw_abort = true;
+            }
+        }
+        assert!(!saw_abort, "into_split 之后不应再发 Abort");
+    }
+
+    #[test]
+    fn explicit_close_disarms_abort_guard() {
+        let (cmd, rx) = smpsc::channel();
+        let handle = socket_handle();
+        let conn = tcp_conn(&cmd, handle);
+        conn.close();
+        drop(conn);
+        let mut saw_abort = false;
+        while let Ok(queued) = rx.try_recv() {
+            if matches!(queued, Cmd::Abort { .. }) {
+                saw_abort = true;
+            }
+        }
+        assert!(!saw_abort, "优雅关闭后不应再发 Abort");
+    }
+
+    #[test]
+    fn handed_off_connection_is_not_treated_as_orphan() {
+        let mut actor = Actor::new(
+            TunnelIo::H2(crate::h2tunnel::dummy_h2_io()),
+            1280,
+            Ipv4Addr::new(172, 16, 0, 2),
+            None,
+            ResolvePreference::Auto,
+        );
+        let (from_net, from_net_rx) = tmpsc::channel(1);
+        let (reply, rx) = oneshot::channel();
+        actor.handle_cmd(Cmd::Connect {
+            remote: "198.51.100.1:443".parse().unwrap(),
+            from_net,
+            reply,
+        });
+        let handle = *actor.conns.keys().next().unwrap();
+        actor.handle_cmd(Cmd::Handoff { handle });
+        let sent = actor
+            .conns
+            .get_mut(&handle)
+            .unwrap()
+            .connect_reply
+            .take()
+            .unwrap();
+        assert!(sent.send(Ok(handle)).is_ok());
+        drop(rx);
+        drop(from_net_rx);
+        actor.service_sockets();
+        assert_eq!(actor.conns.len(), 1, "已接管的连接不能被误判为孤儿");
+    }
+
+    #[test]
+    fn connect_reply_sent_but_handoff_cancelled_is_cleaned_up() {
+        let mut actor = Actor::new(
+            TunnelIo::H2(crate::h2tunnel::dummy_h2_io()),
+            1280,
+            Ipv4Addr::new(172, 16, 0, 2),
+            None,
+            ResolvePreference::Auto,
+        );
+        let (from_net, from_net_rx) = tmpsc::channel(1);
+        let (reply, rx) = oneshot::channel();
+        actor.handle_cmd(Cmd::Connect {
+            remote: "198.51.100.1:443".parse().unwrap(),
+            from_net,
+            reply,
+        });
+        let handle = *actor.conns.keys().next().unwrap();
+        let sent = actor
+            .conns
+            .get_mut(&handle)
+            .unwrap()
+            .connect_reply
+            .take()
+            .unwrap();
+        // actor 已发出 Ok，但异步侧在发 Handoff 前被取消。
+        assert!(sent.send(Ok(handle)).is_ok());
+        drop(rx);
+        drop(from_net_rx);
+        actor.service_sockets();
+        assert!(actor.conns.is_empty(), "交棒窗口被取消的连接必须被清理");
+    }
+
+    #[test]
+    fn cancelled_pending_connect_is_aborted_and_removed() {
+        let mut actor = Actor::new(
+            TunnelIo::H2(crate::h2tunnel::dummy_h2_io()),
+            1280,
+            Ipv4Addr::new(172, 16, 0, 2),
+            None,
+            ResolvePreference::Auto,
+        );
+        let (from_net, _from_net_rx) = tmpsc::channel(1);
+        let (reply, rx) = oneshot::channel();
+        actor.handle_cmd(Cmd::Connect {
+            remote: "198.51.100.1:443".parse().unwrap(),
+            from_net,
+            reply,
+        });
+        assert_eq!(actor.conns.len(), 1);
+
+        // 模拟入口请求在 connect() 返回前被排空超时取消。
+        drop(rx);
+        actor.service_sockets();
+        assert!(actor.conns.is_empty(), "取消的半开连接必须被清理");
     }
 }

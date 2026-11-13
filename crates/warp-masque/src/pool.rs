@@ -262,31 +262,46 @@ struct RestartJob {
     probe_timeout: Duration,
 }
 
-enum DrainSignalState {
-    Waiting,
-    Aborted,
+/// 每次强制中断递增一个单调代号；连接只响应「取得租约之后发生」的中断。
+/// 代号用原子量判定，watch 只负责唤醒等待者，避免通知被合并时漏掉中断。
+#[derive(Clone)]
+struct DrainSignalInner {
+    receiver: watch::Receiver<()>,
+    epoch: u64,
+    current: Arc<AtomicU64>,
 }
 
+#[derive(Clone)]
 pub(crate) struct DrainSignal {
-    receiver: watch::Receiver<DrainSignalState>,
+    /// `None` 表示永不中断（单实例模式没有排空队列）。
+    inner: Option<DrainSignalInner>,
 }
 
 impl DrainSignal {
     pub(crate) fn never() -> Self {
-        Self {
-            receiver: watch::channel(DrainSignalState::Waiting).1,
-        }
+        Self { inner: None }
     }
 
     pub(crate) async fn aborted(mut self) {
+        let Some(DrainSignalInner {
+            mut receiver,
+            epoch,
+            current,
+        }) = self.inner.take()
+        else {
+            std::future::pending::<()>().await;
+            return;
+        };
         loop {
-            if matches!(
-                *self.receiver.borrow_and_update(),
-                DrainSignalState::Aborted
-            ) {
+            if current.load(Ordering::Acquire) > epoch {
                 return;
             }
-            if self.receiver.changed().await.is_err() {
+            if receiver.changed().await.is_err() {
+                // 发送端不会再产生新中断：最后核对一次代号，然后保持等待。
+                if current.load(Ordering::Acquire) > epoch {
+                    return;
+                }
+                std::future::pending::<()>().await;
                 return;
             }
         }
@@ -318,7 +333,14 @@ pub struct Worker {
     drain_finished: Notify,
     ready_since: Mutex<Option<Instant>>,
     drain_since: Mutex<Option<Instant>>,
-    drain_signal: watch::Sender<DrainSignalState>,
+    /// 本轮排空已经执行过强制中断；超时只记一次日志，并允许绕过活跃计数放行重连。
+    drain_forced: AtomicBool,
+    /// 单调中断代号；连接只响应取得租约之后发生的强制中断。
+    abort_epoch: Arc<AtomicU64>,
+    /// 只用于唤醒等待中的中断信号，判定以 `abort_epoch` 为准。
+    drain_signal: watch::Sender<()>,
+    /// 序列化「创建租约信号」与「递增中断代号」，消除订阅窗口竞态。
+    drain_abort_lock: Mutex<()>,
     stage: Mutex<String>,
     stage_at: Mutex<Option<Instant>>,
     last_action: Mutex<String>,
@@ -376,7 +398,10 @@ impl Worker {
             drain_finished: Notify::new(),
             ready_since: Mutex::new(None),
             drain_since: Mutex::new(None),
-            drain_signal: watch::channel(DrainSignalState::Waiting).0,
+            drain_forced: AtomicBool::new(false),
+            abort_epoch: Arc::new(AtomicU64::new(0)),
+            drain_signal: watch::channel(()).0,
+            drain_abort_lock: Mutex::new(()),
             stage: Mutex::new(String::new()),
             stage_at: Mutex::new(None),
             last_action: Mutex::new(String::new()),
@@ -460,27 +485,58 @@ impl Worker {
 
     fn begin_draining(&self) {
         let _inner = self.inner.lock().unwrap();
+        self.start_drain();
+    }
+
+    /// 开启新一轮排空：保留排空起点，直到任务结束或取消才清空。
+    /// 不回退中断代号，上一轮已发出的强制中断仍要能被旧租约观察到。
+    fn start_drain(&self) {
         *self.drain_since.lock().unwrap() = Some(Instant::now());
+        self.drain_forced.store(false, Ordering::Relaxed);
         self.draining.store(true, Ordering::Relaxed);
     }
 
     fn clear_drain(&self) {
         *self.drain_since.lock().unwrap() = None;
-        self.drain_signal.send_replace(DrainSignalState::Waiting);
+        self.drain_forced.store(false, Ordering::Relaxed);
+        // 不回退中断代号：取消任务不能抹掉已经发出的强制中断；
+        // 新租约会订阅当前代号，因此不会被上一轮误杀。
     }
 
+    /// 递增中断代号并唤醒等待者；与创建租约信号互斥，避免订阅窗口丢中断。
     fn abort_drain(&self) {
-        self.drain_signal.send_replace(DrainSignalState::Aborted);
+        let _guard = self.drain_abort_lock.lock().unwrap();
+        self.abort_epoch.fetch_add(1, Ordering::AcqRel);
+        self.drain_signal.send_replace(());
     }
 
-    fn drain_signal(&self) -> DrainSignal {
+    /// 强制中断本轮剩余连接，并标记该实例不再等待连接计数归零。
+    fn force_drain(&self) {
+        self.drain_forced.store(true, Ordering::Relaxed);
+        self.abort_drain();
+    }
+
+    fn drain_forced(&self) -> bool {
+        self.drain_forced.load(Ordering::Relaxed)
+    }
+
+    /// 在租约创建时调用：记录当前代号并订阅唤醒通道。
+    fn new_drain_signal(&self) -> DrainSignal {
+        let _guard = self.drain_abort_lock.lock().unwrap();
+        let receiver = self.drain_signal.subscribe();
+        let epoch = self.abort_epoch.load(Ordering::Acquire);
         DrainSignal {
-            receiver: self.drain_signal.subscribe(),
+            inner: Some(DrainSignalInner {
+                receiver,
+                epoch,
+                current: Arc::clone(&self.abort_epoch),
+            }),
         }
     }
 
     fn drain_timed_out(&self, timeout: Duration) -> bool {
         !timeout.is_zero()
+            && !self.drain_forced.load(Ordering::Relaxed)
             && self
                 .drain_since
                 .lock()
@@ -516,8 +572,7 @@ impl Worker {
             return false;
         }
         self.restart_pending.store(true, Ordering::Relaxed);
-        self.draining.store(true, Ordering::Relaxed);
-        *self.drain_since.lock().unwrap() = Some(Instant::now());
+        self.start_drain();
         self.set_stage("等待现有连接排空");
         self.note("达到重启条件，停止接入新连接");
         true
@@ -534,8 +589,7 @@ impl Worker {
         }
         self.manual_drain_requested.store(true, Ordering::Release);
         if !self.restart_pending.swap(true, Ordering::AcqRel) {
-            self.draining.store(true, Ordering::Release);
-            *self.drain_since.lock().unwrap() = Some(Instant::now());
+            self.start_drain();
             self.set_stage("等待现有连接排空");
         }
         self.note("手动触发优雅重启，等待排空");
@@ -606,6 +660,8 @@ pub struct ConnLease {
     egress_v6: String,
     net: NetHandle,
     worker: Arc<Worker>,
+    /// 在租约创建时捕获，确保 checkout 与订阅之间发生的中断也能被观察到。
+    drain_signal: DrainSignal,
 }
 
 impl ConnLease {
@@ -627,7 +683,7 @@ impl ConnLease {
     }
 
     pub(crate) fn drain_signal(&self) -> DrainSignal {
-        self.worker.drain_signal()
+        self.drain_signal.clone()
     }
 }
 
@@ -642,6 +698,7 @@ pub(crate) fn test_lease(fallback: &str, v4: &str, v6: &str) -> ConnLease {
         egress_v6: v6.to_string(),
         net: NetHandle::test_handle(),
         worker,
+        drain_signal: DrainSignal::never(),
     }
 }
 
@@ -1037,19 +1094,22 @@ impl Pool {
                 {
                     let active = worker.active.load(Ordering::Relaxed);
                     if active > 0 && worker.drain_timed_out(drain_timeout) {
-                        worker.abort_drain();
-                        worker.note("排空超时，断开剩余连接");
-                        worker.set_stage("排空超时，等待连接退出");
-                        *worker.drain_since.lock().unwrap() = None;
+                        worker.force_drain();
+                        worker.note("排空超时，强制断开剩余连接并放行重连");
+                        worker.set_stage("排空超时，正在断开剩余连接");
                         let text = format!(
-                            "[pool] 账号 {id} 排空超过 {} 秒，断开 {} 条剩余连接",
+                            "[pool] 账号 {id} 排空超过 {} 秒，强制断开 {} 条剩余连接并放行重连",
                             drain_timeout.as_secs(),
                             active
                         );
                         eprintln!("{text}");
                         self.console.log("plan", text);
                     }
-                    if active == 0 && !worker.restart_busy.load(Ordering::Relaxed) {
+                    // 中断代号单调，旧租约即使晚一点被调度也能观察到，无需每轮补发。
+                    // 正常排空要求连接自然退出；超时强制中断后即使计数暂时不为零也放行重连。
+                    if (active == 0 || worker.drain_forced())
+                        && !worker.restart_busy.load(Ordering::Relaxed)
+                    {
                         worker.set_stage("等待重启名额");
                         queues.ready.push_back(id);
                     } else {
@@ -1080,8 +1140,8 @@ impl Pool {
                 queues.ready.push_back(id);
                 continue;
             }
-            // 自动重启无论排队多久，都必须在执行前再次核对没有活跃连接。
-            if worker.active.load(Ordering::Acquire) != 0 {
+            // 正常排空要求执行前没有活跃连接；已强制中断的实例不受此限制。
+            if worker.active.load(Ordering::Acquire) != 0 && !worker.drain_forced() {
                 worker.restart_busy.store(false, Ordering::Release);
                 queues.draining.push_back(id);
                 continue;
@@ -1209,6 +1269,7 @@ impl Pool {
             &inner.assigned_v4.to_string(),
             &assigned_v6,
         );
+        let drain_signal = worker.new_drain_signal();
         worker.active.fetch_add(1, Ordering::Relaxed);
         usage.connections = usage.connections.saturating_add(1);
         // 仅在开启用户阈值时保存去重身份，避免关闭该条件时内存随累计用户持续增长。
@@ -1229,6 +1290,7 @@ impl Pool {
             egress_v6: shown.v6,
             net,
             worker,
+            drain_signal,
         })
     }
 
@@ -1269,8 +1331,9 @@ impl Pool {
         if worker.restart_busy.swap(true, Ordering::AcqRel) {
             return Err(format!("账号 {id} 已在重启中"));
         }
-        // 手动强制重启立即摘流，不等待连接排空；实际重连仍受并发名额限制。
+        // 手动强制重启立即摘流，不等待连接排空；同时中断仍在建链或转发的请求。
         worker.begin_draining();
+        worker.abort_drain();
         worker.restart_pending.store(true, Ordering::Relaxed);
         self.scheduler.forget_users(id);
         {
@@ -1760,8 +1823,9 @@ impl Pool {
         };
         let worker = workers.remove(index);
         let temporary = worker.temporary.load(Ordering::Relaxed);
-        // 摘出实例与阻止新租约连续完成；持有旧快照的请求也必须看到停止状态。
+        // 摘出实例、阻止新租约，并中断仍在建链或转发的旧请求。
         worker.begin_draining();
+        worker.abort_drain();
         worker.stopped.store(true, Ordering::Release);
         drop(workers);
         worker.stop_notify.notify_waiters();
@@ -2836,6 +2900,8 @@ mod restart_queue_tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::{mpsc, watch};
 
     async fn mock_pool(
@@ -2868,6 +2934,19 @@ mod restart_queue_tests {
             jobs.push(rx);
         }
         (pool, workers, jobs)
+    }
+
+    /// 让建链阶段永远等不到 netstack 回复，用来复现「已分配实例但还没开始转发」的僵尸连接。
+    async fn pending_net_pool() -> (
+        Arc<Pool>,
+        Vec<Arc<Worker>>,
+        Vec<mpsc::UnboundedReceiver<super::RestartJob>>,
+        crate::netstack::PendingNetGuard,
+    ) {
+        let (pool, workers, jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let (net, guard) = crate::netstack::pending_test_handle();
+        workers[0].inner.lock().unwrap().net = Some(net);
+        (pool, workers, jobs, guard)
     }
 
     #[test]
@@ -3011,32 +3090,311 @@ mod restart_queue_tests {
     }
 
     #[tokio::test]
-    async fn drain_timeout_aborts_remaining_connections_and_exposes_status() {
+    async fn drain_timeout_forces_queue_past_active_connections() {
         let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
         let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
         assert_eq!(pool.status().restart_drain_timeout_seconds, 0);
-        pool.set_restart_policy(None, None, None, Some(Duration::ZERO))
+        pool.set_restart_policy(None, None, None, Some(Duration::from_secs(10)))
             .unwrap();
         *workers[0].drain_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(11));
         pool.inspect_restart_queues();
-        assert_eq!(pool.status().drain_queue, vec![1]);
+
+        assert_eq!(pool.status().restart_drain_timeout_seconds, 10);
+        assert!(workers[0].drain_forced.load(Ordering::Relaxed));
+        assert!(workers[0].abort_epoch.load(Ordering::Relaxed) > 0);
+        assert!(pool.status().drain_queue.is_empty());
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        // 强制放行不再依赖 lease 已经释放，避免僵尸计数把实例永久卡在排空队列。
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 1);
+        let forced_logs = |pool: &Arc<Pool>| {
+            pool.logs()
+                .lines
+                .iter()
+                .filter(|line| line.text.contains("排空超过 10 秒"))
+                .count()
+        };
+        assert_eq!(forced_logs(&pool), 1);
+        pool.inspect_restart_queues();
+        pool.inspect_restart_queues();
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        assert_eq!(forced_logs(&pool), 1);
+        drop((lease, permit));
+    }
+
+    #[tokio::test]
+    async fn forced_drain_survives_timeout_changes_and_clears_after_reconnect() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        pool.set_restart_policy(None, None, None, Some(Duration::from_secs(10)))
+            .unwrap();
+        *workers[0].drain_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(11));
+        pool.inspect_restart_queues();
+        assert!(workers[0].drain_forced.load(Ordering::Relaxed));
+        let forced_epoch = workers[0].abort_epoch.load(Ordering::Relaxed);
+        assert!(forced_epoch > 0);
+
+        // 运行时把上限改成 0 也不能让已经强制中断的这一轮失去状态或重复刷日志。
+        pool.set_restart_policy(None, None, None, Some(Duration::ZERO))
+            .unwrap();
+        pool.inspect_restart_queues();
+        assert!(workers[0].drain_forced.load(Ordering::Relaxed));
+        assert_eq!(workers[0].abort_epoch.load(Ordering::Relaxed), forced_epoch);
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        assert_eq!(
+            pool.logs()
+                .lines
+                .iter()
+                .filter(|line| line.text.contains("排空超过 10 秒"))
+                .count(),
+            1
+        );
+
+        // 成功重连后仅复位本轮标记，不回退中断代号；新租约不会被上一轮误杀。
+        pool.finish_reconnect(&workers[0]);
+        assert!(!workers[0].drain_forced.load(Ordering::Relaxed));
+        assert_eq!(workers[0].abort_epoch.load(Ordering::Relaxed), forced_epoch);
+        let fresh = workers[0].new_drain_signal();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), fresh.aborted())
+                .await
+                .is_err()
+        );
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        assert!(!workers[0].draining.load(Ordering::Relaxed));
+        drop((lease, permit));
+    }
+
+    #[tokio::test]
+    async fn forced_abort_is_not_lost_when_drain_state_is_cleared() {
+        let (worker, _rx) = Worker::new(7, WarpConfig::default(), None);
+        let old_signal = worker.new_drain_signal();
+        worker.force_drain();
+        // 模拟重连成功或关闭阈值清空排空状态：不能撤回已经发出的中断。
+        worker.clear_drain();
+        tokio::time::timeout(Duration::from_secs(1), old_signal.aborted())
+            .await
+            .expect("旧租约仍必须观察到已被强制中断");
+
+        let fresh = worker.new_drain_signal();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), fresh.aborted())
+                .await
+                .is_err()
+        );
+        assert!(!worker.drain_forced());
+    }
+
+    #[tokio::test]
+    async fn lease_created_before_abort_still_observes_it() {
+        let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        // 模拟 checkout 已返回、入口任务还没开始轮询信号时发生的超时/移除/强制重连。
+        workers[0].abort_drain();
+        let signal = lease.drain_signal();
+        tokio::time::timeout(Duration::from_secs(1), signal.aborted())
+            .await
+            .expect("checkout 之后发生的中断必须被该租约观察到");
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn drain_signal_epochs_only_abort_leases_from_earlier_rounds() {
+        assert!(tokio::time::timeout(
+            Duration::from_millis(10),
+            super::DrainSignal::never().aborted()
+        )
+        .await
+        .is_err());
+
+        let (worker, _rx) = Worker::new(9, WarpConfig::default(), None);
+        let signal = worker.new_drain_signal();
+        let task = tokio::spawn(async move { signal.aborted().await });
+        tokio::task::yield_now().await;
+        worker.abort_drain();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("中断信号应唤醒订阅者")
+            .unwrap();
+
+        // 中断之后取得的租约订阅新代号，不会被上一轮误杀。
+        let fresh = worker.new_drain_signal();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), fresh.aborted())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_socks_connect_is_cancelled_by_forced_drain() {
+        let (pool, workers, _jobs, _pending) = pending_net_pool().await;
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, peer) = listener.accept().await.unwrap();
+        let mut request = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 11];
+        request.extend_from_slice(b"example.com");
+        request.extend_from_slice(&443u16.to_be_bytes());
+        client.write_all(&request).await.unwrap();
+
+        let handle = tokio::spawn(crate::socks::handle_pool(server, peer, pool.clone()));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while workers[0].active.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("请求应已取得实例并计入活跃连接");
 
         pool.set_restart_policy(None, None, None, Some(Duration::from_secs(10)))
             .unwrap();
-        assert_eq!(pool.status().restart_drain_timeout_seconds, 10);
+        *workers[0].drain_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(11));
         pool.inspect_restart_queues();
-        assert_eq!(pool.status().drain_queue, vec![1]);
-        assert!(matches!(
-            *workers[0].drain_signal.subscribe().borrow(),
-            super::DrainSignalState::Aborted
-        ));
-        assert!(workers[0].drain_since.lock().unwrap().is_none());
-        assert!(pool
-            .logs()
-            .lines
-            .iter()
-            .any(|line| line.text.contains("排空超过 10 秒")));
-        drop(lease);
+
+        let record = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("排空超时必须取消仍在建链的请求")
+            .unwrap();
+        assert_eq!(record.result, "drain-aborted");
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 0);
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        drop((client, permit));
+    }
+
+    #[tokio::test]
+    async fn pending_http_connect_is_cancelled_by_forced_drain() {
+        let (pool, workers, _jobs, _pending) = pending_net_pool().await;
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, peer) = listener.accept().await.unwrap();
+        client
+            .write_all(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+            .await
+            .unwrap();
+
+        let handle = tokio::spawn(crate::http_proxy::handle(server, pool.clone(), peer));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while workers[0].active.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("请求应已取得实例并计入活跃连接");
+
+        pool.set_restart_policy(None, None, None, Some(Duration::from_secs(10)))
+            .unwrap();
+        *workers[0].drain_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(11));
+        pool.inspect_restart_queues();
+
+        let record = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("排空超时必须取消仍在建链的请求")
+            .unwrap();
+        assert_eq!(record.result, "drain-aborted");
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 0);
+        assert_eq!(pool.status().restart_queue, vec![1]);
+        drop((client, permit));
+    }
+
+    #[tokio::test]
+    async fn manual_graceful_restart_honors_drain_timeout() {
+        let (pool, workers, _jobs) = mock_pool(0, 0, Duration::ZERO, 1).await;
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        assert_eq!(pool.queue_graceful_restart_all(), 2);
+
+        pool.set_restart_policy(None, None, None, Some(Duration::from_secs(10)))
+            .unwrap();
+        *workers[0].drain_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(11));
+        pool.inspect_restart_queues();
+
+        assert!(workers[0].drain_forced.load(Ordering::Relaxed));
+        assert!(workers[0].abort_epoch.load(Ordering::Relaxed) > 0);
+        assert!(pool.status().restart_queue.contains(&1));
+        // 手动优雅重启同样受排空上限约束，不能因为「手动」就无限等待。
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            pool.logs()
+                .lines
+                .iter()
+                .filter(|line| line.text.contains("排空超过 10 秒"))
+                .count(),
+            1
+        );
+        drop((lease, permit));
+    }
+
+    #[tokio::test]
+    async fn disabling_all_thresholds_after_force_keeps_abort_and_restores_access() {
+        let (pool, workers, _jobs) = mock_pool(0, 1, Duration::ZERO, 1).await;
+        workers[0].warp_ready.store(true, Ordering::Relaxed);
+        let permit = pool.restart_limit.clone().acquire_owned().await.unwrap();
+        let lease = pool.checkout(Some("alice"), "192.0.2.1").unwrap();
+        let old_signal = lease.drain_signal();
+        pool.set_restart_policy(None, None, None, Some(Duration::from_secs(10)))
+            .unwrap();
+        *workers[0].drain_since.lock().unwrap() = Some(Instant::now() - Duration::from_secs(11));
+        pool.inspect_restart_queues();
+        assert!(workers[0].drain_forced.load(Ordering::Relaxed));
+
+        pool.set_restart_policy(Some(Duration::ZERO), Some(0), Some(0), None)
+            .unwrap();
+        assert!(pool.status().drain_queue.is_empty());
+        assert!(pool.status().restart_queue.is_empty());
+        assert!(!workers[0].restart_pending.load(Ordering::Relaxed));
+        assert!(!workers[0].draining.load(Ordering::Relaxed));
+        // 取消任务不能撤回已经发出的强制中断。
+        tokio::time::timeout(Duration::from_secs(1), old_signal.aborted())
+            .await
+            .expect("旧租约仍必须观察到强制中断");
+        // 恢复接入后新租约订阅当前代号，不会被上一轮误杀。
+        let next = pool.checkout(Some("bob"), "192.0.2.2").unwrap();
+        let fresh = next.drain_signal();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), fresh.aborted())
+                .await
+                .is_err()
+        );
+        drop((lease, next, permit));
+    }
+
+    #[tokio::test]
+    async fn remove_account_cancels_pending_connect() {
+        let (pool, workers, _jobs, _pending) = pending_net_pool().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, peer) = listener.accept().await.unwrap();
+        let mut request = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 11];
+        request.extend_from_slice(b"example.com");
+        request.extend_from_slice(&443u16.to_be_bytes());
+        client.write_all(&request).await.unwrap();
+
+        let handle = tokio::spawn(crate::socks::handle_pool(server, peer, pool.clone()));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while workers[0].active.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("请求应已取得实例并计入活跃连接");
+
+        pool.remove_account(1).unwrap();
+        let record = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("移除实例必须取消仍在建链的请求")
+            .unwrap();
+        assert_eq!(record.result, "drain-aborted");
+        assert_eq!(workers[0].active.load(Ordering::Relaxed), 0);
+        drop(client);
     }
 
     #[tokio::test]

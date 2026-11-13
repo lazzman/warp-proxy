@@ -21,6 +21,7 @@ const ATYP_DOMAIN: u8 = 0x03;
 const ATYP_V6: u8 = 0x04;
 
 /// 一条入口连接的访问日志字段。密码不会出现在这里。
+#[derive(Clone)]
 pub(crate) struct AccessRecord {
     pub id: u64,
     pub proto: &'static str,
@@ -34,6 +35,13 @@ pub(crate) struct AccessRecord {
     pub up: u64,
     pub down: u64,
     pub millis: u64,
+}
+
+/// 排空超时强制中断：记录访问日志，并让外层 select! 取消整个请求、释放 lease。
+pub(crate) fn aborted_record(mut record: AccessRecord, started: Instant) -> AccessRecord {
+    record.result = "drain-aborted".into();
+    record.millis = started.elapsed().as_millis() as u64;
+    record
 }
 
 /// 连接成功后写入实际地址族和对应出口。访问日志与活跃连接都读这份记录。
@@ -156,7 +164,11 @@ async fn handle_client(client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) {
     pool.record_access(access_line(&record));
 }
 
-async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -> AccessRecord {
+pub(crate) async fn handle_pool(
+    mut client: TcpStream,
+    peer: SocketAddr,
+    pool: Arc<Pool>,
+) -> AccessRecord {
     let started = Instant::now();
     let mut record = AccessRecord {
         id: 0,
@@ -190,7 +202,12 @@ async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -
         record.millis = started.elapsed().as_millis() as u64;
         return record;
     }
-    if let Some(user) = request.user.filter(|user| !user.is_empty()) {
+    if let Some(user) = request
+        .user
+        .as_ref()
+        .filter(|user| !user.is_empty())
+        .cloned()
+    {
         record.user = user;
     }
     record.target = format!("{}:{}", request.host, request.port);
@@ -226,24 +243,67 @@ async fn handle_pool(mut client: TcpStream, peer: SocketAddr, pool: Arc<Pool>) -
     };
     record.account = lease.worker_id.to_string();
     record.egress = lease.egress.clone();
-    match connect_target(&mut client, lease.net(), &request.host, request.port).await {
-        Ok((conn, family)) => {
-            note_connected(&mut record, family, &lease);
-            if client.write_all(&reply(0x00)).await.is_err() {
-                record.result = "write-failed".into();
-            } else {
-                let (up, down) = relay_session(&pool, client, conn, &lease, &mut record).await;
+    // checkout 到建链、写响应都可能长期阻塞，由外层 select! 整体取消；
+    // 进入转发后交给 relay_counted 自身的中断信号，保留会话流量与 netstack abort。
+    let drain_signal = lease.drain_signal();
+    let aborted = record.clone();
+    let result = tokio::select! {
+        biased;
+        _ = drain_signal.aborted() => aborted_record(aborted, started),
+        prepared = prepare_leased(client, &lease, request, record, started) => match prepared {
+            LeasePrepared::Failed(record) => record,
+            LeasePrepared::Relay { client, conn, mut record } => {
+                let (up, down, aborted) =
+                    relay_session(&pool, client, conn, &lease, &mut record).await;
                 record.up = up;
                 record.down = down;
-                record.result = "ok".into();
+                record.result = if aborted { "drain-aborted" } else { "ok" }.into();
+                record.millis = started.elapsed().as_millis() as u64;
+                record
+            }
+        },
+    };
+    drop(lease);
+    result
+}
+
+enum LeasePrepared {
+    Failed(AccessRecord),
+    Relay {
+        client: TcpStream,
+        conn: TcpConn,
+        record: AccessRecord,
+    },
+}
+
+async fn prepare_leased(
+    mut client: TcpStream,
+    lease: &crate::pool::ConnLease,
+    request: SocksRequest,
+    mut record: AccessRecord,
+    started: Instant,
+) -> LeasePrepared {
+    match connect_target(&mut client, lease.net(), &request.host, request.port).await {
+        Ok((conn, family)) => {
+            note_connected(&mut record, family, lease);
+            if client.write_all(&reply(0x00)).await.is_err() {
+                record.result = "write-failed".into();
+                record.millis = started.elapsed().as_millis() as u64;
+                LeasePrepared::Failed(record)
+            } else {
+                LeasePrepared::Relay {
+                    client,
+                    conn,
+                    record,
+                }
             }
         }
         Err(result) => {
             record.result = result.into();
+            record.millis = started.elapsed().as_millis() as u64;
+            LeasePrepared::Failed(record)
         }
     }
-    record.millis = started.elapsed().as_millis() as u64;
-    record
 }
 
 async fn connect_target(
@@ -292,7 +352,7 @@ pub(crate) async fn relay_session(
     conn: TcpConn,
     lease: &crate::pool::ConnLease,
     record: &mut AccessRecord,
-) -> (u64, u64) {
+) -> (u64, u64, bool) {
     let meter = std::sync::Arc::new(crate::console::TrafficMeter::new());
     let guard = pool.track_session(session_open(record, Arc::clone(&meter)));
     record.id = guard.id();
@@ -306,7 +366,7 @@ pub(crate) async fn relay_counted(
     conn: TcpConn,
     meter: Arc<crate::console::TrafficMeter>,
     drain_signal: crate::pool::DrainSignal,
-) -> (u64, u64) {
+) -> (u64, u64, bool) {
     let (mut reader_client, mut writer_client) = client.into_split();
     let net_abort = conn.abort_handle();
     let (mut reader_net, writer_net) = conn.into_split();
@@ -340,16 +400,19 @@ pub(crate) async fn relay_counted(
         writer_net.close();
     };
 
+    let mut aborted = false;
     tokio::select! {
         _ = net_to_client => {}
         _ = client_to_net => {}
         _ = drain_signal.aborted() => {
             net_abort.abort();
+            aborted = true;
         }
     }
     (
         meter.up.load(Ordering::Relaxed),
         meter.down.load(Ordering::Relaxed),
+        aborted,
     )
 }
 

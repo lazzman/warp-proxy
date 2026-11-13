@@ -815,11 +815,11 @@ function overview(data) {
       <div class="metrics">
         <div class="metric"><div class="k">已生效触发条件（任意满足）</div><div class="v">${triggers.length ? triggers.join(" / ") : "全部关闭"}</div><div class="s">三个阈值独立，按实例分别累计</div></div>
         <div class="metric"><div class="k">排空队列 · ${drains.length}</div><div class="v">${idList(drains)}</div><div class="s">每 ${data.restart_drain_check_seconds} 秒检测；${data.restart_drain_timeout_seconds > 0 ? "超过 " + duration(data.restart_drain_timeout_seconds) + " 断开剩余连接" : "不设超时"}</div></div>
-        <div class="metric"><div class="k">重启队列 · ${restarts.length}</div><div class="v">${idList(restarts)}</div><div class="s">同时最多重连 ${data.restart_concurrency} 个实例；无活跃连接才进入队列</div></div>
+        <div class="metric"><div class="k">重启队列 · ${restarts.length}</div><div class="v">${idList(restarts)}</div><div class="s">同时最多重连 ${data.restart_concurrency} 个实例；正常排空需无活跃连接，超时强制放行</div></div>
       </div>
       <details id="rules-details" class="rule-details mt-3" ${state.rulesOpen ? "open" : ""}>
         <summary>查看排空与黏性改派规则说明</summary>
-        <p class="mt-2 mb-1">任意一个条件达到即刻摘流，已建立的连接自然结束；排空到上限后会断开剩余连接。0 表示关闭该条件或排空超时，三个阈值全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
+        <p class="mt-2 mb-1">任意一个条件达到即刻摘流，已建立的连接自然结束；排空到上限后会中断从取实例到建链、转发的整条请求，即使计数暂时不为零也放行重连，不会无限等待。0 表示关闭该条件或排空超时，三个阈值全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
         <p class="mb-0">排空后新请求只选择其他可用实例：username-round / username-least 会保存新绑定、不自动迁回；username-hash / ip-hash 无状态，原实例恢复后可能重新选中。所有实例都不可用时才拒绝新连接。点击队列中的实例编号可直接跳转到实例列表。</p>
       </details>
     </div></div>
@@ -957,7 +957,7 @@ function instances(data) {
         <td class="text-end font-monospace">${duration(account.uptime_seconds)}</td>
         <td class="text-end">${rowStatus(account)}</td>
         <td class="text-nowrap row-actions col-tight">
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="停止接入新连接，等待活跃连接结束后按队列重连">优雅重连</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="停止接入新连接，等待活跃连接结束或排空到上限后按队列重连">优雅重连</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="手动强制重连，不等待排空，会中断已有连接">强制重连</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="单独探测该实例的出口 IP">测出口</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}" ${slotBusy ? "disabled" : ""}>${account.manual ? "停用" : "启用"}</button>

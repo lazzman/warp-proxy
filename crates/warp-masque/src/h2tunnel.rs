@@ -37,6 +37,17 @@ pub struct H2Io {
     in_rx: Arc<Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
 }
 
+/// 测试用：不连接真实隧道，只提供 actor 需要的通道。
+#[cfg(test)]
+pub(crate) fn dummy_h2_io() -> H2Io {
+    let (out, _rx) = mpsc::unbounded_channel();
+    let (_in_tx, in_rx) = mpsc::unbounded_channel();
+    H2Io {
+        out,
+        in_rx: Arc::new(Mutex::new(in_rx)),
+    }
+}
+
 impl H2Io {
     /// The largest IP packet the HTTP/2 path carries in one capsule.
     pub fn max_ip_packet(&self) -> usize {
