@@ -126,27 +126,30 @@ pub fn select_ip(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ConnectionHandle(u64);
+
 /// Commands sent from the async world to the smoltcp actor thread.
 enum Cmd {
     Inbound(Vec<u8>),
     Connect {
         remote: SocketAddr,
         from_net: tmpsc::Sender<Vec<u8>>,
-        reply: oneshot::Sender<Result<SocketHandle, String>>,
+        reply: oneshot::Sender<Result<ConnectionHandle, String>>,
     },
     Send {
-        handle: SocketHandle,
+        handle: ConnectionHandle,
         data: Vec<u8>,
     },
     Close {
-        handle: SocketHandle,
+        handle: ConnectionHandle,
     },
     Abort {
-        handle: SocketHandle,
+        handle: ConnectionHandle,
     },
-    /// connect() 已取得 SocketHandle，确认后续由 TcpConn 接管。
+    /// connect() 已取得连接标识，确认后续由 TcpConn 接管。
     Handoff {
-        handle: SocketHandle,
+        handle: ConnectionHandle,
     },
     Resolve {
         name: String,
@@ -279,7 +282,7 @@ impl AsyncWrite for TcpConn {
 /// [`AsyncRead`]/[`AsyncWrite`], so it can back a TLS client or be spliced with
 /// `tokio::io::copy_bidirectional`.
 pub struct TcpConn {
-    handle: SocketHandle,
+    handle: ConnectionHandle,
     cmd: smpsc::Sender<Cmd>,
     from_net: tmpsc::Receiver<Vec<u8>>,
     read_buf: Vec<u8>,
@@ -320,7 +323,7 @@ impl TcpConn {
     }
 
     /// Split into independent read/write halves for concurrent relaying.
-    pub fn into_split(mut self) -> (TcpReader, TcpWriter) {
+    pub fn into_split(self) -> (TcpReader, TcpWriter) {
         // 之后由 TcpWriter::drop 发 Close，不再需要守卫强制 abort。
         self.abort_guard.armed.store(false, Ordering::Relaxed);
         (
@@ -349,7 +352,7 @@ impl TcpReader {
 
 /// Write half of a [`TcpConn`]. Closes the connection when dropped.
 pub struct TcpWriter {
-    handle: SocketHandle,
+    handle: ConnectionHandle,
     cmd: smpsc::Sender<Cmd>,
 }
 
@@ -372,7 +375,7 @@ impl TcpWriter {
 
 pub struct TcpAbort {
     cmd: smpsc::Sender<Cmd>,
-    handle: SocketHandle,
+    handle: ConnectionHandle,
 }
 
 impl TcpAbort {
@@ -385,7 +388,7 @@ impl TcpAbort {
 
 struct AbortOnDrop {
     cmd: smpsc::Sender<Cmd>,
-    handle: SocketHandle,
+    handle: ConnectionHandle,
     armed: AtomicBool,
 }
 
@@ -449,9 +452,10 @@ pub fn spawn_with(
 // ---- the smoltcp actor -----------------------------------------------------
 
 struct Conn {
+    socket_handle: SocketHandle,
     from_net: tmpsc::Sender<Vec<u8>>,
     out_buf: VecDeque<u8>,
-    connect_reply: Option<oneshot::Sender<Result<SocketHandle, String>>>,
+    connect_reply: Option<oneshot::Sender<Result<ConnectionHandle, String>>>,
     /// 异步侧已确认接管该 socket；未确认时 from_net 关闭说明请求被取消。
     handed_off: bool,
     closing: bool,
@@ -484,7 +488,8 @@ struct Actor {
     sockets: SocketSet<'static>,
     start: StdInstant,
     next_port: u16,
-    conns: HashMap<SocketHandle, Conn>,
+    next_connection_id: u64,
+    conns: HashMap<ConnectionHandle, Conn>,
     dns_handle: SocketHandle,
     dns_pending: Vec<PendingDns>,
     preference: ResolvePreference,
@@ -538,6 +543,7 @@ impl Actor {
             sockets,
             start,
             next_port: 49152,
+            next_connection_id: 0,
             conns: HashMap::new(),
             dns_handle,
             dns_pending: Vec::new(),
@@ -614,8 +620,10 @@ impl Actor {
             }
             Cmd::Abort { handle } => {
                 if let Some(conn) = self.conns.remove(&handle) {
-                    self.sockets.get_mut::<tcp::Socket>(handle).abort();
-                    self.sockets.remove(handle);
+                    self.sockets
+                        .get_mut::<tcp::Socket>(conn.socket_handle)
+                        .abort();
+                    self.sockets.remove(conn.socket_handle);
                     drop(conn);
                 }
             }
@@ -632,8 +640,13 @@ impl Actor {
         &mut self,
         remote: SocketAddr,
         from_net: tmpsc::Sender<Vec<u8>>,
-        reply: oneshot::Sender<Result<SocketHandle, String>>,
+        reply: oneshot::Sender<Result<ConnectionHandle, String>>,
     ) {
+        let Some(connection_id) = self.next_connection_id.checked_add(1) else {
+            let _ = reply.send(Err("connection ids exhausted".into()));
+            return;
+        };
+        self.next_connection_id = connection_id;
         let rx = tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]);
         let tx = tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]);
         let handle = self.sockets.add(tcp::Socket::new(rx, tx));
@@ -649,8 +662,9 @@ impl Actor {
         match sock.connect(iface.context(), remote_ep, local_ep) {
             Ok(()) => {
                 self.conns.insert(
-                    handle,
+                    ConnectionHandle(connection_id),
                     Conn {
+                        socket_handle: handle,
                         from_net,
                         out_buf: VecDeque::new(),
                         connect_reply: Some(reply),
@@ -733,12 +747,12 @@ impl Actor {
     }
 
     fn service_sockets(&mut self) {
-        let handles: Vec<SocketHandle> = self.conns.keys().copied().collect();
-        for h in handles {
+        let handles: Vec<ConnectionHandle> = self.conns.keys().copied().collect();
+        for handle in handles {
             let mut remove = false;
             {
-                let sock = self.sockets.get_mut::<tcp::Socket>(h);
-                let conn = self.conns.get_mut(&h).expect("conn for handle");
+                let conn = self.conns.get_mut(&handle).expect("conn for handle");
+                let sock = self.sockets.get_mut::<tcp::Socket>(conn.socket_handle);
 
                 // 入口请求被取消且没有任何 TcpConn/TcpWriter 接管时直接 abort，
                 // 避免半开 socket 和 conns 项留在 actor 里直到远端超时：
@@ -760,7 +774,7 @@ impl Actor {
                     // Resolve the pending connect once established or failed.
                     if conn.connect_reply.is_some() {
                         if sock.state() == tcp::State::Established {
-                            if conn.connect_reply.take().unwrap().send(Ok(h)).is_err() {
+                            if conn.connect_reply.take().unwrap().send(Ok(handle)).is_err() {
                                 // 接收端恰好在 send 时被丢弃，同样没有接管者。
                                 sock.abort();
                                 remove = true;
@@ -807,8 +821,8 @@ impl Actor {
                 }
             }
             if remove {
-                self.sockets.remove(h);
-                self.conns.remove(&h); // dropping from_net signals EOF to the reader
+                let conn = self.conns.remove(&handle).expect("conn for handle");
+                self.sockets.remove(conn.socket_handle);
             }
         }
     }
@@ -1046,15 +1060,11 @@ mod cancellation_tests {
     use std::sync::mpsc as smpsc;
     use tokio::sync::{mpsc as tmpsc, oneshot};
 
-    fn socket_handle() -> SocketHandle {
-        let mut sockets = SocketSet::new(Vec::new());
-        sockets.add(tcp::Socket::new(
-            tcp::SocketBuffer::new(vec![0u8; 1024]),
-            tcp::SocketBuffer::new(vec![0u8; 1024]),
-        ))
+    fn connection_handle() -> ConnectionHandle {
+        ConnectionHandle(1)
     }
 
-    fn tcp_conn(cmd: &smpsc::Sender<Cmd>, handle: SocketHandle) -> TcpConn {
+    fn tcp_conn(cmd: &smpsc::Sender<Cmd>, handle: ConnectionHandle) -> TcpConn {
         let (_from_net_tx, from_net_rx) = tmpsc::channel(1);
         TcpConn {
             handle,
@@ -1073,15 +1083,196 @@ mod cancellation_tests {
     #[test]
     fn dropping_unsplit_tcp_conn_aborts_actor_socket() {
         let (cmd, rx) = smpsc::channel();
-        let handle = socket_handle();
+        let handle = connection_handle();
         drop(tcp_conn(&cmd, handle));
         assert!(matches!(rx.try_recv(), Ok(Cmd::Abort { .. })));
+    }
+
+    struct ReusedSocket {
+        actor: Actor,
+        old_connection: TcpConn,
+        queued: smpsc::Receiver<Cmd>,
+        new_handle: ConnectionHandle,
+        new_reader: tmpsc::Receiver<Vec<u8>>,
+        new_reply: oneshot::Receiver<Result<ConnectionHandle, String>>,
+    }
+
+    fn reused_socket() -> ReusedSocket {
+        let mut actor = Actor::new(
+            TunnelIo::H2(crate::h2tunnel::dummy_h2_io()),
+            1280,
+            Ipv4Addr::new(172, 16, 0, 2),
+            None,
+            ResolvePreference::Auto,
+        );
+        let (cmd, queued) = smpsc::channel();
+        let (old_from_net, old_reader) = tmpsc::channel(1);
+        let (old_reply, _old_receiver) = oneshot::channel();
+        actor.handle_cmd(Cmd::Connect {
+            remote: "198.51.100.1:443".parse().unwrap(),
+            from_net: old_from_net,
+            reply: old_reply,
+        });
+        let old_handle = *actor.conns.keys().next().unwrap();
+        actor.handle_cmd(Cmd::Handoff { handle: old_handle });
+        assert!(actor
+            .conns
+            .get_mut(&old_handle)
+            .unwrap()
+            .connect_reply
+            .take()
+            .unwrap()
+            .send(Ok(old_handle))
+            .is_ok());
+        let old_connection = TcpConn {
+            handle: old_handle,
+            cmd: cmd.clone(),
+            from_net: old_reader,
+            read_buf: Vec::new(),
+            read_pos: 0,
+            abort_guard: AbortOnDrop {
+                cmd: cmd.clone(),
+                handle: old_handle,
+                armed: AtomicBool::new(true),
+            },
+        };
+        let old_socket = actor.conns[&old_handle].socket_handle;
+        actor.sockets.get_mut::<tcp::Socket>(old_socket).abort();
+        actor.service_sockets();
+        assert!(actor.conns.is_empty());
+
+        let (new_from_net, new_reader) = tmpsc::channel(1);
+        let (new_reply, new_receiver) = oneshot::channel();
+        actor.handle_cmd(Cmd::Connect {
+            remote: "198.51.100.2:443".parse().unwrap(),
+            from_net: new_from_net,
+            reply: new_reply,
+        });
+        let new_handle = *actor.conns.keys().next().unwrap();
+        let new_socket = actor.conns[&new_handle].socket_handle;
+        assert_eq!(old_socket, new_socket, "测试必须实际复用 socket 槽位");
+        assert_ne!(old_handle, new_handle, "不同连接必须持有不同标识");
+        ReusedSocket {
+            actor,
+            old_connection,
+            queued,
+            new_handle,
+            new_reader,
+            new_reply: new_receiver,
+        }
+    }
+
+    #[test]
+    fn dropping_old_tcp_conn_does_not_abort_reused_socket() {
+        let mut reused = reused_socket();
+        drop(reused.old_connection);
+        reused.actor.handle_cmd(reused.queued.try_recv().unwrap());
+
+        assert!(
+            reused.actor.conns.contains_key(&reused.new_handle),
+            "旧连接的 Drop 不应中断复用槽位的新连接"
+        );
+        let new_socket = reused.actor.conns[&reused.new_handle].socket_handle;
+        assert!(reused
+            .actor
+            .sockets
+            .get::<tcp::Socket>(new_socket)
+            .is_active());
+    }
+
+    #[test]
+    fn stale_split_connection_commands_do_not_affect_reused_socket() {
+        let mut reused = reused_socket();
+        let old_handle = reused.old_connection.handle;
+        let old_abort = reused.old_connection.abort_handle();
+        let (_old_reader, old_writer) = reused.old_connection.into_split();
+        old_writer.send(b"stale data".to_vec());
+        old_writer.close();
+        drop(old_writer);
+        old_abort.abort();
+        reused.actor.handle_cmd(Cmd::Handoff { handle: old_handle });
+        while let Ok(command) = reused.queued.try_recv() {
+            reused.actor.handle_cmd(command);
+        }
+
+        let current = reused.actor.conns.get_mut(&reused.new_handle).unwrap();
+        assert!(current.out_buf.is_empty(), "旧连接不得向新连接注入数据");
+        assert!(!current.closing, "旧连接不得关闭新连接");
+        assert!(!current.handed_off, "旧交接确认不得接管新连接");
+        assert!(current
+            .connect_reply
+            .take()
+            .unwrap()
+            .send(Ok(reused.new_handle))
+            .is_ok());
+        drop(reused.new_reader);
+        drop(reused.new_reply);
+        reused.actor.service_sockets();
+        assert!(
+            reused.actor.conns.is_empty(),
+            "旧交接确认不得阻止新连接取消后的清理"
+        );
+    }
+
+    #[test]
+    fn current_connection_commands_still_apply_after_socket_reuse() {
+        let mut reused = reused_socket();
+        drop(reused.old_connection);
+        reused.actor.handle_cmd(reused.queued.try_recv().unwrap());
+        reused.actor.handle_cmd(Cmd::Send {
+            handle: reused.new_handle,
+            data: b"current data".to_vec(),
+        });
+        reused.actor.handle_cmd(Cmd::Handoff {
+            handle: reused.new_handle,
+        });
+        reused.actor.handle_cmd(Cmd::Close {
+            handle: reused.new_handle,
+        });
+        let current = &reused.actor.conns[&reused.new_handle];
+        assert_eq!(
+            current.out_buf.iter().copied().collect::<Vec<_>>(),
+            b"current data"
+        );
+        assert!(current.closing);
+        assert!(current.handed_off);
+        reused.actor.handle_cmd(Cmd::Abort {
+            handle: reused.new_handle,
+        });
+        assert!(reused.actor.conns.is_empty());
+        assert_eq!(reused.actor.sockets.iter().count(), 1);
+    }
+
+    #[test]
+    fn exhausted_connection_ids_do_not_wrap_or_allocate_sockets() {
+        let mut actor = Actor::new(
+            TunnelIo::H2(crate::h2tunnel::dummy_h2_io()),
+            1280,
+            Ipv4Addr::new(172, 16, 0, 2),
+            None,
+            ResolvePreference::Auto,
+        );
+        actor.next_connection_id = u64::MAX;
+        let (from_net, _reader) = tmpsc::channel(1);
+        let (reply, mut receiver) = oneshot::channel();
+        actor.handle_cmd(Cmd::Connect {
+            remote: "198.51.100.1:443".parse().unwrap(),
+            from_net,
+            reply,
+        });
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            Err("connection ids exhausted".into())
+        );
+        assert_eq!(actor.next_connection_id, u64::MAX);
+        assert!(actor.conns.is_empty());
+        assert_eq!(actor.sockets.iter().count(), 1);
     }
 
     #[test]
     fn split_tcp_conn_leaves_close_to_writer() {
         let (cmd, rx) = smpsc::channel();
-        let handle = socket_handle();
+        let handle = connection_handle();
         let (reader, writer) = tcp_conn(&cmd, handle).into_split();
         drop((reader, writer));
         let mut saw_abort = false;
@@ -1096,7 +1287,7 @@ mod cancellation_tests {
     #[test]
     fn explicit_close_disarms_abort_guard() {
         let (cmd, rx) = smpsc::channel();
-        let handle = socket_handle();
+        let handle = connection_handle();
         let conn = tcp_conn(&cmd, handle);
         conn.close();
         drop(conn);
