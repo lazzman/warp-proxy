@@ -25,6 +25,8 @@ pub struct TraceInfo {
 }
 
 const TRACE_HOST: &str = "www.cloudflare.com";
+/// 单次 trace 响应最大读取字节数，防止异常服务端撑爆内存。
+const MAX_TRACE_BYTES: u64 = 64 * 1024;
 /// 固定的 Cloudflare IPv4，用来观察 IPv4 出口，不经过隧道内 DNS。
 pub const TRACE_V4: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(104, 16, 124, 96)), 443);
 /// 固定的 Cloudflare IPv6。和 MicroWARP 的双栈观测使用同一个地址。
@@ -40,16 +42,21 @@ pub async fn fetch_trace(net: &NetHandle) -> TraceInfo {
 
 /// 在指定时间内拉取出口 trace。超时或失败都写进结果，不向外抛错。
 pub async fn fetch_trace_timeout(net: &NetHandle, timeout: Duration) -> TraceInfo {
-    let ip = match net.resolve(TRACE_HOST).await {
-        Ok(ip) => ip,
-        Err(err) => {
-            return TraceInfo {
-                err: Some(err),
-                ..Default::default()
-            }
-        }
+    let work = async {
+        let ip = net.resolve(TRACE_HOST).await?;
+        fetch_on(net, SocketAddr::new(ip, 443)).await
     };
-    fetch_trace_at(net, SocketAddr::new(ip, 443), timeout).await
+    match tokio::time::timeout(timeout, work).await {
+        Ok(Ok(info)) => info,
+        Ok(Err(err)) => TraceInfo {
+            err: Some(err),
+            ..Default::default()
+        },
+        Err(_) => TraceInfo {
+            err: Some("trace timeout".into()),
+            ..Default::default()
+        },
+    }
 }
 
 /// 连到指定地址拉取 trace，SNI 和 Host 仍是 www.cloudflare.com。
@@ -94,7 +101,10 @@ async fn fetch_on(net: &NetHandle, target: SocketAddr) -> Result<TraceInfo, Stri
         .map_err(|e| e.to_string())?;
 
     let mut buf = Vec::new();
-    tls.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
+    tls.take(MAX_TRACE_BYTES)
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&buf);
     let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
 
@@ -144,5 +154,17 @@ colo=SJC
     fn dual_stack_targets_are_numeric() {
         assert!(TRACE_V4.is_ipv4());
         assert_eq!(TRACE_V6.ip().to_string(), "2606:4700::11");
+    }
+
+    #[tokio::test]
+    async fn fetch_trace_timeout_bounds_hung_dns_resolution() {
+        let (net, _guard) = crate::netstack::pending_test_handle();
+        let info = tokio::time::timeout(
+            Duration::from_secs(1),
+            fetch_trace_timeout(&net, Duration::from_millis(50)),
+        )
+        .await
+        .expect("DNS 卡死时必须受 fetch_trace_timeout 总超时约束");
+        assert_eq!(info.err.as_deref(), Some("trace timeout"));
     }
 }

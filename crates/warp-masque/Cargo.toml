@@ -34,7 +34,7 @@ h3-quinn = "0.0.10"
 h3-datagram = "0.0.2"
 http = "1"
 bytes = "1"
-smoltcp = "0.12.0"
+smoltcp = { version = "0.12.0", features = ["socket-tcp-cubic", "assembler-max-segment-count-32"] }
 h2 = { version = "0.4", default-features = false }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 

@@ -51,10 +51,47 @@ impl Default for Policy {
     }
 }
 
+#[derive(Default)]
+struct StickyState {
+    users: HashMap<String, usize>,
+    /// 每个账号当前黏住的用户名计数，避免新用户分配时持锁全表扫描。
+    counts: HashMap<usize, usize>,
+}
+
+impl StickyState {
+    fn insert(&mut self, user: String, worker_id: usize) {
+        if let Some(previous) = self.users.insert(user, worker_id) {
+            self.dec_count(previous);
+        }
+        *self.counts.entry(worker_id).or_insert(0) += 1;
+    }
+
+    fn remove(&mut self, user: &str) {
+        if let Some(previous) = self.users.remove(user) {
+            self.dec_count(previous);
+        }
+    }
+
+    fn retain_not_worker(&mut self, worker_id: usize) {
+        self.users.retain(|_, id| *id != worker_id);
+        self.counts.remove(&worker_id);
+    }
+
+    fn dec_count(&mut self, worker_id: usize) {
+        if let Some(count) = self.counts.get_mut(&worker_id) {
+            if *count <= 1 {
+                self.counts.remove(&worker_id);
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+}
+
 pub struct Scheduler {
     rr: AtomicUsize,
     sticky_cursor: AtomicUsize,
-    sticky_map: Mutex<HashMap<String, usize>>,
+    sticky: Mutex<StickyState>,
     rotate_started: Mutex<Instant>,
     rotate_slot: Mutex<u64>,
     rotate_target: Mutex<Option<usize>>,
@@ -66,7 +103,7 @@ impl Scheduler {
         Self {
             rr: AtomicUsize::new(0),
             sticky_cursor: AtomicUsize::new(0),
-            sticky_map: Mutex::new(HashMap::new()),
+            sticky: Mutex::new(StickyState::default()),
             rotate_started: Mutex::new(Instant::now()),
             rotate_slot: Mutex::new(0),
             rotate_target: Mutex::new(None),
@@ -76,12 +113,7 @@ impl Scheduler {
 
     /// 每个账号当前黏住的用户名数量。
     pub fn user_counts(&self) -> HashMap<usize, usize> {
-        let map = self.sticky_map.lock().unwrap();
-        let mut counts = HashMap::new();
-        for id in map.values() {
-            *counts.entry(*id).or_insert(0) += 1;
-        }
-        counts
+        self.sticky.lock().unwrap().counts.clone()
     }
 
     pub fn forget(&self, worker_id: usize) {
@@ -97,10 +129,7 @@ impl Scheduler {
     }
 
     pub fn forget_users(&self, worker_id: usize) {
-        self.sticky_map
-            .lock()
-            .unwrap()
-            .retain(|_, id| *id != worker_id);
+        self.sticky.lock().unwrap().retain_not_worker(worker_id);
     }
 
     pub fn pick(
@@ -157,30 +186,19 @@ impl Scheduler {
         by_mapping: bool,
         active: &impl Fn(usize) -> usize,
     ) -> Result<usize, PickFail> {
-        let mut map = self.sticky_map.lock().unwrap();
-        if let Some(id) = map.get(user).copied() {
+        let mut state = self.sticky.lock().unwrap();
+        if let Some(id) = state.users.get(user).copied() {
             if eligible.contains(&id) {
                 return Ok(id);
             }
-            map.remove(user);
+            state.remove(user);
         }
         if eligible.is_empty() {
             return Err(PickFail::NoWorker);
         }
-        let mut mapping_counts = HashMap::<usize, usize>::new();
-        if by_mapping {
-            for id in eligible {
-                mapping_counts.insert(*id, 0);
-            }
-            for id in map.values() {
-                if let Some(count) = mapping_counts.get_mut(id) {
-                    *count += 1;
-                }
-            }
-        }
         let score = |id: usize| -> usize {
             if by_mapping {
-                mapping_counts.get(&id).copied().unwrap_or(0)
+                state.counts.get(&id).copied().unwrap_or(0)
             } else {
                 active(id)
             }
@@ -199,12 +217,12 @@ impl Scheduler {
         }
         self.sticky_cursor
             .fetch_add(offset_used + 1, Ordering::Relaxed);
-        if map.len() >= MAX_STICKY_USERS {
+        if state.users.len() >= MAX_STICKY_USERS {
             // 容量保护：保留已有黏性，超出上限的新用户本次仍走选路结果，
             // 但不再建立持久映射。原有用户不会被随机淘汰或突然改派。
             return Ok(chosen);
         }
-        map.insert(user.to_string(), chosen);
+        state.insert(user.to_string(), chosen);
         Ok(chosen)
     }
 
@@ -511,5 +529,35 @@ mod tests {
             .pick(&rule, &eligible, &eligible, None, "192.0.2.1", |_| 0)
             .unwrap();
         assert_eq!(restored, 1);
+    }
+
+    #[test]
+    fn user_counts_stay_in_sync_across_assign_and_forget() {
+        let scheduler = Scheduler::new();
+        let rule = Policy {
+            strategy: Strategy::Round,
+            sticky: StickyMode::UsernameRound,
+            rotate_every: Duration::ZERO,
+        };
+        for name in ["u1", "u2", "u3", "u4"] {
+            scheduler
+                .pick(&rule, &[1, 2], &[1, 2], Some(name), "192.0.2.1", |_| 0)
+                .unwrap();
+        }
+        let counts = scheduler.user_counts();
+        assert_eq!(counts.get(&1), Some(&2));
+        assert_eq!(counts.get(&2), Some(&2));
+
+        scheduler.forget_users(1);
+        let counts = scheduler.user_counts();
+        assert_eq!(counts.get(&1), None);
+        assert_eq!(counts.get(&2), Some(&2));
+
+        // u1 原绑定在 1，现在重新分到 2 时计数应准确递增。
+        let reassigned = scheduler
+            .pick(&rule, &[2], &[2], Some("u1"), "192.0.2.1", |_| 0)
+            .unwrap();
+        assert_eq!(reassigned, 2);
+        assert_eq!(scheduler.user_counts().get(&2), Some(&3));
     }
 }

@@ -64,6 +64,31 @@ pub const H3_SETTING_DATAGRAM_00: u64 = 0x276;
 pub const TUNNEL_MTU: usize = 1280;
 /// CONNECT-IP context id for a full (uncompressed) IP packet.
 pub const CONTEXT_ID_FULL_PACKET: u64 = 0;
+/// QUIC datagram 接收/发送缓冲大小，避免多流并发时在底层 UDP 队列丢包。
+const QUIC_DGRAM_RECV_BUF: usize = 4 * 1024 * 1024;
+const QUIC_DGRAM_SEND_BUF: usize = 2 * 1024 * 1024;
+
+/// 释放时主动中止后台 Tokio 任务，避免 Drop JoinHandle 仅 detach 导致任务与通道泄漏。
+pub(crate) struct AbortOnDrop(pub(crate) tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// 释放时显式关闭底层 QUIC 连接与端点，确保 UDP 套接字和接收等待者立刻解除阻塞。
+struct CloseQuicOnDrop {
+    quic: quinn::Connection,
+    endpoint: quinn::Endpoint,
+}
+
+impl Drop for CloseQuicOnDrop {
+    fn drop(&mut self) {
+        self.quic.close(0u32.into(), b"tunnel closed");
+        self.endpoint.close(0u32.into(), b"tunnel closed");
+    }
+}
 
 /// How to reach the MASQUE endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +140,8 @@ pub async fn dial_quic(
         quinn::IdleTimeout::try_from(Duration::from_secs(30))
             .map_err(|e| Error::Tunnel(format!("idle timeout: {e}")))?,
     ));
+    transport.datagram_receive_buffer_size(Some(QUIC_DGRAM_RECV_BUF));
+    transport.datagram_send_buffer_size(QUIC_DGRAM_SEND_BUF);
     client_cfg.transport_config(Arc::new(transport));
 
     // Bind a UDP socket in the endpoint's address family.
@@ -241,6 +268,10 @@ impl Tunnel {
         // Clone the connection handle for raw QUIC datagrams; h3-quinn's own
         // datagram support is a disabled feature, so it won't consume them.
         let dgram_conn = quic.clone();
+        let quic_guard = CloseQuicOnDrop {
+            quic: dgram_conn.clone(),
+            endpoint,
+        };
         let h3_conn = h3_quinn::Connection::new(quic);
 
         let (mut driver, mut send_request) = h3::client::builder()
@@ -250,17 +281,17 @@ impl Tunnel {
             .await
             .map_err(|e| Error::Tunnel(format!("h3 connect: {e}")))?;
 
-        let driver_handle = tokio::spawn(async move {
+        let driver_guard = AbortOnDrop(tokio::spawn(async move {
             let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
-        });
+        }));
 
         // Signal death when the QUIC connection closes.
         let (dead_tx, dead_rx) = tokio::sync::watch::channel(false);
         let watch_conn = dgram_conn.clone();
-        tokio::spawn(async move {
+        let watch_guard = AbortOnDrop(tokio::spawn(async move {
             watch_conn.closed().await;
             let _ = dead_tx.send(true);
-        });
+        }));
 
         let req = http::Request::builder()
             .method(http::Method::CONNECT)
@@ -299,11 +330,12 @@ impl Tunnel {
             assigned_v6,
             dead_rx,
             vec![
-                Box::new(endpoint),
-                Box::new(driver_handle),
+                Box::new(driver_guard),
+                Box::new(watch_guard),
                 Box::new(stream),
                 // h3 closes the connection once the last SendRequest is dropped.
                 Box::new(send_request),
+                Box::new(quic_guard),
             ],
         ))
     }

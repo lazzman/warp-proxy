@@ -4,7 +4,7 @@
 //! 用户名密码；未配置密码时，请求里的 Basic 用户名只用于黏性，不拒绝匿名。
 
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,6 +14,10 @@ use crate::pool::Pool;
 use crate::schedule::PickFail;
 use crate::socks::{self, AccessRecord};
 use std::sync::Arc;
+
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(15);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn sticky_client_ip(peer: SocketAddr) -> String {
     peer.ip().to_string()
@@ -53,10 +57,15 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
         down: 0,
         millis: 0,
     };
-    let request = match read_headers(&mut client).await {
-        Ok(request) => request,
-        Err(result) => {
+    let request = match tokio::time::timeout(HANDSHAKE_TIMEOUT, read_headers(&mut client)).await {
+        Ok(Ok(request)) => request,
+        Ok(Err(result)) => {
             record.result = result.into();
+            record.millis = started.elapsed().as_millis() as u64;
+            return record;
+        }
+        Err(_) => {
+            record.result = "read-timeout".into();
             record.millis = started.elapsed().as_millis() as u64;
             return record;
         }
@@ -96,6 +105,15 @@ pub async fn handle(mut client: TcpStream, pool: Arc<Pool>, peer: SocketAddr) ->
         record.target = format!("{}:{}", forward.host, forward.port);
         Prepared::Forward(forward)
     };
+
+    // 与 SOCKS5 保持一致：关闭 WARP 或访问本机回环时走直连。
+    let target_host = match &prepared {
+        Prepared::Connect { host, .. } => host.as_str(),
+        Prepared::Forward(forward) => forward.host.as_str(),
+    };
+    if !pool.enabled() || socks::is_loopback_host(target_host) {
+        return handle_direct(client, request, prepared, record, started).await;
+    }
 
     let lease = match pool.checkout(username.as_deref(), &client_ip) {
         Ok(lease) => lease,
@@ -142,7 +160,7 @@ async fn prepare_leased(
 ) -> LeasePrepared {
     match prepared {
         Prepared::Connect { host, port } => {
-            let conn = match open_tunnel(lease.net(), &host, port).await {
+            let mut conn = match open_tunnel(lease.net(), &host, port).await {
                 Ok((conn, family)) => {
                     socks::note_connected(&mut record, family, lease);
                     conn
@@ -163,7 +181,11 @@ async fn prepare_leased(
                 return LeasePrepared::Failed(record);
             }
             if !request.rest.is_empty() {
-                let _ = conn_write(&conn, &request.rest);
+                if conn_write_all(&mut conn, &request.rest).await.is_err() {
+                    record.result = "connect".into();
+                    record.millis = started.elapsed().as_millis() as u64;
+                    return LeasePrepared::Failed(record);
+                }
                 record.up += request.rest.len() as u64;
             }
             LeasePrepared::Relay {
@@ -380,17 +402,62 @@ async fn open_tunnel(
     host: &str,
     port: u16,
 ) -> Result<(crate::netstack::TcpConn, &'static str), &'static str> {
-    let ip = net.resolve(host).await.map_err(|_| "resolve")?;
-    let family = if ip.is_ipv4() { "ipv4" } else { "ipv6" };
-    net.connect(std::net::SocketAddr::new(ip, port))
+    let ip = tokio::time::timeout(RESOLVE_TIMEOUT, net.resolve(host))
         .await
-        .map(|conn| (conn, family))
-        .map_err(|_| "connect")
+        .map_err(|_| "resolve")?
+        .map_err(|_| "resolve")?;
+    let family = if ip.is_ipv4() { "ipv4" } else { "ipv6" };
+    tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        net.connect(std::net::SocketAddr::new(ip, port)),
+    )
+    .await
+    .map_err(|_| "connect")?
+    .map(|conn| (conn, family))
+    .map_err(|_| "connect")
 }
 
-fn conn_write(conn: &crate::netstack::TcpConn, bytes: &[u8]) -> std::io::Result<()> {
-    conn.send(bytes.to_vec());
-    Ok(())
+async fn handle_direct(
+    mut client: TcpStream,
+    request: Request,
+    prepared: Prepared,
+    mut record: AccessRecord,
+    started: Instant,
+) -> AccessRecord {
+    let (host, port, initial_payload, send_200) = match prepared {
+        Prepared::Connect { host, port } => (host, port, request.rest, true),
+        Prepared::Forward(forward) => (forward.host, forward.port, forward.head, false),
+    };
+    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host.as_str(), port))).await {
+        Ok(Ok(mut upstream)) => {
+            let _ = upstream.set_nodelay(true);
+            if send_200
+                && write_simple(&mut client, "200 Connection Established", "")
+                    .await
+                    .is_err()
+            {
+                record.result = "write-failed".into();
+            } else if !initial_payload.is_empty()
+                && upstream.write_all(&initial_payload).await.is_err()
+            {
+                record.result = "connect".into();
+            } else {
+                if let Ok((up, down)) =
+                    tokio::io::copy_bidirectional(&mut client, &mut upstream).await
+                {
+                    record.up += initial_payload.len() as u64 + up;
+                    record.down += down;
+                }
+                record.result = "direct".into();
+            }
+        }
+        Ok(Err(_)) | Err(_) => {
+            let _ = write_simple(&mut client, "502 Bad Gateway", "").await;
+            record.result = "connect".into();
+        }
+    }
+    record.millis = started.elapsed().as_millis() as u64;
+    record
 }
 
 async fn conn_write_all(conn: &mut crate::netstack::TcpConn, bytes: &[u8]) -> std::io::Result<()> {

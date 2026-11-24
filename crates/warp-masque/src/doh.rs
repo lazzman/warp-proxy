@@ -8,8 +8,12 @@
 //! is unaffected by poisoned DNS.
 
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 use crate::error::{Error, Result};
+
+const DOH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DOH_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 1.1.1.1, reached by IP (no system DNS needed).
 const DOH_IP: &str = "1.1.1.1";
@@ -30,6 +34,8 @@ pub async fn resolve_a(host: &str) -> Result<Vec<IpAddr>> {
         .map_err(|e| Error::Config(format!("doh addr: {e}")))?;
     let client = reqwest::Client::builder()
         .use_rustls_tls()
+        .connect_timeout(DOH_CONNECT_TIMEOUT)
+        .timeout(DOH_REQUEST_TIMEOUT)
         .resolve(DOH_SNI, doh_addr)
         .build()?;
 

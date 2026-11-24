@@ -27,6 +27,10 @@ use crate::{DeviceKeypair, WarpConfig};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const CONNECT_CONCURRENCY: usize = 4;
+/// 单次隧道建连总超时，防止单节点卡死永久占住全局重启/重连并发信号量。
+const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 连续出口健康检查失败达到该次数时，判定隧道假死并主动重建。
+const HEALTH_FAIL_RECONNECT_THRESHOLD: usize = 3;
 // 精确去重身份需要内存；限制单实例的用户阈值以防长期运行时无限累积。
 const MAX_RESTART_USERS: usize = 1_000_000;
 
@@ -329,6 +333,8 @@ pub struct Worker {
     stop_notify: Notify,
     /// 曾经确认过 warp=on 或 warp=plus。之后的出口检查失败不会拆隧道。
     warp_ready: AtomicBool,
+    /// 连续出口检查失败次数，超过阈值后主动重建假死隧道。
+    health_failures: AtomicUsize,
     /// 实例进入排空后冻结旧隧道：监督器不得执行其他主动重建操作。
     drain_finished: Notify,
     ready_since: Mutex<Option<Instant>>,
@@ -395,6 +401,7 @@ impl Worker {
             stopped: AtomicBool::new(false),
             stop_notify: Notify::new(),
             warp_ready: AtomicBool::new(false),
+            health_failures: AtomicUsize::new(0),
             drain_finished: Notify::new(),
             ready_since: Mutex::new(None),
             drain_since: Mutex::new(None),
@@ -427,15 +434,6 @@ impl Worker {
         self.inner.lock().unwrap().dead.clone()
     }
 
-    fn clear_net(&self) {
-        self.warp_ready.store(false, Ordering::Relaxed);
-        let mut inner = self.inner.lock().unwrap();
-        inner.net = None;
-        inner.dead = None;
-        inner.egress_v4 = None;
-        inner.egress_v6 = None;
-    }
-
     fn retire(&self) {
         let mut inner = self.inner.lock().unwrap();
         self.retire_inner(&mut inner);
@@ -450,6 +448,7 @@ impl Worker {
 
     fn retire_inner(&self, inner: &mut WorkerInner) {
         self.warp_ready.store(false, Ordering::Relaxed);
+        self.health_failures.store(0, Ordering::Relaxed);
         inner.net = None;
         inner.dead = None;
         inner.tunnel = None;
@@ -600,6 +599,7 @@ impl Worker {
         let _inner = self.inner.lock().unwrap();
         *self.usage.lock().unwrap() = RestartUsage::default();
         *self.ready_since.lock().unwrap() = Some(Instant::now());
+        self.health_failures.store(0, Ordering::Relaxed);
         self.clear_drain();
         self.restart_pending.store(false, Ordering::Relaxed);
         self.manual_drain_requested.store(false, Ordering::Relaxed);
@@ -915,8 +915,12 @@ impl Pool {
     async fn build_tunnel(&self, worker: &Arc<Worker>) -> crate::Result<()> {
         let config = worker.inner.lock().unwrap().config.clone();
         let key = DeviceKeypair::from_private_b64(&config.private_key)?;
-        let tunnel =
-            Tunnel::connect_via(&config, &key, self.transport(), worker.upstream.as_ref()).await?;
+        let tunnel = tokio::time::timeout(
+            TUNNEL_CONNECT_TIMEOUT,
+            Tunnel::connect_via(&config, &key, self.transport(), worker.upstream.as_ref()),
+        )
+        .await
+        .map_err(|_| crate::Error::Tunnel("建立隧道超时".into()))??;
         let v4 = tunnel.assigned_v4();
         let dead = tunnel.dead_signal();
         let net = netstack::spawn_with(tunnel.io(), v4, tunnel.assigned_v6(), self.resolve);
@@ -2020,6 +2024,23 @@ impl Pool {
     }
 }
 
+impl Drop for Pool {
+    fn drop(&mut self) {
+        // 释放连接池时立刻停止所有账号并拆掉旧隧道与 netstack，
+        // 打破 supervise 与 Worker.restart_tx 的自引用保持，避免任务与线程残留。
+        let workers = std::mem::take(self.workers.get_mut().unwrap_or_else(|e| e.into_inner()));
+        for worker in workers {
+            worker.begin_draining();
+            worker.abort_drain();
+            worker.stopped.store(true, Ordering::Release);
+            worker.stop_notify.notify_waiters();
+            worker.retire();
+            worker.rebuild.notify_one();
+        }
+        self.restart_wake.notify_waiters();
+    }
+}
+
 const MAX_ADD_COUNT: usize = 100;
 
 enum AccountClaim {
@@ -2235,11 +2256,58 @@ async fn supervise(
                     }
                 }
                 _ = worker.drain_finished.notified() => continue,
-                _ = wait_true(&mut dead) => worker.clear_net(),
-                _ = worker.rebuild.notified() => worker.clear_net(),
+                _ = wait_true(&mut dead) => worker.retire(),
+                _ = worker.rebuild.notified() => worker.retire(),
                 _ = tokio::time::sleep_until(next_health), if !health_every.is_zero() => {
-                    egress_health(&pool, &worker).await;
-                    continue;
+                    let mut health_dead = dead.clone();
+                    let need_reconnect = tokio::select! {
+                        biased;
+                        _ = wait_stopped(&worker) => {
+                            worker.retire();
+                            return;
+                        }
+                        job = jobs.recv() => match job {
+                            Some(job) => {
+                                let result = graceful(&pool, &worker, &job).await;
+                                let _ = job.reply.send(result);
+                                continue;
+                            }
+                            None => return,
+                        },
+                        _ = worker.drain_finished.notified() => continue,
+                        _ = wait_true(&mut health_dead) => {
+                            worker.retire();
+                            true
+                        }
+                        _ = worker.rebuild.notified() => {
+                            worker.retire();
+                            true
+                        }
+                        ok = egress_health(&pool, &worker) => {
+                            if ok {
+                                worker.health_failures.store(0, Ordering::Relaxed);
+                                false
+                            } else {
+                                let fails =
+                                    worker.health_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                                if fails >= HEALTH_FAIL_RECONNECT_THRESHOLD {
+                                    let text = format!(
+                                        "[pool] 账号 {} 连续 {fails} 次出口检查失败，触发重连",
+                                        worker.id
+                                    );
+                                    eprintln!("{text}");
+                                    account_log(&pool, text);
+                                    worker.retire();
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        }
+                    };
+                    if !need_reconnect {
+                        continue;
+                    }
                 }
             }
         }
@@ -2250,9 +2318,9 @@ async fn supervise(
 }
 
 /// 经隧道拉一次出口 trace。请求本身会在 HTTP/2 上产生数据，避免空闲断开。
-async fn egress_health(pool: &Weak<Pool>, worker: &Worker) {
+async fn egress_health(pool: &Weak<Pool>, worker: &Worker) -> bool {
     let Some(current) = pool.upgrade() else {
-        return;
+        return false;
     };
     let timeout = current.health_timeout;
     let previous = egress_snapshot(worker);
@@ -2269,11 +2337,13 @@ async fn egress_health(pool: &Weak<Pool>, worker: &Worker) {
                 eprintln!("{text}");
                 current.console.log("account", text);
             }
+            egress_confirmed(&egress)
         }
         Err(err) => {
             let text = format!("[pool] 账号 {} 出口检查失败: {err}", worker.id);
             eprintln!("{text}");
             current.console.log("account", text);
+            false
         }
     }
 }
@@ -3991,5 +4061,88 @@ mod temporary_account_tests {
         pool.restore_temporary().await;
         assert_eq!(pool.status().accounts.len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod resource_leak_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_pool_stops_workers_and_exits_supervisors() {
+        let mut opts = PoolOptions::basic(true);
+        opts.health_interval = Duration::ZERO;
+        let pool = Pool::create(opts, 1).unwrap();
+        let (worker, jobs) = Worker::new(1, WarpConfig::default(), None);
+        let (_dead_tx, dead_rx) = watch::channel(false);
+        let (io, _out_rx, _in_tx) = crate::h2tunnel::test_h2_channel();
+        let (net, thread) = netstack::spawn_for_test(
+            crate::tunnel::TunnelIo::H2(io),
+            Ipv4Addr::new(172, 16, 0, 2),
+        );
+        {
+            let mut inner = worker.inner.lock().unwrap();
+            inner.net = Some(net);
+            inner.dead = Some(dead_rx);
+        }
+        worker.warp_ready.store(true, Ordering::Relaxed);
+        pool.workers.lock().unwrap().push(worker.clone());
+
+        let supervisor = tokio::spawn(supervise(Arc::downgrade(&pool), worker.clone(), jobs));
+        tokio::task::yield_now().await;
+
+        drop(pool);
+        tokio::time::timeout(Duration::from_secs(2), supervisor)
+            .await
+            .expect("释放 Pool 后 supervise 任务必须立刻退出")
+            .unwrap();
+        assert!(worker.stopped.load(Ordering::Acquire));
+        assert!(worker.net().is_none());
+
+        let joined = tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || thread.join()),
+        )
+        .await
+        .expect("释放 Pool 后 netstack OS 线程必须退出");
+        assert!(joined.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn consecutive_health_failures_retire_zombie_tunnel_and_reconnect() {
+        let mut opts = PoolOptions::basic(true);
+        opts.health_interval = Duration::from_millis(20);
+        opts.health_timeout = Duration::from_millis(25);
+        let pool = Pool::create(opts, 1).unwrap();
+        let (worker, jobs) = Worker::new(1, WarpConfig::default(), None);
+        let (_dead_tx, dead_rx) = watch::channel(false);
+        let (net, _pending) = netstack::pending_test_handle();
+        {
+            let mut inner = worker.inner.lock().unwrap();
+            inner.net = Some(net);
+            inner.dead = Some(dead_rx);
+        }
+        worker.warp_ready.store(true, Ordering::Relaxed);
+        pool.workers.lock().unwrap().push(worker.clone());
+
+        let supervisor = tokio::spawn(supervise(Arc::downgrade(&pool), worker.clone(), jobs));
+
+        // 连续 3 次健康检查超时后，应拆掉假死隧道并进入重连阶段。
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if worker.net().is_none() && !worker.warp_ready.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("连续出口检查失败 3 次后必须触发拆链重连");
+
+        drop(pool);
+        tokio::time::timeout(Duration::from_secs(2), supervisor)
+            .await
+            .expect("测试结束释放 Pool 后监督任务应退出")
+            .unwrap();
     }
 }

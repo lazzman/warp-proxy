@@ -6,19 +6,25 @@
 //! 放令牌，否则其它网站拿到页面就等于拿到控制权。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::pool::Pool;
 
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const ACCEPT_ERR_BACKOFF: Duration = Duration::from_millis(50);
+
 /// Serve the control API on `listener`, guarded by `token`.
 pub async fn serve(listener: TcpListener, pool: Arc<Pool>, token: String) {
     let token = Arc::new(token);
     loop {
         let Ok((conn, _)) = listener.accept().await else {
+            tokio::time::sleep(ACCEPT_ERR_BACKOFF).await;
             continue;
         };
+        let _ = conn.set_nodelay(true);
         let pool = pool.clone();
         let token = token.clone();
         tokio::spawn(async move {
@@ -31,16 +37,22 @@ async fn handle(mut conn: TcpStream, pool: Arc<Pool>, token: Arc<String>) -> std
     // Read the request head (we don't need a body — args are query params).
     let mut buf = Vec::new();
     let mut tmp = [0u8; 2048];
-    loop {
-        let n = conn.read(&mut tmp).await?;
-        if n == 0 {
-            break;
+    let read_head = async {
+        loop {
+            let n = conn.read(&mut tmp).await?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 16 * 1024 {
+                break;
+            }
         }
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 16 * 1024 {
-            break;
-        }
-    }
+        Ok::<(), std::io::Error>(())
+    };
+    tokio::time::timeout(CONTROL_READ_TIMEOUT, read_head)
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "control read timeout"))??;
     let head = String::from_utf8_lossy(&buf);
     let mut lines = head.split("\r\n");
     let request_line = lines.next().unwrap_or("");
