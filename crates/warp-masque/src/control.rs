@@ -371,6 +371,14 @@ mod tests {
         assert!(PANEL_HTML.contains("temporary=1&count="));
         assert!(PANEL_HTML.contains("localStorage"));
         assert!(PANEL_HTML.contains("warp-token"));
+        assert!(PANEL_HTML.contains("aria-current=\"page\""));
+        assert!(PANEL_HTML.contains("button.setAttribute(\"aria-pressed\""));
+        assert!(!PANEL_HTML.contains("role=\"tablist\""));
+        assert!(!PANEL_HTML.contains("role=\"tab\""));
+        assert!(PANEL_HTML.contains("<dialog class=\"confirm-dialog\""));
+        assert!(PANEL_HTML.contains("aria-describedby=\"confirm-modal-desc confirm-modal-impact\""));
+        assert!(PANEL_HTML.contains("配置 STATE_DIR 时身份保留"));
+        assert!(PANEL_HTML.contains(".row-actions-wrap .btn { min-height: 44px; width: 100%; }"));
         assert!(PANEL_HTML.contains("writeCachedToken(state.token)"));
         assert!(PANEL_HTML.contains("/assets/bootstrap.min.css"));
         assert!(PANEL_HTML.contains("/assets/bootstrap.bundle.min.js"));

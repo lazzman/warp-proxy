@@ -11,194 +11,1279 @@
   :root, [data-bs-theme="light"] {
     --paper: #f3f4f2;
     --panel: #ffffff;
-    --hair: rgba(24, 26, 23, .14);
+    --panel-subtle: #f7f8f6;
+    --hair: rgba(24, 26, 23, .13);
+    --hair-strong: rgba(24, 26, 23, .22);
     --ink: #1a1c19;
+    --muted: #555b54;
     --accent: #1d3c31;
-    --alert-wash: #fbf7f2;
+    --accent-hover: #163028;
+    --accent-active: #12261f;
+    --accent-signal: #2f7d57;
+    --alert-wash: #fbf5ee;
+    --alert-border: rgba(164, 92, 16, .34);
+    --danger-wash: #fbf1ef;
+    --danger-border: rgba(154, 49, 40, .32);
+    --ok-wash: #eef6f1;
+    --ok-border: rgba(34, 108, 72, .26);
+    --focus-wash: rgba(47, 125, 87, .10);
     --pill-bg: rgba(24, 26, 23, .06);
-    --copy-hover: rgba(29, 60, 49, .08);
+    --pill-ink: #434842;
+    --warn-bg: rgba(184, 106, 26, .13);
+    --warn-ink: #854506;
+    --queue-bg: rgba(47, 125, 87, .12);
+    --queue-ink: #1a5c3d;
+    --bad-bg: rgba(163, 69, 60, .12);
+    --bad-ink: #91271e;
+    --copy-hover: rgba(29, 60, 49, .09);
+    --shadow-soft: 0 8px 24px rgba(20, 24, 20, .08);
+    --sticky-shadow: -8px 0 14px -8px rgba(24, 26, 23, .16);
+    --bs-body-bg: #f3f4f2;
+    --bs-body-color: #1a1c19;
+    --bs-secondary-color: #555b54;
+    --bs-tertiary-bg: #ebede9;
+    --bs-border-color: rgba(24, 26, 23, .13);
+    --bs-table-bg: transparent;
+    --bs-table-color: #1a1c19;
+    --bs-table-hover-bg: rgba(24, 26, 23, .03);
   }
   [data-bs-theme="dark"] {
     --paper: #111210;
     --panel: #181a17;
-    --hair: rgba(236, 237, 230, .16);
+    --panel-subtle: #1e211d;
+    --hair: rgba(236, 237, 230, .14);
+    --hair-strong: rgba(236, 237, 230, .24);
     --ink: #eceee8;
-    --accent: #e7ebe4;
-    --alert-wash: #241f18;
+    --muted: #a3a9a0;
+    --accent: #2a6e4e;
+    --accent-hover: #33815c;
+    --accent-active: #235c41;
+    --accent-signal: #49a874;
+    --alert-wash: #251e16;
+    --alert-border: rgba(240, 168, 92, .34);
+    --danger-wash: #291a18;
+    --danger-border: rgba(236, 146, 136, .34);
+    --ok-wash: #16241c;
+    --ok-border: rgba(108, 198, 148, .28);
+    --focus-wash: rgba(73, 168, 116, .16);
     --pill-bg: rgba(236, 237, 230, .09);
-    --copy-hover: rgba(231, 235, 228, .1);
+    --pill-ink: #c6cbc2;
+    --warn-bg: rgba(240, 168, 92, .16);
+    --warn-ink: #f2b26b;
+    --queue-bg: rgba(73, 168, 116, .16);
+    --queue-ink: #82dbb0;
+    --bad-bg: rgba(224, 112, 102, .18);
+    --bad-ink: #f5aca4;
+    --copy-hover: rgba(130, 219, 176, .12);
+    --shadow-soft: 0 12px 28px rgba(0, 0, 0, .42);
+    --sticky-shadow: -8px 0 14px -8px rgba(0, 0, 0, .55);
+    --bs-body-bg: #111210;
+    --bs-body-color: #eceee8;
+    --bs-secondary-color: #a3a9a0;
+    --bs-tertiary-bg: #222520;
+    --bs-secondary-bg: #1b1e1a;
+    --bs-border-color: rgba(236, 237, 230, .14);
+    --bs-table-bg: transparent;
+    --bs-table-color: #eceee8;
+    --bs-table-hover-bg: rgba(236, 237, 230, .04);
   }
-  body { background: var(--paper); color: var(--ink); font-weight: 400; }
-  .navbar { min-height: 52px; background: var(--panel) !important; border-bottom-color: var(--hair) !important; }
-  .navbar-brand { font-weight: 600; letter-spacing: -.02em; }
-  .brand-mark { width: 18px; height: 18px; display: block; flex: none; }
-  #views .nav-link { border-radius: 8px; color: var(--bs-secondary-color); padding: 6px 10px; display: inline-flex; align-items: center; gap: 6px; }
-  #views .nav-link.active { color: var(--ink); background: var(--bs-tertiary-bg); font-weight: 500; }
-  .nav-pill { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--pill-bg); color: var(--bs-secondary-color); font-variant-numeric: tabular-nums; }
-  .nav-pill.warn { background: rgba(184, 106, 26, .16); color: #b86a1a; }
-  [data-bs-theme="dark"] .nav-pill.warn { color: #f0a85c; }
-  #online { font-size: 13px; color: var(--bs-secondary-color); }
-  main.container-fluid { padding: 24px 28px 48px; }
-  .lamp { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--bs-secondary-color); flex: none; }
+
+  ::selection { background: rgba(47, 125, 87, .24); color: var(--ink); }
+  [data-bs-theme="dark"] ::selection { background: rgba(73, 168, 116, .32); color: #f6f8f5; }
+  * { scrollbar-width: thin; scrollbar-color: var(--hair-strong) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  input, textarea, select { caret-color: var(--accent-signal); }
+  a { text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--accent-signal); outline-offset: 2px; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .navbar {
+    min-height: 54px;
+    background: var(--panel) !important;
+    border-bottom: 1px solid var(--hair) !important;
+    padding: 6px 0;
+  }
+  .nav-shell {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+  }
+  .nav-brand-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+  }
+  .navbar-brand {
+    font-weight: 600;
+    letter-spacing: -.02em;
+    color: var(--ink) !important;
+    margin-right: 0;
+    padding: 2px 0;
+  }
+  .brand-mark { width: 20px; height: 20px; display: block; flex: none; }
+  #views {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  #views .nav-link {
+    border-radius: 8px;
+    color: var(--muted);
+    padding: 6px 11px;
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 13.5px;
+    font-weight: 500;
+    border: 1px solid transparent;
+    transition: background-color .15s ease, color .15s ease;
+    white-space: nowrap;
+  }
+  #views .nav-link:hover { color: var(--ink); background: var(--panel-subtle); }
+  #views .nav-link.active {
+    color: var(--ink);
+    background: var(--bs-tertiary-bg);
+    border-color: var(--hair);
+    font-weight: 600;
+  }
+  .nav-pill {
+    font-size: 11px;
+    line-height: 1.25;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--pill-bg);
+    color: var(--pill-ink);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-pill.warn { background: var(--warn-bg); color: var(--warn-ink); }
+  .nav-pill.bad { background: var(--bad-bg); color: var(--bad-ink); }
+  .nav-utilities {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .mobile-bar-actions { display: none; margin-left: auto; align-items: center; gap: 6px; }
+  #online {
+    font-size: 12.5px;
+    color: var(--muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .status-chip-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: var(--panel-subtle);
+    border: 1px solid var(--hair);
+  }
+
+  main.container-fluid {
+    max-width: 1520px;
+    padding: 22px 28px 48px;
+  }
+
+  .lamp {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    background: var(--muted);
+    flex: none;
+  }
   .lamp.on, .lamp.healthy { background: #2f7d57; }
+  [data-bs-theme="dark"] .lamp.on, [data-bs-theme="dark"] .lamp.healthy { background: #49a874; }
   .lamp.attention, .lamp.waiting, .lamp.down, .lamp.connecting, .lamp.retrying { background: #b86a1a; }
-  .lamp.maintenance, .lamp.disabled { background: #a3453c; }
+  [data-bs-theme="dark"] .lamp.attention, [data-bs-theme="dark"] .lamp.waiting,
+  [data-bs-theme="dark"] .lamp.down, [data-bs-theme="dark"] .lamp.connecting,
+  [data-bs-theme="dark"] .lamp.retrying { background: #f0a85c; }
+  .lamp.maintenance, .lamp.disabled, .lamp.offline { background: #a3453c; }
+  [data-bs-theme="dark"] .lamp.maintenance, [data-bs-theme="dark"] .lamp.disabled,
+  [data-bs-theme="dark"] .lamp.offline { background: #e0766c; }
+  .lamp.unknown { background: #6b7269; }
+  [data-bs-theme="dark"] .lamp.unknown { background: #8f968d; }
+
   .btn, .form-control, .form-select { border-radius: 8px; }
-  .form-control, .form-select { border-color: var(--hair); }
-  .btn { font-weight: 500; }
-  .btn-sm { padding: 4px 10px; }
-  .btn-xs { padding: 1px 6px; font-size: 11px; border-radius: 6px; }
+  .form-control, .form-select {
+    background-color: var(--panel);
+    color: var(--ink);
+    border-color: var(--hair-strong);
+  }
+  .form-control::placeholder { color: var(--muted); opacity: .9; }
+  [data-bs-theme="dark"] .form-control, [data-bs-theme="dark"] .form-select {
+    background-color: #141613;
+    color: var(--ink);
+    border-color: var(--hair-strong);
+  }
+  .form-control:focus, .form-select:focus {
+    background-color: var(--panel);
+    color: var(--ink);
+    border-color: var(--accent-signal);
+    box-shadow: 0 0 0 3px rgba(47, 125, 87, .18);
+  }
+  [data-bs-theme="dark"] .form-control:focus, [data-bs-theme="dark"] .form-select:focus {
+    background-color: #141613;
+  }
+  .btn {
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    white-space: nowrap;
+  }
+  .btn-sm { padding: 5px 10px; min-height: 30px; font-size: 13px; }
+  .btn-xs { padding: 3px 9px; min-height: 28px; font-size: 12px; border-radius: 7px; }
   .btn-primary {
     --bs-btn-bg: var(--accent);
     --bs-btn-border-color: var(--accent);
-    --bs-btn-hover-bg: #163028;
-    --bs-btn-hover-border-color: #163028;
-    --bs-btn-active-bg: #12261f;
-    --bs-btn-active-border-color: #12261f;
-    --bs-btn-color: #f4f6f2;
-    --bs-btn-hover-color: #f4f6f2;
-    --bs-btn-active-color: #f4f6f2;
-  }
-  [data-bs-theme="dark"] .btn-primary {
-    --bs-btn-bg: #e7ebe4;
-    --bs-btn-border-color: #e7ebe4;
-    --bs-btn-color: #161815;
-    --bs-btn-hover-bg: #f4f6f2;
-    --bs-btn-hover-border-color: #f4f6f2;
-    --bs-btn-hover-color: #161815;
-    --bs-btn-active-bg: #d5dbd2;
-    --bs-btn-active-border-color: #d5dbd2;
-    --bs-btn-active-color: #161815;
+    --bs-btn-hover-bg: var(--accent-hover);
+    --bs-btn-hover-border-color: var(--accent-hover);
+    --bs-btn-active-bg: var(--accent-active);
+    --bs-btn-active-border-color: var(--accent-active);
+    --bs-btn-color: #f4f7f5;
+    --bs-btn-hover-color: #f4f7f5;
+    --bs-btn-active-color: #f4f7f5;
+    --bs-btn-disabled-bg: var(--accent);
+    --bs-btn-disabled-border-color: var(--accent);
+    --bs-btn-disabled-color: #f4f7f5;
   }
   .btn-outline-secondary {
     --bs-btn-color: var(--ink);
-    --bs-btn-border-color: var(--hair);
+    --bs-btn-border-color: var(--hair-strong);
     --bs-btn-hover-bg: var(--bs-tertiary-bg);
     --bs-btn-hover-color: var(--ink);
-    --bs-btn-hover-border-color: var(--hair);
+    --bs-btn-hover-border-color: var(--hair-strong);
     --bs-btn-active-bg: var(--bs-tertiary-bg);
     --bs-btn-active-color: var(--ink);
-    --bs-btn-active-border-color: var(--hair);
+    --bs-btn-active-border-color: var(--hair-strong);
+    --bs-btn-disabled-color: var(--muted);
+    --bs-btn-disabled-border-color: var(--hair);
+  }
+  .btn-outline-warning-tone {
+    color: var(--warn-ink);
+    border: 1px solid var(--alert-border);
+    background: var(--alert-wash);
+  }
+  .btn-outline-warning-tone:hover, .btn-outline-warning-tone:focus-visible {
+    color: var(--warn-ink);
+    background: var(--warn-bg);
+    border-color: var(--alert-border);
   }
   .btn-outline-danger {
-    --bs-btn-color: #8a3b32;
-    --bs-btn-border-color: #e4d2ce;
-    --bs-btn-hover-bg: #f8f1ef;
-    --bs-btn-hover-color: #8a3b32;
-    --bs-btn-hover-border-color: #e4d2ce;
+    color: #91271e;
+    border-color: rgba(154, 49, 40, .36);
+    --bs-btn-color: #91271e;
+    --bs-btn-border-color: rgba(154, 49, 40, .36);
+    --bs-btn-hover-bg: #f8ebe9;
+    --bs-btn-hover-color: #7c1f17;
+    --bs-btn-hover-border-color: rgba(154, 49, 40, .52);
+    --bs-btn-active-bg: #f3dfdc;
+    --bs-btn-active-color: #7c1f17;
+    --bs-btn-disabled-color: #8c453e;
+    --bs-btn-disabled-border-color: rgba(154, 49, 40, .24);
   }
   [data-bs-theme="dark"] .btn-outline-danger {
-    --bs-btn-color: #e7b2aa;
-    --bs-btn-border-color: #5a3330;
-    --bs-btn-hover-bg: #2a1c1a;
-    --bs-btn-hover-color: #e7b2aa;
-    --bs-btn-hover-border-color: #5a3330;
+    color: #f5aca4;
+    border-color: rgba(236, 146, 136, .42);
+    --bs-btn-color: #f5aca4;
+    --bs-btn-border-color: rgba(236, 146, 136, .42);
+    --bs-btn-hover-bg: #321e1c;
+    --bs-btn-hover-color: #ffd0ca;
+    --bs-btn-hover-border-color: rgba(236, 146, 136, .62);
+    --bs-btn-active-bg: #3d2422;
+    --bs-btn-active-color: #ffd0ca;
+    --bs-btn-disabled-color: #d8938b;
+    --bs-btn-disabled-border-color: rgba(236, 146, 136, .28);
   }
-  .btn.is-on { background: #1c1e1b; color: #f4f5f2; border-color: #1c1e1b; }
-  [data-bs-theme="dark"] .btn.is-on { background: #ecece6; color: #171816; border-color: #ecece6; }
-  .card { border-radius: 12px; border-color: var(--hair); background: var(--panel); box-shadow: none; }
-  .card-body { padding: 20px; }
-  .card h2 { font-size: 15px; font-weight: 600; }
-  #overview > h1 { font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
-  #overview > p { font-size: 13px; margin-bottom: 16px; }
-  .stat .card-body { padding: 16px 18px 14px; }
-  .stat .fs-3 { font-size: 28px; line-height: 1.15; letter-spacing: -.03em; margin: 6px 0 4px; }
-  .figure, .num, .v { font-variant-numeric: tabular-nums; font-weight: 500; }
-  .cluster { display: flex; flex-direction: column; gap: 8px; min-width: min(100%, 280px); padding: 12px 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--paper); }
-  .cluster-label { font-size: 12px; color: var(--bs-secondary-color); }
-  .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 16px; }
-  .metric { padding: 0 20px 0 0; }
-  .metric + .metric { padding-left: 20px; border-left: 1px solid var(--hair); }
-  .metric .k, .metric .s { font-size: 12px; color: var(--bs-secondary-color); }
-  .metric .v { font-size: 18px; line-height: 1.4; margin-top: 4px; overflow-wrap: anywhere; }
-  .metric .s { margin-top: 4px; }
-  .sheet { border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); overflow: auto; }
-  .connections-scroll, .instance-scroll { max-height: 38rem; }
-  .connections-scroll thead th, .instance-scroll thead th { position: sticky; top: 0; z-index: 1; }
-  .data-table { font-size: 13px; }
-  .data-table th { font-size: 12px; font-weight: 500; color: var(--bs-secondary-color); }
-  .data-table td, .data-table th { padding: 8px 10px; border-color: var(--hair); }
-  .data-table thead th { background: var(--paper); }
-  .table-hover > tbody > tr:hover > * { background: rgba(24, 26, 23, .03); }
-  [data-bs-theme="dark"] .table-hover > tbody > tr:hover > * { background: rgba(236, 237, 230, .04); }
-  .instance-table th, .instance-table td { white-space: nowrap; vertical-align: middle; }
-  .instance-table th { text-align: start; }
-  .instance-table .col-tight { width: 1%; }
-  .instance-table .font-monospace, .data-table .font-monospace { font-size: 12px; }
-  tr.row-alert td { background: var(--alert-wash); }
-  .table-hover > tbody > tr.row-alert:hover > * { background: #f6f0e8; }
-  [data-bs-theme="dark"] .table-hover > tbody > tr.row-alert:hover > * { background: #2c261e; }
-  tr.row-focus td { outline: 1px solid #2f7d57; }
-  .status-cell { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
-  .probe { color: var(--bs-secondary-color); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; padding: 1px 5px; border-radius: 4px; background: var(--pill-bg); }
-  .tag-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 500; background: var(--pill-bg); color: var(--bs-secondary-color); }
-  .tag-pill.drain { background: rgba(184, 106, 26, .15); color: #b86a1a; }
-  .tag-pill.queue { background: rgba(47, 125, 87, .15); color: #2f7d57; }
-  .tag-pill.dirty { background: rgba(184, 106, 26, .16); color: #b86a1a; }
-  [data-bs-theme="dark"] .tag-pill.drain, [data-bs-theme="dark"] .tag-pill.dirty { color: #f0a85c; }
-  [data-bs-theme="dark"] .tag-pill.queue { color: #7cd4a6; }
-  .slot-jump { cursor: pointer; text-decoration: none; border: 1px solid var(--hair); background: var(--paper); color: var(--ink); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; display: inline-block; margin: 2px 3px 2px 0; }
-  .slot-jump:hover { background: var(--copy-hover); }
-  .copyable { cursor: pointer; border-radius: 4px; transition: background-color .12s ease; }
-  .copyable:hover { background: var(--copy-hover); }
-  .clip { max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .clip-wide { max-width: 220px; }
-  .row-actions .btn { padding: 2px 8px; }
-  .policy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
-  .policy-box { padding: 10px 12px; border: 1px solid var(--hair); border-radius: 10px; background: var(--paper); display: flex; flex-direction: column; gap: 6px; }
-  .policy-box .hint { font-size: 11.5px; color: var(--bs-secondary-color); font-variant-numeric: tabular-nums; }
-  .rule-details { font-size: 12.5px; color: var(--bs-secondary-color); border-top: 1px solid var(--hair); padding-top: 10px; }
-  .rule-details summary { cursor: pointer; user-select: none; font-weight: 500; }
-  .log {
-    max-height: 36rem;
+  .btn-outline-danger:disabled, .btn-outline-danger.disabled { opacity: .72; }
+  .btn-danger {
+    --bs-btn-bg: #a33228;
+    --bs-btn-border-color: #a33228;
+    --bs-btn-hover-bg: #8c2820;
+    --bs-btn-hover-border-color: #8c2820;
+    --bs-btn-color: #fff6f5;
+    --bs-btn-hover-color: #fff6f5;
+  }
+  [data-bs-theme="dark"] .btn-danger {
+    --bs-btn-bg: #b93d32;
+    --bs-btn-border-color: #b93d32;
+    --bs-btn-hover-bg: #cf4a3e;
+    --bs-btn-hover-border-color: #cf4a3e;
+    --bs-btn-color: #fff6f5;
+  }
+  .btn.is-on {
+    background: #1c1e1b;
+    color: #f4f5f2;
+    border-color: #1c1e1b;
+  }
+  .btn.is-on:hover { background: #2a2d29; color: #f4f5f2; border-color: #2a2d29; }
+  [data-bs-theme="dark"] .btn.is-on {
+    background: #eceee8;
+    color: #161815;
+    border-color: #eceee8;
+  }
+  [data-bs-theme="dark"] .btn.is-on:hover {
+    background: #dce0d7;
+    color: #161815;
+    border-color: #dce0d7;
+  }
+
+  .ic { width: 14px; height: 14px; flex: none; display: inline-block; }
+  .ic-md { width: 16px; height: 16px; flex: none; display: inline-block; }
+
+  .page-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 12px 16px;
+    margin-bottom: 16px;
+  }
+  .page-title {
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -.02em;
+    line-height: 1.25;
     margin: 0;
-    padding: 16px 18px;
-    border: 0;
+  }
+  .page-sub {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 4px 0 0;
+    line-height: 1.5;
+  }
+  .surface {
+    background: var(--panel);
+    border: 1px solid var(--hair);
     border-radius: 12px;
-    background: #121411;
-    color: #d7d8d4;
+  }
+  .surface-pad { padding: 18px 20px; }
+  .section-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px 12px;
+    margin-bottom: 14px;
+  }
+  .section-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -.01em;
+  }
+  .section-divider {
+    border: 0;
+    border-top: 1px solid var(--hair);
+    margin: 16px 0;
+  }
+
+  .hero-banner {
+    background: var(--panel);
+    border: 1px solid var(--hair);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .hero-banner.tone-warn { background: var(--alert-wash); border-color: var(--alert-border); }
+  .hero-banner.tone-bad { background: var(--danger-wash); border-color: var(--danger-border); }
+  .hero-banner.tone-ok { background: var(--ok-wash); border-color: var(--ok-border); }
+  .hero-top {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px 16px;
+  }
+  .hero-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .hero-title {
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -.02em;
+    margin: 0;
+    line-height: 1.25;
+  }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    margin-top: 10px;
     font-size: 12.5px;
-    line-height: 1.7;
-    white-space: pre-wrap;
+    color: var(--muted);
+  }
+  .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    min-height: 28px;
+    border-radius: 7px;
+    background: var(--panel);
+    border: 1px solid var(--hair);
+    color: var(--ink);
+    font-size: 12.5px;
+    white-space: nowrap;
+  }
+  .meta-chip-copy {
+    cursor: pointer;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    transition: background-color .15s ease, border-color .15s ease;
+  }
+  .meta-chip-copy:hover { background: var(--copy-hover); border-color: var(--hair-strong); }
+  .meta-stamp { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    background: var(--panel);
+    border: 1px solid var(--hair);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .kpi-cell {
+    padding: 15px 18px;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-right: 1px solid var(--hair);
+    color: inherit;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .kpi-cell:last-child { border-right: 0; }
+  button.kpi-cell {
+    cursor: pointer;
+    transition: background-color .15s ease;
+  }
+  button.kpi-cell:hover { background: var(--panel-subtle); }
+  .kpi-cell.kpi-warn { background: var(--alert-wash); }
+  button.kpi-cell.kpi-warn:hover { background: var(--warn-bg); }
+  .kpi-label {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .kpi-value {
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -.03em;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-value.tone-warn { color: var(--warn-ink); }
+  .kpi-value.tone-bad { color: var(--bad-ink); }
+  .kpi-note {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .overview-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+  }
+  .queue-band {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding-top: 14px;
+    margin-top: 14px;
+    border-top: 1px solid var(--hair);
+  }
+  .queue-col-label {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .queue-col-sub { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
+
+  .control-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--hair);
+  }
+  .control-row:first-of-type { padding-top: 0; }
+  .control-row:last-of-type { padding-bottom: 0; border-bottom: 0; }
+  .control-info { min-width: 0; flex: 1 1 200px; }
+  .control-name { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+  .control-desc { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+  .control-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+  .table-wrap {
+    overflow-x: auto;
+    border-top: 1px solid var(--hair);
+  }
+  .data-table {
+    font-size: 13px;
+    margin-bottom: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .data-table th {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--panel-subtle);
+    border-bottom: 1px solid var(--hair);
+    padding: 9px 11px;
+    white-space: nowrap;
+  }
+  .data-table td {
+    padding: 10px 11px;
+    border-color: var(--hair);
+    vertical-align: middle;
+  }
+  .data-table .font-monospace { font-size: 12px; }
+  .data-table tbody tr:last-child td { border-bottom: 0; }
+
+  .instance-table .col-id { width: 106px; white-space: nowrap; }
+  .instance-table .col-state { min-width: 170px; }
+  .instance-table .col-egress { min-width: 195px; }
+  .instance-table .col-load { width: 96px; white-space: nowrap; }
+  .instance-table .col-restart { min-width: 176px; }
+  .instance-table .col-activity { min-width: 165px; max-width: 230px; }
+  .instance-table .col-actions {
+    position: sticky;
+    right: 0;
+    z-index: 2;
+    background: var(--panel);
+    box-shadow: var(--sticky-shadow);
+    white-space: nowrap;
+    width: 1%;
+  }
+  .instance-table thead th.col-actions {
+    background: var(--panel-subtle);
+    z-index: 3;
+  }
+  tr.row-alert > td { background: var(--alert-wash); }
+  tr.row-alert > td.col-actions { background: var(--alert-wash); }
+  .table-hover > tbody > tr.row-alert:hover > td { background: var(--warn-bg); }
+  tr.row-focus > td { background: var(--focus-wash); }
+  tr.row-focus > td.col-actions { background: var(--focus-wash); }
+  .table-hover > tbody > tr:hover > td.col-actions { background: var(--panel-subtle); }
+
+  tr.detail-row > td {
+    background: var(--panel-subtle);
+    padding: 14px 18px;
+    border-top: 0;
+  }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px 20px;
+  }
+  .detail-group-title {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .detail-kv {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12.5px;
+    padding: 3px 0;
+  }
+  .detail-k { color: var(--muted); white-space: nowrap; }
+  .detail-v { color: var(--ink); text-align: right; word-break: break-all; }
+  .detail-error-box {
+    margin-top: 10px;
+    padding: 8px 11px;
+    border-radius: 8px;
+    background: var(--danger-wash);
+    border: 1px solid var(--danger-border);
+    color: var(--bad-ink);
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     overflow-wrap: anywhere;
   }
-  .log .t { color: #8d8f89; }
-  .log .tag { color: #c8c9c3; }
-  .log .sep { color: #6e706a; }
-  .log .ok { color: #8fbf9f; }
-  .log .bad { color: #d7a08a; }
-  .log mark { background: rgba(240, 168, 92, .32); color: #fff; padding: 0 2px; border-radius: 3px; }
-  :focus-visible { outline: 2px solid #2f7d57; outline-offset: 2px; }
-  #token { width: 150px; }
+
+  .progress-mini-wrap { display: flex; flex-direction: column; gap: 4px; }
+  .progress-mini-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .progress-bar-track {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--pill-bg);
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent-signal);
+    transition: width .2s ease;
+  }
+  .progress-bar-fill.near { background: #b86a1a; }
+  .progress-bar-fill.hit { background: #a3453c; }
+
+  .status-cell { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .probe {
+    color: var(--pill-ink);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: var(--pill-bg);
+    white-space: nowrap;
+  }
+  .probe.warp-on { background: var(--queue-bg); color: var(--queue-ink); }
+  .probe.warp-off { background: var(--warn-bg); color: var(--warn-ink); }
+  .tag-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    line-height: 1.25;
+    font-weight: 600;
+    background: var(--pill-bg);
+    color: var(--pill-ink);
+    white-space: nowrap;
+  }
+  .tag-pill.drain, .tag-pill.dirty { background: var(--warn-bg); color: var(--warn-ink); }
+  .tag-pill.queue { background: var(--queue-bg); color: var(--queue-ink); }
+  .tag-pill.bad { background: var(--bad-bg); color: var(--bad-ink); }
+
+  .slot-jump {
+    cursor: pointer;
+    text-decoration: none;
+    border: 1px solid var(--hair-strong);
+    background: var(--panel-subtle);
+    color: var(--ink);
+    border-radius: 7px;
+    padding: 3px 9px;
+    min-height: 28px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 2px 4px 2px 0;
+    transition: background-color .15s ease;
+  }
+  .slot-jump:hover { background: var(--copy-hover); }
+  .check-hit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    min-height: 28px;
+    margin: -4px 0 -4px -4px;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .check-hit:hover { background: var(--pill-bg); }
+  .check-hit .form-check-input {
+    margin: 0;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    border-color: var(--hair-strong);
+  }
+  .expand-btn {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease, transform .15s ease;
+  }
+  .expand-btn:hover { background: var(--pill-bg); color: var(--ink); }
+  .expand-btn[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+  .copy-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    padding: 3px 6px;
+    margin: -3px 0;
+    min-height: 28px;
+    border-radius: 6px;
+    font: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    max-width: 100%;
+    text-align: left;
+    transition: background-color .14s ease;
+  }
+  .copy-btn:hover { background: var(--copy-hover); }
+  .copy-btn .copy-ico { opacity: .48; flex: none; transition: opacity .14s ease; }
+  .copy-btn:hover .copy-ico, .copy-btn:focus-visible .copy-ico { opacity: 1; }
+  .copy-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .copy-ok { color: var(--queue-ink); font-weight: 600; white-space: nowrap; }
+
+  .cell-sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .cell-clip {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row-actions-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .row-actions-wrap .btn {
+    padding: 4px 8px;
+    min-height: 28px;
+    font-size: 12.5px;
+  }
+  .row-actions-sep {
+    width: 1px;
+    height: 16px;
+    background: var(--hair);
+    margin: 0 2px;
+  }
+
+  .view-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px 12px;
+    padding: 14px 18px;
+  }
+  .toolbar-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .log-box {
+    max-height: calc(100vh - 280px);
+    min-height: 300px;
+    overflow: auto;
+    margin: 0;
+    padding: 12px 0;
+    border-top: 1px solid var(--hair);
+    border-radius: 0 0 12px 12px;
+    background: #121411;
+    color: #dce0d8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.65;
+  }
+  [data-bs-theme="dark"] .log-box { background: #0c0e0c; }
+  .log-line {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 3px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, .03);
+  }
+  .log-line:last-child { border-bottom: 0; }
+  .log-line.level-error { background: rgba(217, 90, 78, .13); }
+  .log-line.level-warn { background: rgba(236, 160, 76, .10); }
+  .log-time { color: #989d94; flex: none; font-variant-numeric: tabular-nums; }
+  .log-lv {
+    flex: none;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 6px;
+    border-radius: 4px;
+    text-align: center;
+    min-width: 40px;
+  }
+  .log-lv.info { background: rgba(220, 224, 216, .10); color: #c4cbc0; }
+  .log-lv.warn { background: rgba(240, 168, 92, .20); color: #f4bd7a; }
+  .log-lv.error { background: rgba(224, 108, 96, .24); color: #f8b0a8; }
+  .log-msg { min-width: 0; flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .log-box .tag { color: #c9cfc5; font-weight: 600; }
+  .log-box .sep { color: #8b9187; }
+  .log-box .ok { color: #82d4a5; font-weight: 600; }
+  .log-box .bad { color: #f6a89f; font-weight: 600; }
+  .log-box mark { background: rgba(240, 168, 92, .34); color: #ffffff; padding: 0 3px; border-radius: 3px; }
+  .log-empty { padding: 28px 18px; color: #a7ada3; text-align: center; }
+
+  .auth-stage {
+    max-width: 440px;
+    margin: 44px auto 24px;
+    padding: 28px 28px 24px;
+    background: var(--panel);
+    border: 1px solid var(--hair);
+    border-radius: 14px;
+    box-shadow: var(--shadow-soft);
+  }
+  .auth-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .auth-head h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -.02em; }
+  .auth-desc { font-size: 13px; color: var(--muted); margin: 0 0 18px; line-height: 1.55; }
+  .auth-help {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--hair);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+  .auth-help code {
+    color: var(--ink);
+    background: var(--pill-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 11.5px;
+  }
+  .auth-inline-err {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--danger-wash);
+    border: 1px solid var(--danger-border);
+    color: var(--bad-ink);
+    font-size: 12.5px;
+  }
+
+  .offcanvas, .modal-content {
+    background: var(--panel);
+    color: var(--ink);
+    border-color: var(--hair);
+  }
+  .offcanvas-header { border-bottom-color: var(--hair); }
+  .modal-footer { border-top-color: var(--hair); }
+  .confirm-dialog {
+    width: min(500px, calc(100% - 2rem));
+    max-width: none;
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
+    margin: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    overscroll-behavior: contain;
+  }
+  .confirm-dialog::backdrop {
+    background: rgba(17, 18, 16, .54);
+    overflow: hidden;
+    overscroll-behavior: contain;
+  }
+  [data-bs-theme="dark"] .confirm-dialog::backdrop { background: rgba(0, 0, 0, .72); }
+  .confirm-dialog .modal-content {
+    border: 1px solid var(--hair);
+    border-radius: 12px;
+    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .confirm-dialog .modal-title { font-size: 1.125rem; }
+  .confirm-dialog .modal-header { padding: 16px; border-bottom: 1px solid var(--hair); }
+  .confirm-dialog .modal-header .btn-close { margin-inline-start: auto; }
+  .confirm-dialog .modal-body { padding: 16px; }
+  .confirm-dialog .modal-footer { padding: 12px 16px; gap: 8px; border-top: 1px solid var(--hair); }
+  .policy-field {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--hair);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .policy-field:first-child { padding-top: 4px; }
+  .policy-field:last-of-type { border-bottom: 0; }
+  .policy-field-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .policy-field-head label { font-size: 13.5px; font-weight: 600; margin: 0; }
+  .policy-hint { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .policy-err { font-size: 12px; color: var(--bad-ink); }
+  .rule-details {
+    font-size: 12.5px;
+    color: var(--muted);
+    border-top: 1px solid var(--hair);
+    padding-top: 12px;
+    line-height: 1.6;
+  }
+  .rule-details summary { cursor: pointer; user-select: none; font-weight: 600; color: var(--ink); }
+
+  .toast-stack {
+    position: fixed;
+    top: 66px;
+    right: 20px;
+    z-index: 1090;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: min(360px, calc(100vw - 32px));
+    pointer-events: none;
+  }
+  .toast-item {
+    pointer-events: auto;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--hair-strong);
+    border-radius: 10px;
+    padding: 10px 12px;
+    box-shadow: var(--shadow-soft);
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .toast-item.toast-ok { border-color: var(--ok-border); background: var(--ok-wash); }
+  .toast-item.toast-err { border-color: var(--danger-border); background: var(--danger-wash); color: var(--bad-ink); }
+  .toast-body-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .toast-close {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    opacity: .75;
+    padding: 2px;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: none;
+  }
+  .toast-close:hover { opacity: 1; background: var(--pill-bg); }
+
+  .alert-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 11px 14px;
+    border-radius: 10px;
+    background: var(--danger-wash);
+    border: 1px solid var(--danger-border);
+    color: var(--bad-ink);
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+  .alert-banner .btn-outline-danger { background: var(--panel); color: #91271e; }
+  [data-bs-theme="dark"] .alert-banner .btn-outline-danger { color: #f5aca4; }
+  .cell-stack { display: flex; flex-direction: column; min-width: 0; }
+  .cell-stack-end { align-items: flex-end; }
+
+  .conn-table .nowrap { white-space: nowrap; }
+  .conn-table .col-target { max-width: 240px; }
+
+  #token { width: 146px; }
+  #conn-query { width: 17.5rem; }
+  #inst-query { width: 14.5rem; }
+  #log-query { width: 16rem; }
+
+  @media (max-width: 1120px) {
+    .overview-grid { grid-template-columns: 1fr; }
+    .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .kpi-cell:nth-child(2) { border-right: 0; }
+    .kpi-cell:nth-child(1), .kpi-cell:nth-child(2) { border-bottom: 1px solid var(--hair); }
+    .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
   @media (max-width: 768px) {
-    main.container-fluid { padding: 16px 16px 32px; }
-    .metrics { grid-template-columns: 1fr; gap: 12px; }
-    .metric + .metric { padding-left: 0; border-left: 0; padding-top: 12px; border-top: 1px solid var(--hair); }
+    .navbar { padding: 8px 0 6px; min-height: auto; }
+    .nav-shell { flex-direction: column; align-items: stretch; gap: 8px; }
+    .nav-brand-row { width: 100%; justify-content: flex-start; }
+    .mobile-bar-actions { display: inline-flex; }
+    .nav-utilities { display: none !important; }
+    #views {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 4px;
+      width: 100%;
+    }
+    #views .nav-link {
+      width: 100%;
+      min-height: 44px;
+      padding: 6px 4px;
+      font-size: 13px;
+      gap: 4px;
+    }
+    .nav-pill { padding: 1px 5px; font-size: 11px; }
+
+    main.container-fluid { padding: 14px 14px 36px; }
+    .surface-pad, .hero-banner { padding: 14px 15px; }
+    .view-toolbar { padding: 12px 14px; }
+    .hero-title, .page-title { font-size: 18px; }
+    .kpi-value { font-size: 22px; }
+    .kpi-cell { padding: 12px 14px; }
+    .kpi-note { white-space: normal; line-height: 1.4; }
+    .queue-band { grid-template-columns: 1fr; }
+    .detail-grid { grid-template-columns: 1fr; }
+
+    .btn-sm, .btn-xs, .form-control-sm, .form-select-sm { min-height: 44px; font-size: 13.5px; }
+    .slot-jump { min-height: 36px; padding: 4px 10px; }
+    .check-hit { min-width: 40px; min-height: 40px; }
+    .expand-btn { width: 38px; height: 38px; }
+    #inst-query, #conn-query, #log-query { width: 100% !important; flex: 1 1 100%; }
+    .toolbar-group { width: 100%; }
+    .toolbar-group .btn-group { width: 100%; display: flex; flex-wrap: wrap; }
+    .toolbar-group .btn-group > .btn { flex: 1 1 auto; }
+    .toast-stack { top: auto; bottom: 16px; right: 14px; left: 14px; max-width: none; }
+
+    .responsive-card-table { display: block; border-top: 0; }
+    .responsive-card-table thead { display: none; }
+    .responsive-card-table tbody { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 14px; }
+    .responsive-card-table tbody tr {
+      display: block;
+      border: 1px solid var(--hair);
+      border-radius: 10px;
+      background: var(--panel);
+      padding: 10px 12px;
+    }
+    .responsive-card-table tbody tr.row-alert { background: var(--alert-wash); border-color: var(--alert-border); }
+    .responsive-card-table tbody tr.row-focus { background: var(--focus-wash); border-color: var(--accent-signal); }
+    .responsive-card-table tbody tr.detail-row {
+      margin-top: -6px;
+      border-style: dashed;
+      background: var(--panel-subtle);
+      padding: 12px;
+    }
+    .responsive-card-table tbody tr.empty-row { border: 0; background: transparent; padding: 14px 4px; }
+    .responsive-card-table tbody tr.empty-row td { display: block; text-align: center; padding: 0; border: 0; }
+    .responsive-card-table tbody tr.empty-row td::before { display: none; }
+    .responsive-card-table tbody td {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--hair);
+      text-align: right;
+      white-space: normal !important;
+      max-width: none !important;
+    }
+    .responsive-card-table tbody tr.detail-row td {
+      display: block;
+      text-align: left;
+      padding: 0;
+      border: 0;
+    }
+    .responsive-card-table tbody td:last-child { border-bottom: 0; padding-bottom: 2px; }
+    .responsive-card-table tbody td::before {
+      content: attr(data-label);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-align: left;
+      flex: none;
+    }
+    .responsive-card-table tbody tr.detail-row td::before { display: none; }
+    .instance-table .col-id,
+    .instance-table .col-state,
+    .instance-table .col-egress,
+    .instance-table .col-load,
+    .instance-table .col-restart,
+    .instance-table .col-activity {
+      width: auto !important;
+      min-width: 0 !important;
+      max-width: none !important;
+    }
+    .responsive-card-table .cell-stack { flex: 1 1 auto; align-items: flex-end; min-width: 0; max-width: 100%; }
+    .responsive-card-table .cell-stack > div { max-width: 100%; }
+    .responsive-card-table .cell-sub { justify-content: flex-end; }
+    .responsive-card-table .cell-clip { display: block; text-align: right; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .responsive-card-table .progress-mini-wrap { width: 100%; max-width: 210px; }
+    .responsive-card-table .status-cell { justify-content: flex-end; }
+    .instance-table .col-actions {
+      position: static;
+      box-shadow: none;
+      background: transparent !important;
+      width: auto;
+      padding-top: 10px;
+    }
+    .instance-table .col-actions::before { display: none; }
+    .row-actions-wrap { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+    .row-actions-sep { display: none; }
+    .row-actions-wrap .btn { min-height: 44px; width: 100%; }
+    .mobile-select-all-bar {
+      display: flex !important;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+  }
+  .mobile-select-all-bar { display: none; }
+  @media (pointer: coarse) {
+    .row-actions-wrap .btn, .expand-btn, .check-hit, .slot-jump {
+      min-block-size: 44px;
+      min-inline-size: 44px;
+    }
+    .btn, #views .nav-link, .copy-btn, .toast-close, .btn-close, .form-control, .form-select, .rule-details summary {
+      min-block-size: 44px;
+      min-inline-size: 44px;
+    }
+    .expand-btn { width: 44px; height: 44px; }
+  }
+
+  .kbd-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-top: 18px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .kbd-hint kbd {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--hair-strong);
+    border-radius: 5px;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom sticky-top">
-  <div class="container-fluid gap-3">
-    <span class="navbar-brand mb-0 h1 fs-6 d-inline-flex align-items-center gap-2"><img class="brand-mark" src="/assets/favicon.svg" alt="" width="18" height="18"><span>Warp Proxy</span><i class="lamp" id="lamp" title="控制面连接状态"></i></span>
-    <ul class="nav flex-row flex-nowrap" id="views">
-      <li class="nav-item"><button type="button" class="nav-link active" data-view="overview"><span>总览</span><span class="nav-pill d-none" id="badge-overview"></span></button></li>
-      <li class="nav-item"><button type="button" class="nav-link" data-view="instances"><span>实例</span><span class="nav-pill d-none" id="badge-instances"></span></button></li>
-      <li class="nav-item"><button type="button" class="nav-link" data-view="connections"><span>连接</span><span class="nav-pill d-none" id="badge-connections"></span></button></li>
-      <li class="nav-item"><button type="button" class="nav-link" data-view="logs"><span>日志</span><span class="nav-pill d-none" id="badge-logs"></span></button></li>
-    </ul>
-    <div class="ms-lg-auto d-flex flex-wrap align-items-center gap-2">
-      <form class="d-flex align-items-center gap-2" id="login">
-        <input id="token" class="form-control form-control-sm" type="password" placeholder="管理密码" autocomplete="current-password" aria-label="管理密码">
-        <button class="btn btn-primary btn-sm" type="submit" id="login-submit">连接</button>
-      </form>
-      <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="token-toggle" title="修改或清除管理密码">密码</button>
-      <span id="online">控制面离线</span>
-      <div class="btn-group btn-group-sm" role="group" aria-label="刷新与主题">
-        <button type="button" class="btn btn-outline-secondary" id="top-refresh" title="立即刷新当前视图">刷新</button>
-        <button type="button" class="btn btn-outline-secondary" id="theme-btn" title="切换颜色主题">主题: 自动</button>
+<nav class="navbar sticky-top" aria-label="主导航">
+  <div class="container-fluid px-3 px-md-4">
+    <div class="nav-shell">
+      <div class="nav-brand-row">
+        <span class="navbar-brand d-inline-flex align-items-center gap-2 fs-6">
+          <img class="brand-mark" src="/assets/favicon.svg" alt="" width="20" height="20">
+          <span>Warp Proxy</span>
+          <i class="lamp" id="lamp" title="控制面连接状态" aria-hidden="true"></i>
+        </span>
+        <div class="mobile-bar-actions">
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="mobile-refresh" title="立即刷新" aria-label="立即刷新">刷新</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="offcanvas" data-bs-target="#mobile-settings-drawer" aria-controls="mobile-settings-drawer">设置</button>
+        </div>
       </div>
-      <select id="refresh" class="form-select form-select-sm" style="width: 7.2rem" aria-label="自动刷新">
+
+      <ul class="nav" id="views">
+        <li class="nav-item"><button type="button" class="nav-link active" data-view="overview" aria-current="page"><span>总览</span><span class="nav-pill d-none" id="badge-overview"></span></button></li>
+        <li class="nav-item"><button type="button" class="nav-link" data-view="instances"><span>实例</span><span class="nav-pill d-none" id="badge-instances"></span></button></li>
+        <li class="nav-item"><button type="button" class="nav-link" data-view="connections"><span>连接</span><span class="nav-pill d-none" id="badge-connections"></span></button></li>
+        <li class="nav-item"><button type="button" class="nav-link" data-view="logs"><span>日志</span><span class="nav-pill d-none" id="badge-logs"></span></button></li>
+      </ul>
+
+      <div class="nav-utilities">
+        <form class="d-flex align-items-center gap-2 d-none" id="login">
+          <input id="token" class="form-control form-control-sm" type="password" placeholder="管理密码" autocomplete="current-password" aria-label="管理密码">
+          <button class="btn btn-primary btn-sm" type="submit" id="login-submit">连接</button>
+          <button class="btn btn-outline-danger btn-sm d-none" type="button" id="logout-btn" title="清除本地保存的密码并退出">退出</button>
+        </form>
+        <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="token-toggle" title="修改或退出当前管理密码">密码</button>
+        <span class="status-chip-inline"><span id="online">等待鉴权</span></span>
+        <div class="btn-group btn-group-sm" role="group" aria-label="刷新与主题">
+          <button type="button" class="btn btn-outline-secondary" id="top-refresh" title="立即刷新当前视图 (快捷键 r)">刷新</button>
+          <button type="button" class="btn btn-outline-secondary" id="theme-btn" title="切换颜色主题">主题: 自动</button>
+        </div>
+        <select id="refresh" class="form-select form-select-sm" style="width: 6.8rem" aria-label="自动刷新周期">
+          <option value="0">暂停刷新</option>
+          <option value="1">1 秒</option>
+          <option value="3">3 秒</option>
+          <option value="5" selected>5 秒</option>
+          <option value="10">10 秒</option>
+          <option value="30">30 秒</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="container-fluid">
+  <div class="alert-banner d-none" id="error" role="alert">
+    <span id="error-text"></span>
+    <button type="button" class="btn btn-outline-danger btn-sm" id="error-retry">立即重试</button>
+  </div>
+  <section id="overview" aria-label="总览"></section>
+  <section id="instances" class="d-none" aria-label="实例列表"></section>
+  <section id="connections" class="d-none" aria-label="连接记录"></section>
+  <section id="logs" class="d-none" aria-label="控制台日志"></section>
+</main>
+
+<div class="toast-stack" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+<div class="offcanvas offcanvas-end" tabindex="-1" id="mobile-settings-drawer" aria-labelledby="mobile-settings-label">
+  <div class="offcanvas-header">
+    <h2 class="offcanvas-title fs-6 fw-semibold" id="mobile-settings-label">控制台设置</h2>
+    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="关闭"></button>
+  </div>
+  <div class="offcanvas-body d-flex flex-column gap-3">
+    <div>
+      <div class="small text-body-secondary mb-1">控制面状态</div>
+      <div class="fw-medium small" id="mobile-online-status">等待鉴权</div>
+    </div>
+    <hr class="section-divider my-0">
+    <div>
+      <label class="form-label small fw-semibold mb-1" for="mobile-refresh-select">自动刷新周期</label>
+      <select id="mobile-refresh-select" class="form-select form-select-sm">
         <option value="0">暂停刷新</option>
         <option value="1">1 秒</option>
         <option value="3">3 秒</option>
@@ -207,18 +1292,126 @@
         <option value="30">30 秒</option>
       </select>
     </div>
+    <div>
+      <div class="small fw-semibold mb-1">外观主题</div>
+      <button type="button" class="btn btn-outline-secondary btn-sm w-100" id="mobile-theme-btn">主题: 自动</button>
+    </div>
+    <hr class="section-divider my-0">
+    <form id="mobile-login-form" class="d-flex flex-column gap-2">
+      <label class="form-label small fw-semibold mb-0" for="mobile-token-input">管理密码</label>
+      <input id="mobile-token-input" class="form-control form-control-sm" type="password" placeholder="输入管理密码" autocomplete="current-password">
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary btn-sm flex-grow-1">保存并连接</button>
+        <button type="button" class="btn btn-outline-danger btn-sm" id="mobile-logout-btn">退出登录</button>
+      </div>
+    </form>
   </div>
-</nav>
-<main class="container-fluid py-3">
-  <div class="alert alert-danger d-none" id="error" role="alert"></div>
-  <section id="overview">
-    <h1 class="h4">还没有状态</h1>
-    <p class="text-body-secondary mb-0">在顶栏输入管理密码并连接。连接后这里显示入口、流量和自动重启队列。</p>
-  </section>
-  <section id="instances" class="d-none"></section>
-  <section id="connections" class="d-none"></section>
-  <section id="logs" class="d-none"></section>
-</main>
+</div>
+
+<div class="offcanvas offcanvas-end" tabindex="-1" id="policy-drawer" aria-labelledby="policy-drawer-label" style="--bs-offcanvas-width: 440px;">
+  <div class="offcanvas-header">
+    <div>
+      <h2 class="offcanvas-title fs-6 fw-semibold" id="policy-drawer-label">自动重启策略配置</h2>
+      <div class="small text-body-secondary mt-1" id="policy-drawer-badge-wrap">三个阈值独立，任一达到即刻摘流排空</div>
+    </div>
+    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="关闭"></button>
+  </div>
+  <div class="offcanvas-body d-flex flex-column">
+    <div class="policy-field">
+      <div class="policy-field-head">
+        <label for="restart-uptime">运行时长上限（秒）</label>
+        <span class="policy-hint" id="hint-restart-uptime">0 = 关闭</span>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <input id="restart-uptime" class="form-control form-control-sm" type="number" min="0" step="1" value="0">
+        <div class="btn-group btn-group-sm" role="group" aria-label="运行时长快捷档位">
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:0">关</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:3600">1h</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:21600">6h</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:86400">24h</button>
+        </div>
+      </div>
+      <div class="policy-err d-none" id="err-restart-uptime"></div>
+    </div>
+
+    <div class="policy-field">
+      <div class="policy-field-head">
+        <label for="restart-users">累计用户数上限</label>
+        <span class="policy-hint" id="hint-restart-users">0 = 关闭</span>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <input id="restart-users" class="form-control form-control-sm" type="number" min="0" step="1" value="0">
+        <div class="btn-group btn-group-sm" role="group" aria-label="用户数快捷档位">
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:0">关</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:100">100</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:1000">1k</button>
+        </div>
+      </div>
+      <div class="policy-err d-none" id="err-restart-users"></div>
+    </div>
+
+    <div class="policy-field">
+      <div class="policy-field-head">
+        <label for="restart-connections">累计连接数上限</label>
+        <span class="policy-hint" id="hint-restart-connections">0 = 关闭</span>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <input id="restart-connections" class="form-control form-control-sm" type="number" min="0" step="1" value="0">
+        <div class="btn-group btn-group-sm" role="group" aria-label="连接数快捷档位">
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:0">关</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:1000">1k</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:10000">10k</button>
+        </div>
+      </div>
+      <div class="policy-err d-none" id="err-restart-connections"></div>
+    </div>
+
+    <div class="policy-field">
+      <div class="policy-field-head">
+        <label for="restart-drain-timeout">排空超时上限（秒）</label>
+        <span class="policy-hint" id="hint-restart-drain-timeout">0 = 不设超时</span>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <input id="restart-drain-timeout" class="form-control form-control-sm" type="number" min="0" step="1" value="0">
+        <div class="btn-group btn-group-sm" role="group" aria-label="排空超时快捷档位">
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:0">无</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:60">1m</button>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:300">5m</button>
+        </div>
+      </div>
+      <div class="policy-err d-none" id="err-restart-drain-timeout"></div>
+    </div>
+
+    <div class="d-flex align-items-center justify-content-between gap-2 mt-3 pt-2 border-top" style="border-color: var(--hair) !important;">
+      <button type="button" class="btn btn-outline-secondary btn-sm" data-act="reset-policy" id="policy-reset-btn" disabled>重置修改</button>
+      <button type="button" class="btn btn-primary btn-sm" data-act="restart-policy" id="policy-apply-btn" disabled>应用条件</button>
+    </div>
+
+    <details id="rules-details" class="rule-details mt-3">
+      <summary>查看排空与黏性改派规则说明</summary>
+      <p class="mt-2 mb-1">任意一个条件达到即刻摘流，已建立的连接自然结束；排空到上限后会中断从取实例到建链、转发的整条请求，即使计数暂时不为零也放行重连，不会无限等待。0 表示关闭该条件或排空超时，三个阈值全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
+      <p class="mb-0">排空后新请求只选择其他可用实例：username-round / username-least 会保存新绑定、不自动迁回；username-hash / ip-hash 无状态，原实例恢复后可能重新选中。所有实例都不可用时才拒绝新连接。</p>
+    </details>
+  </div>
+</div>
+
+<dialog class="confirm-dialog" id="confirm-modal" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-desc confirm-modal-impact">
+    <form method="dialog" class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title fw-semibold" id="confirm-modal-title">确认操作</h2>
+        <button type="submit" value="cancel" class="btn-close" aria-label="取消"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2 small" id="confirm-modal-desc"></p>
+        <div class="p-2 rounded-3 small" id="confirm-modal-impact" style="background: var(--alert-wash); border: 1px solid var(--alert-border); color: var(--warn-ink);"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="submit" value="cancel" class="btn btn-outline-secondary btn-sm" autofocus>取消</button>
+        <button type="button" class="btn btn-danger btn-sm" id="confirm-modal-ok">确认执行</button>
+      </div>
+    </form>
+</dialog>
+
 <script src="/assets/bootstrap.bundle.min.js"></script>
 <script>
 const FOCUSABLE_INPUTS = [
@@ -231,10 +1424,25 @@ const FOCUSABLE_INPUTS = [
   "conn-query",
   "log-query"
 ];
+
+const ICONS = {
+  copy: '<svg class="ic copy-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5H3a1.5 1.5 0 0 1-1.5-1.5V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"/></svg>',
+  check: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.3 11.8 13 4.5"/></svg>',
+  chevron: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>',
+  eye: '<svg class="ic-md" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8s2.4-4.2 6.5-4.2S14.5 8 14.5 8s-2.4 4.2-6.5 4.2S1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.8"/></svg>',
+  eyeOff: '<svg class="ic-md" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 2l12 12"/><path d="M6.6 6.7a1.8 1.8 0 0 0 2.7 2.4"/><path d="M4.2 4.4C2.6 5.6 1.5 8 1.5 8s2.4 4.2 6.5 4.2c1.2 0 2.3-.3 3.2-.8"/><path d="M6.4 3.9A7 7 0 0 1 8 3.8c4.1 0 6.5 4.2 6.5 4.2a11.3 11.3 0 0 1-1.9 2.4"/></svg>',
+  sliders: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/><circle cx="5.5" cy="4.5" r="1.4" fill="currentColor"/><circle cx="10.5" cy="8" r="1.4" fill="currentColor"/><circle cx="7" cy="11.5" r="1.4" fill="currentColor"/></svg>',
+  close: '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>'
+};
+
 const state = {
   view: "overview",
+  authState: "idle",
+  authError: "",
+  authShowPass: false,
   filter: "all",
   instQuery: "",
+  instSort: "id",
   connFilter: "all",
   connQuery: "",
   connSort: "newest",
@@ -243,11 +1451,15 @@ const state = {
   logOnlyBad: false,
   status: null,
   sessions: [],
+  sessionsLoaded: false,
   logs: null,
+  logsLoaded: false,
   stick: true,
   timer: 0,
   temps: [],
+  expandedSlots: new Set(),
   focusId: "",
+  focusSelector: "",
   selectionRange: null,
   composing: false,
   restartDraft: null,
@@ -256,20 +1468,32 @@ const state = {
   busyKeys: new Set(),
   feedbackMap: {},
   copiedKey: "",
-  highlightSlot: 0,
+  highlightSlot: null,
   pendingRender: false,
-  scrollToSlot: 0,
+  scrollToSlot: null,
   suppressLogScroll: false,
   logScrollTimer: 0,
   tempCount: "1",
   authCollapsed: false,
   authLockedOpen: false,
   lastUpdatedAt: 0,
-  themeMode: "auto"
+  themeMode: "auto",
+  toasts: [],
+  toastSeq: 0,
+  pendingConfirm: null
 };
+
 const tokenInput = document.querySelector("#token");
 const loginForm = document.querySelector("#login");
 const tokenToggleBtn = document.querySelector("#token-toggle");
+const logoutBtn = document.querySelector("#logout-btn");
+const mobileTokenInput = document.querySelector("#mobile-token-input");
+const mobileRefreshSelect = document.querySelector("#mobile-refresh-select");
+const refreshSelect = document.querySelector("#refresh");
+const confirmModalEl = document.querySelector("#confirm-modal");
+const policyDrawerEl = document.querySelector("#policy-drawer");
+const confirmModal = confirmModalEl;
+const policyDrawer = window.bootstrap ? new bootstrap.Offcanvas(policyDrawerEl) : null;
 
 function readCachedToken() {
   try {
@@ -291,6 +1515,7 @@ function writeCachedToken(token) {
 }
 state.token = readCachedToken().trim();
 tokenInput.value = state.token;
+mobileTokenInput.value = state.token;
 
 function readThemeMode() {
   try {
@@ -305,21 +1530,24 @@ function applyTheme() {
   document.documentElement.setAttribute("data-bs-theme", dark ? "dark" : "light");
   const themeColor = document.querySelector('meta[name="theme-color"]');
   if (themeColor) themeColor.setAttribute("content", dark ? "#111210" : "#f3f4f2");
+  const label = mode === "auto" ? "自动" : mode === "dark" ? "深色" : "浅色";
+  const text = "主题: " + label;
   const btn = document.querySelector("#theme-btn");
-  if (btn) {
-    const label = mode === "auto" ? "自动" : mode === "dark" ? "深色" : "浅色";
-    btn.textContent = "主题: " + label;
-  }
+  if (btn) btn.textContent = text;
+  const mBtn = document.querySelector("#mobile-theme-btn");
+  if (mBtn) mBtn.textContent = text;
 }
-state.themeMode = readThemeMode();
-applyTheme();
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
-document.querySelector("#theme-btn").addEventListener("click", () => {
+function cycleTheme() {
   const order = ["auto", "light", "dark"];
   state.themeMode = order[(order.indexOf(state.themeMode) + 1) % order.length];
   try { localStorage.setItem("warp-theme", state.themeMode); } catch (_) {}
   applyTheme();
-});
+}
+state.themeMode = readThemeMode();
+applyTheme();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+document.querySelector("#theme-btn").addEventListener("click", cycleTheme);
+document.querySelector("#mobile-theme-btn").addEventListener("click", cycleTheme);
 
 function syncAuthBar(connected) {
   if (connected && state.token && !state.authCollapsed && !state.authLockedOpen && document.activeElement !== tokenInput) {
@@ -329,44 +1557,172 @@ function syncAuthBar(connected) {
     state.authCollapsed = false;
     state.authLockedOpen = false;
   }
-  loginForm.classList.toggle("d-none", state.authCollapsed);
-  tokenToggleBtn.classList.toggle("d-none", !state.authCollapsed);
+  const hideTopLogin = (!connected && !state.status) || state.authCollapsed;
+  loginForm.classList.toggle("d-none", hideTopLogin);
+  tokenToggleBtn.classList.toggle("d-none", !(connected && state.authCollapsed));
+  logoutBtn.classList.toggle("d-none", !(connected || state.token));
+  mobileTokenInput.value = state.token;
 }
 tokenToggleBtn.addEventListener("click", () => {
   state.authLockedOpen = true;
   state.authCollapsed = false;
   loginForm.classList.remove("d-none");
   tokenToggleBtn.classList.add("d-none");
+  logoutBtn.classList.remove("d-none");
   tokenInput.focus();
   tokenInput.select();
 });
+
+function logout() {
+  clearTimeout(state.timer);
+  state.token = "";
+  writeCachedToken("");
+  state.status = null;
+  state.sessions = [];
+  state.sessionsLoaded = false;
+  state.logs = null;
+  state.logsLoaded = false;
+  state.temps = [];
+  state.expandedSlots.clear();
+  state.highlightSlot = null;
+  state.restartDraft = null;
+  state.authState = "idle";
+  state.authError = "";
+  tokenInput.value = "";
+  mobileTokenInput.value = "";
+  showError("");
+  syncAuthBar(false);
+  updateOnlineIndicator("等待鉴权", "unknown");
+  clearNavBadges();
+  render();
+  pushToast("已退出登录并清除本地密码", false);
+}
+logoutBtn.addEventListener("click", logout);
+document.querySelector("#mobile-logout-btn").addEventListener("click", () => {
+  const drawer = bootstrap.Offcanvas.getInstance(document.querySelector("#mobile-settings-drawer"));
+  if (drawer) drawer.hide();
+  logout();
+});
+
+function updateOnlineIndicator(text, lampClass) {
+  const online = document.querySelector("#online");
+  if (online) online.textContent = text;
+  const mobileOnline = document.querySelector("#mobile-online-status");
+  if (mobileOnline) mobileOnline.textContent = text;
+  const lamp = document.querySelector("#lamp");
+  if (lamp) lamp.className = "lamp " + (lampClass || "");
+}
+function clearNavBadges() {
+  for (const id of ["badge-overview", "badge-instances", "badge-connections", "badge-logs"]) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add("d-none");
+  }
+}
 
 const VIEW_LABELS = { overview: "总览", instances: "实例", connections: "连接", logs: "日志" };
 function setDocumentTitle() {
   document.title = (VIEW_LABELS[state.view] || "总览") + " · Warp Proxy";
 }
-function switchView(viewName) {
+function switchView(viewName, skipRefresh = false) {
   state.view = viewName;
   setDocumentTitle();
-  document.querySelectorAll("#views button").forEach((item) => item.classList.toggle("active", item.dataset.view === viewName));
+  document.querySelectorAll("#views button").forEach((item) => {
+    const active = item.dataset.view === viewName;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  });
   for (const id of ["overview", "instances", "connections", "logs"]) {
     document.querySelector("#" + id).classList.toggle("d-none", id !== state.view);
   }
-  refresh(true);
+  render();
+  if (!skipRefresh && (state.status || state.token)) {
+    refresh(true);
+  }
 }
 document.querySelectorAll("#views button").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.view));
 });
-loginForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  state.token = tokenInput.value.trim();
+
+function submitToken(rawValue) {
+  const next = String(rawValue || "").trim();
+  if (!next) {
+    state.authError = "请输入管理密码后再连接";
+    render();
+    return;
+  }
+  state.token = next;
+  tokenInput.value = next;
+  mobileTokenInput.value = next;
+  state.authError = "";
   state.authCollapsed = true;
   state.authLockedOpen = false;
-  if (!state.token) writeCachedToken("");
   refresh(true);
+}
+loginForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitToken(tokenInput.value);
 });
-document.querySelector("#refresh").addEventListener("change", schedule);
+document.querySelector("#mobile-login-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const drawer = bootstrap.Offcanvas.getInstance(document.querySelector("#mobile-settings-drawer"));
+  if (drawer) drawer.hide();
+  submitToken(mobileTokenInput.value);
+});
+
+function syncRefreshInterval(val) {
+  refreshSelect.value = val;
+  mobileRefreshSelect.value = val;
+  schedule();
+  if (state.status) {
+    const paused = Number(val) <= 0;
+    const baseText = state.status.initializing ? "正在准备账号" : "控制面在线";
+    updateOnlineIndicator(baseText + " · " + clock(state.lastUpdatedAt) + (paused ? "（已暂停）" : ""), "on");
+  }
+}
+refreshSelect.addEventListener("change", () => syncRefreshInterval(refreshSelect.value));
+mobileRefreshSelect.addEventListener("change", () => syncRefreshInterval(mobileRefreshSelect.value));
 document.querySelector("#top-refresh").addEventListener("click", () => refresh(true));
+document.querySelector("#mobile-refresh").addEventListener("click", () => refresh(true));
+document.querySelector("#error-retry").addEventListener("click", () => refresh(true));
+
+document.addEventListener("keydown", (event) => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const tag = (document.activeElement && document.activeElement.tagName || "").toLowerCase();
+  const inField = tag === "input" || tag === "textarea" || tag === "select" || (document.activeElement && document.activeElement.isContentEditable);
+  const overlayOpen = Boolean(document.querySelector("dialog[open], .offcanvas.show"));
+  if (overlayOpen) return;
+  if (event.key === "Escape") {
+    if (inField) {
+      document.activeElement.blur();
+    } else if (state.highlightSlot !== null) {
+      state.highlightSlot = null;
+      render();
+    }
+    return;
+  }
+  if (inField || !state.status) return;
+  const viewKeys = { "1": "overview", "2": "instances", "3": "connections", "4": "logs" };
+  if (viewKeys[event.key]) {
+    event.preventDefault();
+    switchView(viewKeys[event.key]);
+    return;
+  }
+  if (event.key === "/") {
+    const map = { instances: "inst-query", connections: "conn-query", logs: "log-query" };
+    const target = map[state.view] ? document.getElementById(map[state.view]) : null;
+    if (target) {
+      event.preventDefault();
+      target.focus();
+      target.select();
+    }
+    return;
+  }
+  if (event.key === "r" || event.key === "R") {
+    event.preventDefault();
+    refresh(true);
+  }
+});
 
 document.addEventListener("compositionstart", () => { state.composing = true; });
 document.addEventListener("compositionend", () => {
@@ -407,30 +1763,87 @@ function requestRender() {
 
 function schedule() {
   clearTimeout(state.timer);
-  let seconds = Number(document.querySelector("#refresh").value);
+  if (!state.token && !state.status) return;
+  if (state.authState === "unauthorized") return;
+  let seconds = Number(refreshSelect.value);
   if (seconds <= 0) return;
   if (state.status && state.status.tasks && state.status.tasks.length) seconds = Math.min(seconds, 1);
   state.timer = setTimeout(refresh, seconds * 1000);
 }
+
 async function api(path) {
   const token = (state.token || "").trim();
   const response = await fetch(path, { headers: token ? { "X-Warp-Token": token } : {}, cache: "no-store" });
   const text = await response.text();
-  if (!response.ok) throw new Error(text || response.statusText);
+  if (!response.ok) {
+    let msg = response.statusText || ("HTTP " + response.status);
+    if (text) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.error) msg = String(parsed.error);
+        else msg = text;
+      } catch (_) {
+        msg = text;
+      }
+    }
+    const err = new Error(msg);
+    err.status = response.status;
+    throw err;
+  }
   return text ? JSON.parse(text) : {};
 }
+
 function showError(message) {
-  const error = document.querySelector("#error");
-  error.textContent = message || "";
-  error.classList.toggle("d-none", !message);
+  const box = document.querySelector("#error");
+  const txt = document.querySelector("#error-text");
+  if (!box || !txt) return;
+  txt.textContent = message || "";
+  box.classList.toggle("d-none", !message);
 }
+
+function pushToast(text, isError, retryFn) {
+  const id = ++state.toastSeq;
+  const item = { id, text: String(text || ""), error: Boolean(isError), retryFn: retryFn || null, timer: 0 };
+  state.toasts = [...state.toasts.slice(-3), item];
+  renderToasts();
+  const ttl = isError ? 6000 : 4000;
+  item.timer = setTimeout(() => dismissToast(id), ttl);
+}
+function dismissToast(id) {
+  const found = state.toasts.find((t) => t.id === id);
+  if (found && found.timer) clearTimeout(found.timer);
+  state.toasts = state.toasts.filter((t) => t.id !== id);
+  renderToasts();
+}
+function renderToasts() {
+  const host = document.getElementById("toast-region");
+  if (!host) return;
+  host.innerHTML = state.toasts.map((t) => `
+    <div class="toast-item ${t.error ? "toast-err" : "toast-ok"}" role="status">
+      <div class="toast-body-text">${escapeHtml(t.text)}${t.retryFn ? ' <button type="button" class="btn btn-outline-danger btn-xs ms-1" data-toast-retry="' + t.id + '">重试</button>' : ""}</div>
+      <button type="button" class="toast-close" data-toast-close="${t.id}" aria-label="关闭通知">${ICONS.close}</button>
+    </div>
+  `).join("");
+  host.querySelectorAll("[data-toast-close]").forEach((btn) => {
+    btn.addEventListener("click", () => dismissToast(Number(btn.dataset.toastClose)));
+  });
+  host.querySelectorAll("[data-toast-retry]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = Number(btn.dataset.toastRetry);
+      const found = state.toasts.find((t) => t.id === id);
+      dismissToast(id);
+      if (found && typeof found.retryFn === "function") found.retryFn();
+    });
+  });
+}
+
 function feedbackKey(name, button) {
   if (button && button.dataset.slot && (name === "restart" || name === "manual" || name === "graceful-slot" || name === "trace-slot")) {
     return "slot:" + button.dataset.slot;
   }
   return "act:" + name;
 }
-function setFeedback(key, text, error, ttlMs = 1600) {
+function setFeedback(key, text, error, ttlMs = 2600) {
   const prev = state.feedbackMap[key];
   if (prev && prev.timer) clearTimeout(prev.timer);
   const entry = { text, error: Boolean(error), timer: 0 };
@@ -444,10 +1857,16 @@ function setFeedback(key, text, error, ttlMs = 1600) {
 }
 function rowStatus(account) {
   const live = state.feedbackMap["slot:" + account.id];
-  if (!live) return escapeHtml(account.last_action || "—");
-  const tone = live.error ? "text-danger fw-medium" : "text-primary fw-medium";
-  return '<span class="' + tone + '" title="' + escapeHtml(live.text) + '">' + escapeHtml(live.text) + "</span>";
+  if (live) {
+    const tone = live.error ? "color: var(--bad-ink); font-weight: 600;" : "color: var(--queue-ink); font-weight: 600;";
+    return '<span style="' + tone + '" title="' + escapeHtml(live.text) + '">' + escapeHtml(live.text) + "</span>";
+  }
+  if (account.trace && account.trace.err) {
+    return '<span style="color: var(--bad-ink);" title="' + escapeHtml(account.trace.err) + '">探测异常：' + escapeHtml(account.trace.err) + "</span>";
+  }
+  return escapeHtml(account.last_action || "—");
 }
+
 const buttonLabels = new WeakMap();
 const buttonTitles = new WeakMap();
 const buttonDisabled = new WeakMap();
@@ -462,7 +1881,7 @@ function applyFeedback() {
     const live = key.indexOf("act:") === 0 ? state.feedbackMap[key] : null;
     const originalTitle = buttonTitles.get(button);
     if (live) {
-      button.textContent = live.error ? "失败" : live.text;
+      button.textContent = live.error ? "操作失败" : live.text;
       button.setAttribute("title", live.text);
     } else {
       button.textContent = buttonLabels.get(button);
@@ -472,15 +1891,16 @@ function applyFeedback() {
     button.disabled = buttonDisabled.get(button) || state.busyKeys.has(key);
   });
 }
+
 function actionText(name, button) {
   const slot = button && button.dataset.slot;
-  if (name === "restart") return slot ? "强制重连实例 " + slot : "强制重连";
-  if (name === "graceful-slot") return slot ? "排空重连实例 " + slot : "排空重连";
-  if (name === "trace-slot") return slot ? "探测实例 " + slot + " 出口" : "探测出口";
-  if (name === "manual") return (button.dataset.on === "1" ? "启用" : "停用") + (slot ? "实例 " + slot : "");
+  if (name === "restart") return slot ? "强制重连实例 #" + slot : "强制重连";
+  if (name === "graceful-slot") return slot ? "优雅重连实例 #" + slot : "优雅重连";
+  if (name === "trace-slot") return slot ? "探测实例 #" + slot + " 出口" : "探测出口";
+  if (name === "manual") return (button.dataset.on === "1" ? "启用" : "停用") + (slot ? "实例 #" + slot : "");
   if (name === "trace") return "检测出口 IP";
   if (name === "graceful-restart") return "触发全部实例优雅重启";
-  if (name === "restart-policy") return "更新重启策略";
+  if (name === "restart-policy") return "更新自动重启策略";
   if (name === "add-temp") {
     const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
     return count > 1 ? "添加 " + count + " 个临时实例" : "添加临时实例";
@@ -500,7 +1920,7 @@ function updateNavBadges() {
   const data = state.status;
   if (!data) return;
   const total = data.accounts.length;
-  const bad = data.attention + data.unknown;
+  const bad = (data.attention || 0) + (data.unknown || 0);
   const instBadge = document.querySelector("#badge-instances");
   if (instBadge) {
     instBadge.textContent = data.ready + "/" + total;
@@ -526,8 +1946,9 @@ function updateNavBadges() {
   }
   const logBadge = document.querySelector("#badge-logs");
   if (logBadge && state.logs && state.logs.lines) {
+    const badLogs = state.logs.lines.filter(isBadLogLine).length;
     logBadge.textContent = String(state.logs.lines.length);
-    logBadge.className = "nav-pill";
+    logBadge.className = "nav-pill" + (badLogs > 0 ? " warn" : "");
     logBadge.classList.remove("d-none");
   }
 }
@@ -539,26 +1960,33 @@ async function refresh(forceRender = false) {
     const status = await api("/api/status");
     if (seq !== refreshSeq) return;
     state.status = status;
+    state.authState = "connected";
+    state.authError = "";
     if (state.view === "connections") {
       const page = await api("/api/sessions");
       if (seq !== refreshSeq) return;
       state.sessions = page.sessions || page || [];
+      state.sessionsLoaded = true;
     }
-    if (state.view === "logs") {
-      const logs = await api("/api/logs");
-      if (seq !== refreshSeq) return;
-      state.logs = logs;
+    if (state.view === "logs" || !state.logsLoaded) {
+      try {
+        const logs = await api("/api/logs");
+        if (seq !== refreshSeq) return;
+        state.logs = logs;
+        state.logsLoaded = true;
+      } catch (logErr) {
+        if (state.view === "logs") throw logErr;
+      }
     }
     state.lastUpdatedAt = Date.now();
     writeCachedToken(state.token);
     showError("");
     syncAuthBar(true);
+    syncPolicyDrawer(status);
     updateNavBadges();
-    const online = document.querySelector("#online");
-    const paused = Number(document.querySelector("#refresh").value) <= 0;
+    const paused = Number(refreshSelect.value) <= 0;
     const baseText = status.initializing ? "正在准备账号" : "控制面在线";
-    online.textContent = baseText + " · " + clock(state.lastUpdatedAt) + (paused ? " (已暂停)" : "");
-    document.querySelector("#lamp").className = "lamp on";
+    updateOnlineIndicator(baseText + " · " + clock(state.lastUpdatedAt) + (paused ? "（已暂停）" : ""), "on");
     if (state.composing) {
       state.pendingRender = true;
     } else if (forceRender || !hasUserSelection()) {
@@ -569,115 +1997,175 @@ async function refresh(forceRender = false) {
     }
   } catch (err) {
     if (seq !== refreshSeq) return;
-    syncAuthBar(false);
-    const online = document.querySelector("#online");
-    online.textContent = "控制面离线";
-    document.querySelector("#lamp").className = "lamp";
-    showError(String(err.message || err).replace(/^Error: /, ""));
+    const isAuthErr = err && (err.status === 401 || err.status === 403);
+    if (isAuthErr) {
+      state.authState = "unauthorized";
+      state.authError = "管理密码错误或已失效，请检查后重新输入。";
+      syncAuthBar(false);
+      updateOnlineIndicator("需要鉴权", "attention");
+      if (state.status) {
+        showError("管理密码已失效（HTTP " + err.status + "），请重新输入管理密码连接控制面。");
+      } else {
+        showError("");
+      }
+      render();
+      return;
+    }
+    state.authState = "offline";
+    syncAuthBar(Boolean(state.status));
+    const secs = Number(refreshSelect.value);
+    const retryHint = secs > 0 ? " · 将在 " + secs + " 秒后自动重试" : "";
+    const staleHint = state.lastUpdatedAt ? "（下方为 " + clock(state.lastUpdatedAt) + " 快照）" : "";
+    updateOnlineIndicator("控制面离线", "offline");
+    showError("无法连接控制面：" + String(err.message || err) + staleHint + retryHint);
+    if (!state.status) render();
+  } finally {
+    if (seq === refreshSeq) schedule();
   }
-  if (seq === refreshSeq) schedule();
 }
 
-function capture() {
-  const boxes = [...document.querySelectorAll("[data-temp]")];
-  const currentIds = boxes.map((box) => String(box.dataset.temp));
-  const checkedIds = boxes.filter((box) => box.checked).map((box) => String(box.dataset.temp));
-  const merged = new Set([
-    ...state.temps.filter((id) => !currentIds.includes(String(id))),
-    ...checkedIds,
-  ]);
-  state.temps = [...merged];
-  if (state.status && state.status.accounts) {
-    const validTemps = new Set(state.status.accounts.filter((account) => account.temporary).map((account) => String(account.id)));
-    state.temps = state.temps.filter((id) => validTemps.has(String(id)));
-  }
+function captureFocus() {
+  state.focusId = "";
+  state.focusSelector = "";
+  state.selectionRange = null;
   const active = document.activeElement;
-  const tempCount = document.getElementById("temp-count");
-  if (tempCount) state.tempCount = tempCount.value;
-  const rulesDetails = document.querySelector("#rules-details");
-  if (rulesDetails) state.rulesOpen = rulesDetails.open;
-  if (active && FOCUSABLE_INPUTS.includes(active.id)) {
+  if (!active || active === document.body) return;
+  const main = document.querySelector("main");
+  if (!main || !main.contains(active)) return;
+  if (active.id && (FOCUSABLE_INPUTS.includes(active.id) || active.id === "auth-card-token" || active.id === "select-all-temps" || active.id === "log-only-bad" || active.id === "conn-sort" || active.id === "inst-sort")) {
     state.focusId = active.id;
-    try {
-      state.selectionRange = typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
-    } catch (_) {
-      state.selectionRange = null;
+    if (typeof active.selectionStart === "number" && typeof active.selectionEnd === "number") {
+      state.selectionRange = [active.selectionStart, active.selectionEnd];
     }
-  } else {
-    state.focusId = "";
-    state.selectionRange = null;
+    return;
   }
+  if (active.dataset) {
+    if (active.dataset.act && active.dataset.slot) {
+      state.focusSelector = '[data-act="' + active.dataset.act + '"][data-slot="' + active.dataset.slot + '"]';
+    } else if (active.dataset.act) {
+      state.focusSelector = '[data-act="' + active.dataset.act + '"]';
+    } else if (active.dataset.expandSlot) {
+      state.focusSelector = '[data-expand-slot="' + active.dataset.expandSlot + '"]';
+    } else if (active.dataset.temp) {
+      state.focusSelector = '[data-temp="' + active.dataset.temp + '"]';
+    } else if (active.dataset.copyKey) {
+      state.focusSelector = '[data-copy-key="' + CSS.escape(active.dataset.copyKey) + '"]';
+    } else if (active.dataset.filter) {
+      state.focusSelector = '[data-filter="' + active.dataset.filter + '"]';
+    } else if (active.dataset.connFilter) {
+      state.focusSelector = '[data-conn-filter="' + active.dataset.connFilter + '"]';
+    } else if (active.dataset.log) {
+      state.focusSelector = '[data-log="' + active.dataset.log + '"]';
+    } else if (active.dataset.jumpSlot) {
+      state.focusSelector = '[data-jump-slot="' + active.dataset.jumpSlot + '"]';
+    }
+  }
+}
+
+function restoreFocus() {
+  if (state.focusId) {
+    const node = document.getElementById(state.focusId);
+    if (node) {
+      node.focus({ preventScroll: true });
+      if (state.selectionRange && typeof node.setSelectionRange === "function") {
+        try { node.setSelectionRange(state.selectionRange[0], state.selectionRange[1]); } catch (_) {}
+      }
+      return;
+    }
+  }
+  if (state.focusSelector) {
+    const main = document.querySelector("main");
+    const node = main ? main.querySelector(state.focusSelector) : null;
+    if (node && !node.disabled) {
+      node.focus({ preventScroll: true });
+    }
+  }
+}
+
+function authCardView() {
+  const hasErr = Boolean(state.authError);
+  const title = state.authState === "unauthorized" ? "管理密码验证失败" : "连接 Warp Proxy 控制面";
+  const desc = state.authState === "offline"
+    ? "未能连接到本地控制接口，请确认 warp-proxy 服务已启动后输入密码重试。"
+    : "输入管理密码后即可查看代理池健康度、实例出口与实时连接。密码仅保存在当前浏览器本地。";
+  return `
+    <div class="auth-stage">
+      <div class="auth-head">
+        <img class="brand-mark" src="/assets/favicon.svg" alt="" width="24" height="24" style="width:24px;height:24px;">
+        <h1>${escapeHtml(title)}</h1>
+      </div>
+      <p class="auth-desc">${escapeHtml(desc)}</p>
+      <form id="auth-card-form" novalidate>
+        <label class="form-label small fw-semibold" for="auth-card-token">管理密码</label>
+        <div class="input-group">
+          <input id="auth-card-token" class="form-control" type="${state.authShowPass ? "text" : "password"}" value="${escapeHtml(state.token)}" placeholder="输入管理密码（默认 admin）" autocomplete="current-password" autofocus>
+          <button type="button" class="btn btn-outline-secondary" id="auth-pass-toggle" aria-label="${state.authShowPass ? "隐藏密码" : "显示密码"}" title="${state.authShowPass ? "隐藏密码" : "显示密码"}">${state.authShowPass ? ICONS.eyeOff : ICONS.eye}</button>
+        </div>
+        ${hasErr ? `<div class="auth-inline-err" role="alert">${escapeHtml(state.authError)}</div>` : ""}
+        <button type="submit" class="btn btn-primary w-100 mt-3" style="min-height: 40px;">连接控制面</button>
+      </form>
+      <div class="auth-help">
+        默认密码为 <code>admin</code>。若部署时自定义了密码，请使用环境变量 <code>CONTROL_PASSWORD</code>、命令行参数 <code>--control-password</code> 或服务启动日志中输出的控制密码。
+      </div>
+    </div>
+  `;
 }
 
 function render() {
+  captureFocus();
   const data = state.status;
-  if (!data) return;
-  capture();
-  if (state.view === "overview") document.querySelector("#overview").innerHTML = overview(data);
+  if (!data) {
+    const activeSection = document.querySelector("#" + state.view);
+    if (activeSection) activeSection.innerHTML = authCardView();
+    bind();
+    restoreFocus();
+    return;
+  }
+  if (state.view === "overview") {
+    document.querySelector("#overview").innerHTML = overview(data);
+  }
   if (state.view === "instances") {
     const panel = document.querySelector("#instances");
-    const prev = panel.querySelector(".instance-scroll");
-    const top = prev ? prev.scrollTop : 0;
-    const left = prev ? prev.scrollLeft : 0;
+    const previous = panel.querySelector(".instance-scroll");
+    const scrollLeft = previous ? previous.scrollLeft : 0;
     panel.innerHTML = instances(data);
     const next = panel.querySelector(".instance-scroll");
     if (next) {
-      next.scrollTop = top;
-      next.scrollLeft = left;
-      if (state.highlightSlot && state.scrollToSlot) {
-        const targetRow = next.querySelector('tr[data-slot-row="' + state.highlightSlot + '"]');
-        if (targetRow) targetRow.scrollIntoView({ block: "nearest" });
+      next.scrollLeft = scrollLeft;
+      if (state.scrollToSlot !== null) {
+        const targetRow = next.querySelector('[data-slot-row="' + state.scrollToSlot + '"]');
+        if (targetRow) targetRow.scrollIntoView({ block: "center", behavior: "smooth" });
       }
     }
-    state.scrollToSlot = 0;
+    state.scrollToSlot = null;
   }
   if (state.view === "connections") {
     const panel = document.querySelector("#connections");
     const previous = panel.querySelector(".connections-scroll");
-    const scrollTop = previous ? previous.scrollTop : 0;
     const scrollLeft = previous ? previous.scrollLeft : 0;
-    const anchor = previous && scrollTop > 0 ? [...previous.querySelectorAll("tbody tr")].find((row) => row.getBoundingClientRect().bottom > previous.getBoundingClientRect().top) : null;
-    const anchorId = anchor && anchor.dataset.session;
-    const anchorOffset = anchor ? anchor.getBoundingClientRect().top - previous.getBoundingClientRect().top : 0;
     panel.innerHTML = connections();
     const next = panel.querySelector(".connections-scroll");
-    if (next) {
-      next.scrollTop = scrollTop;
-      next.scrollLeft = scrollLeft;
-      if (anchorId) {
-        const row = [...next.querySelectorAll("tbody tr")].find((item) => item.dataset.session === anchorId);
-        if (row) next.scrollTop += row.getBoundingClientRect().top - next.getBoundingClientRect().top - anchorOffset;
-      }
-    }
+    if (next) next.scrollLeft = scrollLeft;
   }
   if (state.view === "logs") {
-    const box = document.querySelector("#logs pre");
+    const box = document.querySelector("#logs .log-box");
     const prevTop = box ? box.scrollTop : 0;
     document.querySelector("#logs").innerHTML = logs();
-    const next = document.querySelector("#logs pre");
+    const next = document.querySelector("#logs .log-box");
     if (next) {
       clearTimeout(state.logScrollTimer);
       state.suppressLogScroll = true;
-      if (state.stick) {
-        next.scrollTop = next.scrollHeight;
-      } else next.scrollTop = prevTop;
+      if (state.stick) next.scrollTop = next.scrollHeight;
+      else next.scrollTop = prevTop;
       state.logScrollTimer = setTimeout(() => { state.suppressLogScroll = false; }, 50);
     }
   }
-  if (state.focusId) {
-    const node = document.getElementById(state.focusId);
-    if (node) {
-      node.focus();
-      if (state.selectionRange && typeof node.setSelectionRange === "function") {
-        try { node.setSelectionRange(state.selectionRange[0], state.selectionRange[1]); } catch (_) {}
-      }
-    }
-  }
   bind();
+  restoreFocus();
 }
 
 function isPolicyDirty(data) {
-  if (!state.restartDraft) return false;
+  if (!data || !state.restartDraft) return false;
   const d = state.restartDraft;
   return (
     String(d.uptime ?? data.restart_max_uptime_seconds) !== String(data.restart_max_uptime_seconds) ||
@@ -690,146 +2178,247 @@ function isPolicyDirty(data) {
 function secondsHint(valStr, zeroLabel) {
   const n = Number(valStr);
   if (!Number.isFinite(n) || n <= 0) return zeroLabel || "0 = 关闭";
-  return "≈ " + duration(n);
+  return "约 " + duration(n);
+}
+
+function syncPolicyDrawer(data) {
+  if (!data) return;
+  const draft = state.restartDraft || {};
+  const vals = {
+    uptime: draft.uptime ?? String(data.restart_max_uptime_seconds),
+    users: draft.users ?? String(data.restart_max_users),
+    connections: draft.connections ?? String(data.restart_max_connections),
+    drainTimeout: draft.drainTimeout ?? String(data.restart_drain_timeout_seconds)
+  };
+  const fieldMap = [
+    ["restart-uptime", vals.uptime, "hint-restart-uptime", "err-restart-uptime", () => secondsHint(vals.uptime, "0 = 关闭")],
+    ["restart-users", vals.users, "hint-restart-users", "err-restart-users", () => Number(vals.users) > 0 ? "满 " + vals.users + " 用户摘流" : "0 = 关闭"],
+    ["restart-connections", vals.connections, "hint-restart-connections", "err-restart-connections", () => Number(vals.connections) > 0 ? "满 " + vals.connections + " 连接摘流" : "0 = 关闭"],
+    ["restart-drain-timeout", vals.drainTimeout, "hint-restart-drain-timeout", "err-restart-drain-timeout", () => secondsHint(vals.drainTimeout, "0 = 不设超时")]
+  ];
+  let allValid = true;
+  for (const [id, val, hintId, errId, hintFn] of fieldMap) {
+    const input = document.getElementById(id);
+    if (input && document.activeElement !== input && input.value !== val) {
+      input.value = val;
+    }
+    const valid = /^[0-9]+$/.test(String(val));
+    if (!valid) allValid = false;
+    if (input) input.classList.toggle("is-invalid", !valid);
+    const errEl = document.getElementById(errId);
+    if (errEl) {
+      errEl.textContent = valid ? "" : "必须是非负整数（0 表示关闭）";
+      errEl.classList.toggle("d-none", valid);
+    }
+    const hintEl = document.getElementById(hintId);
+    if (hintEl) hintEl.textContent = valid ? hintFn() : "输入无效";
+  }
+  const dirty = isPolicyDirty(data);
+  const applyBtn = document.getElementById("policy-apply-btn");
+  const resetBtn = document.getElementById("policy-reset-btn");
+  const badgeWrap = document.getElementById("policy-drawer-badge-wrap");
+  if (applyBtn) {
+    applyBtn.disabled = !dirty || !allValid || state.busyKeys.has("act:restart-policy");
+    buttonDisabled.set(applyBtn, !dirty || !allValid);
+  }
+  if (resetBtn) {
+    resetBtn.disabled = !dirty;
+    buttonDisabled.set(resetBtn, !dirty);
+  }
+  if (badgeWrap) {
+    badgeWrap.innerHTML = dirty
+      ? '<span class="tag-pill dirty">有未保存修改</span> 点击「应用条件」后立即生效'
+      : "三个阈值独立，任一达到即刻摘流排空";
+  }
+}
+
+function strategyLabel(name) {
+  return {
+    round: "轮询调度",
+    random: "随机调度",
+    hash: "哈希调度",
+    rotate: "定时轮换",
+    "least-connections": "最少连接调度"
+  }[name] || name || "默认调度";
+}
+function stickyLabel(name) {
+  return {
+    none: "无会话黏性",
+    "username-round": "按用户轮询黏性",
+    "username-least": "按用户最少连接黏性",
+    "username-hash": "按用户哈希黏性",
+    "ip-hash": "按来源 IP 黏性",
+    user: "按用户黏性"
+  }[name] || name || "默认黏性";
 }
 
 function overview(data) {
   const total = data.accounts.length;
-  const bad = data.attention + data.unknown;
+  const bad = (data.attention || 0) + (data.unknown || 0);
   const connecting = data.accounts.some((item) => item.health === "connecting" || item.health === "retrying");
   const title = data.initializing
     ? "正在准备账号（" + total + "/" + data.expected_accounts + "）"
-    : connecting ? "正在连接实例（已就绪 " + data.ready + "/" + total + "）"
-    : data.ready === total && total > 0 ? "全部实例运行正常"
-    : bad ? bad + " 个实例需要关注" : "没有可调度的实例";
-  const mode = data.mixed ? "MIXED" : "SOCKS5";
-  const draft = state.restartDraft || {};
-  const uptime = draft.uptime ?? String(data.restart_max_uptime_seconds);
-  const users = draft.users ?? String(data.restart_max_users);
-  const connections = draft.connections ?? String(data.restart_max_connections);
-  const drainTimeout = draft.drainTimeout ?? String(data.restart_drain_timeout_seconds);
-  const dirty = isPolicyDirty(data);
+    : !data.enabled
+    ? "代理入口已暂停"
+    : connecting
+    ? "正在连接实例（可用 " + data.ready + "/" + total + "）"
+    : data.ready === total && total > 0
+    ? "全部 " + total + " 个实例运行正常"
+    : bad
+    ? bad + " 个实例需关注"
+    : "当前没有可调度的实例";
+
+  const bannerTone = !data.enabled || (data.ready === 0 && total > 0)
+    ? "tone-bad"
+    : bad > 0 || connecting
+    ? "tone-warn"
+    : "tone-ok";
+  const bannerLamp = bannerTone === "tone-bad" ? "disabled" : bannerTone === "tone-warn" ? "attention" : "healthy";
+
+  const modeLabel = data.mixed ? "混合入口（SOCKS5 / HTTP）" : "SOCKS5 入口";
   const triggers = [
-    data.restart_max_uptime_seconds > 0 ? "运行 " + duration(data.restart_max_uptime_seconds) : null,
-    data.restart_max_users > 0 ? "用户 " + data.restart_max_users : null,
-    data.restart_max_connections > 0 ? "连接 " + data.restart_max_connections : null,
+    data.restart_max_uptime_seconds > 0 ? "运行满 " + duration(data.restart_max_uptime_seconds) : null,
+    data.restart_max_users > 0 ? "满 " + data.restart_max_users + " 用户" : null,
+    data.restart_max_connections > 0 ? "满 " + data.restart_max_connections + " 连接" : null
   ].filter(Boolean);
+  const drainDesc = data.restart_drain_timeout_seconds > 0
+    ? "排空上限 " + duration(data.restart_drain_timeout_seconds)
+    : "排空不设超时";
+  const policySummary = triggers.length ? triggers.join(" · ") + " · " + drainDesc : "自动重启已关闭（" + drainDesc + "）";
+  const dirty = isPolicyDirty(data);
   const drains = data.drain_queue || [];
   const restarts = data.restart_queue || [];
+  const listenCopied = state.copiedKey === "overview:listen";
+  const uptimeSeconds = data.started_at ? Math.max(0, Math.floor((Date.now() - data.started_at) / 1000)) : 0;
+
   return `
-    <h1 class="h4 mb-1">${escapeHtml(title)}</h1>
-    <p class="text-body-secondary">${escapeHtml(data.listen || "未绑定")} · ${mode} · ${escapeHtml(data.strategy)} · ${escapeHtml(data.sticky)} · 统计自 ${clock(data.started_at)}</p>
-    <div class="row g-3">
-      ${stat("可用实例", data.ready + "/" + total, "关注 " + data.attention + " · 维护 " + data.maintenance + " · 未知 " + data.unknown)}
-      ${stat("活跃连接", data.active_connections, "只统计还没关闭的转发")}
-      ${stat("累计上行", bytes(data.bytes_up), "含当前连接")}
-      ${stat("累计下行", bytes(data.bytes_down), "含当前连接")}
+    <div class="hero-banner ${bannerTone}">
+      <div class="hero-top">
+        <div class="hero-title-wrap">
+          <span class="lamp ${bannerLamp}" aria-hidden="true"></span>
+          <h1 class="hero-title">${escapeHtml(title)}</h1>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          ${bad > 0 ? `<button type="button" class="btn btn-primary btn-sm" data-jump-filter="attention">查看 ${bad} 个需关注实例</button>` : ""}
+          ${!data.enabled ? `<button type="button" class="btn btn-primary btn-sm" data-act="toggle" data-on="1">恢复代理入口</button>` : ""}
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-jump-filter="all">管理全部实例</button>
+        </div>
+      </div>
+      <div class="hero-meta">
+        <button type="button" class="meta-chip meta-chip-copy" data-copy="${escapeHtml(data.listen)}" data-copy-key="overview:listen" title="点击复制代理监听地址">
+          ${listenCopied ? ICONS.check + '<span class="copy-ok">已复制 ' + escapeHtml(data.listen) + "</span>" : '<span>' + escapeHtml(data.listen) + "</span>" + ICONS.copy}
+        </button>
+        <span class="meta-chip">${escapeHtml(modeLabel)}</span>
+        <span class="meta-chip">${escapeHtml(strategyLabel(data.strategy))}</span>
+        <span class="meta-chip">${escapeHtml(stickyLabel(data.sticky))}</span>
+        <span class="meta-stamp">统计自 ${escapeHtml(clock(data.started_at, true))}</span>
+      </div>
     </div>
-    <div class="card mt-3"><div class="card-body">
-      <div class="d-flex flex-wrap justify-content-between align-items-baseline gap-2">
-        <h2 class="h5 mb-0">调度与全局维护</h2>
-        <div class="text-body-secondary small">${data.enabled ? "入口开启" : "入口已暂停"} · ${data.http2 ? "HTTP/2" : "HTTP/3"} · 按负载策略自动选路</div>
+
+    <div class="kpi-strip" role="region" aria-label="核心运行指标">
+      <button type="button" class="kpi-cell ${bad > 0 ? "kpi-warn" : ""}" data-jump-filter="${bad > 0 ? "attention" : "all"}" title="点击查看实例列表">
+        <span class="kpi-label"><span>可用实例</span>${bad > 0 ? '<span class="tag-pill drain">需关注 ' + bad + "</span>" : '<span class="tag-pill queue">健康</span>'}</span>
+        <span class="kpi-value ${bad > 0 ? "tone-warn" : ""}">${data.ready} / ${total}</span>
+        <span class="kpi-note">需关注 ${data.attention} · 维护 ${data.maintenance} · 未知 ${data.unknown}</span>
+      </button>
+      <button type="button" class="kpi-cell" data-jump-view="connections" title="点击查看连接记录">
+        <span class="kpi-label"><span>活跃连接</span></span>
+        <span class="kpi-value">${data.active_connections}</span>
+        <span class="kpi-note">当前正在通过隧道池转发</span>
+      </button>
+      <div class="kpi-cell">
+        <span class="kpi-label"><span>累计流量</span></span>
+        <span class="kpi-value">${bytes(data.bytes_up + data.bytes_down)}</span>
+        <span class="kpi-note">上行 ${bytes(data.bytes_up)} · 下行 ${bytes(data.bytes_down)}</span>
       </div>
-      <div class="d-flex flex-wrap gap-3 mt-3">
-        <div class="cluster"><div class="cluster-label">入口控制</div><div class="d-flex flex-wrap align-items-center gap-2">
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "改用 HTTP/3" : "改用 HTTP/2"}</button>
-        </div></div>
-        <div class="cluster"><div class="cluster-label">实例维护</div><div class="d-flex flex-wrap align-items-center gap-2">
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-restart" title="全部实例等待活跃连接结束或排空到上限后按并发限制重启">立即触发重启（全部实例）</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">检测出口 IP</button>
-          <span class="text-body-secondary small">排空期间停止接入新连接，到排空上限后断开剩余连接。</span>
-        </div></div>
+      <div class="kpi-cell">
+        <span class="kpi-label"><span>转发与隧道协议</span></span>
+        <span class="kpi-value ${data.enabled ? "" : "tone-bad"}">${data.enabled ? (data.http2 ? "HTTP/2" : "HTTP/3") : "已暂停"}</span>
+        <span class="kpi-note">${data.enabled ? "已持续运行 " + duration(uptimeSeconds) : "入口已暂停转发"}</span>
       </div>
-    </div></div>
-    <div class="card mt-3"><div class="card-body">
-      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-        <div class="d-flex align-items-center gap-2">
-          <h2 class="h5 mb-0">自动重启 · 条件可组合</h2>
+    </div>
+
+    <div class="overview-grid">
+      <div class="surface surface-pad">
+        <div class="section-head">
+          <h2 class="section-title">进行中的任务与调度队列</h2>
+          <span class="small text-body-secondary">并发上限 ${data.restart_concurrency} · 每 ${data.restart_drain_check_seconds} 秒检查</span>
+        </div>
+        ${tasks(data.tasks)}
+        <div class="queue-band">
+          <div>
+            <div class="queue-col-label"><span>排空队列</span><span class="tag-pill ${drains.length ? "drain" : ""}">${drains.length}</span></div>
+            <div>${idList(drains)}</div>
+            <div class="queue-col-sub">${data.restart_drain_timeout_seconds > 0 ? "等待旧连接结束，超过 " + duration(data.restart_drain_timeout_seconds) + " 强制放行" : "等待旧连接自然结束"}</div>
+          </div>
+          <div>
+            <div class="queue-col-label"><span>重启队列</span><span class="tag-pill ${restarts.length ? "queue" : ""}">${restarts.length}</span></div>
+            <div>${idList(restarts)}</div>
+            <div class="queue-col-sub">点击编号可直达实例定位</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="surface surface-pad">
+        <div class="section-head">
+          <h2 class="section-title">全局控制与自动重启策略</h2>
           ${dirty ? '<span class="tag-pill dirty">有未保存修改</span>' : ""}
         </div>
-        <div class="d-flex align-items-center gap-2">
-          ${dirty ? '<button type="button" class="btn btn-outline-secondary btn-sm" data-act="reset-policy">重置修改</button>' : ""}
-          <button type="button" class="btn ${dirty ? "btn-primary" : "btn-outline-secondary"} btn-sm" data-act="restart-policy">应用条件</button>
-        </div>
-      </div>
-      <div class="policy-grid mt-3">
-        <div class="policy-box">
-          <div class="d-flex justify-content-between align-items-center">
-            <label class="small text-body-secondary mb-0" for="restart-uptime">运行超过（秒）</label>
-            <span class="hint">${escapeHtml(secondsHint(uptime, "0 = 关闭"))}</span>
+
+        <div class="control-row">
+          <div class="control-info">
+            <div class="control-name"><span class="lamp ${data.enabled ? "on" : "disabled"}"></span><span>代理转发入口</span></div>
+            <div class="control-desc">${data.enabled ? "运行中，所有客户端流量经 WARP 池转发" : "已暂停，恢复后重新通过 WARP 转发"}</div>
           </div>
-          <div class="d-flex align-items-center gap-2">
-            <input id="restart-uptime" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(uptime)}">
-            <div class="btn-group btn-group-sm">
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:0">关</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:3600">1h</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:21600">6h</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-uptime:86400">24h</button>
-            </div>
+          <div class="control-actions">
+            <button type="button" class="btn btn-sm ${data.enabled ? "btn-outline-warning-tone" : "btn-primary"}" data-act="toggle" data-on="${data.enabled ? "0" : "1"}">${data.enabled ? "暂停入口" : "恢复入口"}</button>
           </div>
         </div>
-        <div class="policy-box">
-          <div class="d-flex justify-content-between align-items-center">
-            <label class="small text-body-secondary mb-0" for="restart-users">累计用户数</label>
-            <span class="hint">${Number(users) > 0 ? "满 " + escapeHtml(users) + " 用户摘流" : "0 = 关闭"}</span>
+
+        <div class="control-row">
+          <div class="control-info">
+            <div class="control-name"><span>隧道传输协议</span><span class="probe">${data.http2 ? "HTTP/2" : "HTTP/3"}</span></div>
+            <div class="control-desc">${data.http2 ? "当前使用 TCP 兼容模式（适用于 UDP 受限网络）" : "当前使用 QUIC/UDP 标准模式，延迟更低"}</div>
           </div>
-          <div class="d-flex align-items-center gap-2">
-            <input id="restart-users" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(users)}">
-            <div class="btn-group btn-group-sm">
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:0">关</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:100">100</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-users:1000">1k</button>
-            </div>
+          <div class="control-actions">
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-act="http2" data-on="${data.http2 ? "0" : "1"}">${data.http2 ? "切回 HTTP/3" : "改用 HTTP/2"}</button>
           </div>
         </div>
-        <div class="policy-box">
-          <div class="d-flex justify-content-between align-items-center">
-            <label class="small text-body-secondary mb-0" for="restart-connections">累计连接数</label>
-            <span class="hint">${Number(connections) > 0 ? "满 " + escapeHtml(connections) + " 连接摘流" : "0 = 关闭"}</span>
+
+        <div class="control-row">
+          <div class="control-info">
+            <div class="control-name"><span>全池维护操作</span></div>
+            <div class="control-desc">探测代表出口 IP，或让全部实例依次排空后保身份重启</div>
           </div>
-          <div class="d-flex align-items-center gap-2">
-            <input id="restart-connections" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(connections)}">
-            <div class="btn-group btn-group-sm">
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:0">关</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:1000">1k</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-connections:10000">10k</button>
-            </div>
+          <div class="control-actions">
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace">检测出口 IP</button>
+            <button type="button" class="btn btn-outline-danger btn-sm" data-act="graceful-restart" title="全部实例停止接入新连接并按队列优雅重启">立即触发重启</button>
           </div>
         </div>
-        <div class="policy-box">
-          <div class="d-flex justify-content-between align-items-center">
-            <label class="small text-body-secondary mb-0" for="restart-drain-timeout">排空上限（秒）</label>
-            <span class="hint">${escapeHtml(secondsHint(drainTimeout, "0 = 不设超时"))}</span>
+
+        <div class="control-row">
+          <div class="control-info">
+            <div class="control-name"><span>自动重启条件</span></div>
+            <div class="control-desc">${escapeHtml(policySummary)}</div>
           </div>
-          <div class="d-flex align-items-center gap-2">
-            <input id="restart-drain-timeout" class="form-control form-control-sm" type="number" min="0" step="1" value="${escapeHtml(drainTimeout)}">
-            <div class="btn-group btn-group-sm">
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:0">无</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:60">1m</button>
-              <button type="button" class="btn btn-outline-secondary btn-xs" data-preset="restart-drain-timeout:300">5m</button>
-            </div>
+          <div class="control-actions">
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-open-policy="1">${ICONS.sliders}<span>配置策略</span></button>
           </div>
         </div>
       </div>
-      <div class="metrics">
-        <div class="metric"><div class="k">已生效触发条件（任意满足）</div><div class="v">${triggers.length ? triggers.join(" / ") : "全部关闭"}</div><div class="s">三个阈值独立，按实例分别累计</div></div>
-        <div class="metric"><div class="k">排空队列 · ${drains.length}</div><div class="v">${idList(drains)}</div><div class="s">每 ${data.restart_drain_check_seconds} 秒检测；${data.restart_drain_timeout_seconds > 0 ? "超过 " + duration(data.restart_drain_timeout_seconds) + " 断开剩余连接" : "不设超时"}</div></div>
-        <div class="metric"><div class="k">重启队列 · ${restarts.length}</div><div class="v">${idList(restarts)}</div><div class="s">同时最多重连 ${data.restart_concurrency} 个实例；正常排空需无活跃连接，超时强制放行</div></div>
-      </div>
-      <details id="rules-details" class="rule-details mt-3" ${state.rulesOpen ? "open" : ""}>
-        <summary>查看排空与黏性改派规则说明</summary>
-        <p class="mt-2 mb-1">任意一个条件达到即刻摘流，已建立的连接自然结束；排空到上限后会中断从取实例到建链、转发的整条请求，即使计数暂时不为零也放行重连，不会无限等待。0 表示关闭该条件或排空超时，三个阈值全部为 0 时取消尚未开始的自动排空与待重启任务并重置该轮统计（已执行的重连仍会继续）。成功重连并确认 WARP 后清零统计。</p>
-        <p class="mb-0">排空后新请求只选择其他可用实例：username-round / username-least 会保存新绑定、不自动迁回；username-hash / ip-hash 无状态，原实例恢复后可能重新选中。所有实例都不可用时才拒绝新连接。点击队列中的实例编号可直接跳转到实例列表。</p>
-      </details>
-    </div></div>
-    <div class="card mt-3"><div class="card-body"><h2 class="h5">进行中的任务</h2>${tasks(data.tasks)}</div></div>`;
+    </div>
+
+    <div class="kbd-hint d-none d-md-flex" aria-label="键盘快捷键提示">
+      <span>快捷键：<kbd>1</kbd>–<kbd>4</kbd> 切换视图</span>
+      <span><kbd>/</kbd> 聚焦搜索</span>
+      <span><kbd>r</kbd> 立即刷新</span>
+      <span><kbd>Esc</kbd> 清除高亮</span>
+    </div>
+  `;
 }
-function stat(label, value, note) {
-  return `<div class="col-6 col-lg-3"><div class="card stat h-100"><div class="card-body"><div class="text-body-secondary small">${label}</div><div class="fs-3 num">${value}</div><div class="text-body-secondary small">${note || ""}</div></div></div></div>`;
-}
+
 function idList(rows) {
-  if (!rows || !rows.length) return "无";
+  if (!rows || !rows.length) return '<span class="small text-body-secondary">当前空闲</span>';
   return rows.map((id) => `<button type="button" class="slot-jump" data-jump-slot="${id}" title="跳转到实例 #${id}">#${id}</button>`).join("");
 }
 function interfaceV4(account) {
@@ -838,22 +2427,23 @@ function interfaceV4(account) {
 function interfaceV6(account) {
   return account.assigned_v6 || "未分配";
 }
-function egressCell(accountId, family, ip, iface) {
-  const shown = ip || "未测到";
-  const key = "egress:" + accountId + ":" + family;
+function copyButtonHtml(text, key, compactLabel) {
+  if (!text) return '<span class="text-body-secondary">未测到</span>';
   const copied = state.copiedKey === key;
-  const title = (ip ? "点击复制 " + ip + " · " : "") + "出口 " + shown + " · 接口 " + iface;
-  const copyAttr = ip ? `data-copy="${escapeHtml(ip)}" data-copy-key="${escapeHtml(key)}"` : "";
-  return `<td class="font-monospace clip clip-wide ${ip ? "copyable" : "text-body-secondary"}" ${copyAttr} title="${escapeHtml(title)}">${copied ? '<span class="text-success fw-medium">已复制 ' + escapeHtml(shown) + "</span>" : escapeHtml(shown)}</td>`;
+  const shown = compactLabel || text;
+  return `<button type="button" class="copy-btn font-monospace" data-copy="${escapeHtml(text)}" data-copy-key="${escapeHtml(key)}" title="点击复制 ${escapeHtml(text)}">${copied ? ICONS.check + '<span class="copy-ok">已复制</span>' : '<span class="copy-text">' + escapeHtml(shown) + "</span>" + ICONS.copy}</button>`;
 }
 function placeText(account) {
   const place = [account.country, account.colo].filter(Boolean).join(" · ");
-  return place || "还没探测";
+  return place || "待探测";
 }
 function tasks(rows) {
-  if (!rows || !rows.length) return `<p class="text-body-secondary mb-0">没有进行中的任务。完成后会从这里消失</p>`;
-  return `<div class="table-responsive"><table class="table table-sm align-middle mb-0 data-table"><thead><tr><th>实例</th><th>阶段</th><th class="text-end">剩余连接</th><th class="text-end">已耗时</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace"><button type="button" class="slot-jump" data-jump-slot="${row.id}">#${row.id}</button></td><td>${escapeHtml(row.stage)}</td><td class="text-end font-monospace">${row.active}</td><td class="text-end font-monospace">${duration(row.elapsed_seconds)}</td></tr>`).join("")}</tbody></table></div>`;
+  if (!rows || !rows.length) {
+    return `<p class="text-body-secondary small mb-0">当前没有进行中的排空或重连任务。触发维护或达到阈值后会实时展示进度。</p>`;
+  }
+  return `<div class="table-responsive"><table class="table table-sm align-middle data-table"><thead><tr><th style="width: 62px;">实例</th><th>当前阶段</th><th class="text-end" style="width: 68px;">连接</th><th class="text-end" style="width: 76px;">已耗时</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="font-monospace"><button type="button" class="slot-jump" data-jump-slot="${row.id}">#${row.id}</button></td><td>${escapeHtml(row.stage)}</td><td class="text-end font-monospace">${row.active}</td><td class="text-end font-monospace">${duration(row.elapsed_seconds)}</td></tr>`).join("")}</tbody></table></div>`;
 }
+
 function matchCategory(account, data, filterId) {
   const busy = (data.tasks || []).some((task) => task.id === account.id) || account.draining || account.restart_pending;
   if (filterId === "attention") return account.health === "attention" || account.health === "down" || account.health === "unknown" || account.health === "connecting" || account.health === "retrying";
@@ -876,10 +2466,12 @@ function matchFilter(account, data) {
     account.colo || "",
     account.health || "",
     healthText(account.health),
-    account.last_action || ""
+    account.last_action || "",
+    account.trace && account.trace.err ? account.trace.err : ""
   ].join(" ").toLowerCase();
   return hay.includes(q);
 }
+
 function queueBadges(account, data) {
   const tags = [];
   if ((data.restart_queue || []).includes(account.id)) {
@@ -889,83 +2481,230 @@ function queueBadges(account, data) {
   } else if (account.restart_pending) {
     tags.push('<span class="tag-pill queue">待重启</span>');
   }
-  if (account.temporary) {
-    tags.push('<span class="tag-pill">临时</span>');
-  }
   return tags.join(" ");
 }
+
+function restartProgressCell(account, data) {
+  const uMax = Number(data.restart_max_users) || 0;
+  const cMax = Number(data.restart_max_connections) || 0;
+  const tMax = Number(data.restart_max_uptime_seconds) || 0;
+  const ratios = [];
+  if (uMax > 0) ratios.push(account.restart_users / uMax);
+  if (cMax > 0) ratios.push(account.restart_connections / cMax);
+  if (tMax > 0) ratios.push(account.uptime_seconds / tMax);
+  const maxRatio = ratios.length ? Math.min(1, Math.max(...ratios)) : 0;
+  const fillCls = maxRatio >= 0.95 ? "hit" : maxRatio >= 0.75 ? "near" : "";
+  const uText = uMax > 0 ? account.restart_users + "/" + uMax : String(account.restart_users);
+  const cText = cMax > 0 ? account.restart_connections + "/" + cMax : String(account.restart_connections);
+  return `
+    <div class="progress-mini-wrap">
+      <div class="progress-mini-line font-monospace">
+        <span>用户 ${uText}</span>
+        <span class="text-body-secondary">连接 ${cText}</span>
+      </div>
+      ${ratios.length ? `<div class="progress-bar-track" aria-hidden="true"><div class="progress-bar-fill ${fillCls}" style="width: ${Math.round(maxRatio * 100)}%"></div></div>` : '<span class="cell-sub" style="margin-top:0;">自动阈值未启用</span>'}
+    </div>
+  `;
+}
+
+function processLabel(account) {
+  if (account.health === "connecting") return "启动中";
+  if (account.health === "retrying") return "失败重试中";
+  return account.tunnel ? "隧道运行中" : "隧道已停止";
+}
+
+function instanceDetailRow(account) {
+  const traceErr = account.trace && account.trace.err ? account.trace.err : "";
+  return `
+    <tr class="detail-row">
+      <td colspan="7">
+        <div class="detail-grid">
+          <div>
+            <div class="detail-group-title">底层运行状态</div>
+            <div class="detail-kv"><span class="detail-k">隧道进程</span><span class="detail-v">${escapeHtml(processLabel(account))}</span></div>
+            <div class="detail-kv"><span class="detail-k">手动开关</span><span class="detail-v">${account.manual ? "已启用" : "已停用"}</span></div>
+            <div class="detail-kv"><span class="detail-k">调度池状态</span><span class="detail-v">${account.pooled ? "已入池（可接新流量）" : "未入池"}</span></div>
+            <div class="detail-kv"><span class="detail-k">账号类型</span><span class="detail-v">${account.temporary ? "临时运行实例（移除只影响运行池；配置 STATE_DIR 时身份保留）" : "持久账号"}</span></div>
+          </div>
+          <div>
+            <div class="detail-group-title">出口与隧道接口</div>
+            <div class="detail-kv"><span class="detail-k">IPv4 出口</span><span class="detail-v">${copyButtonHtml(account.ipv4, "detail-v4:" + account.id)}</span></div>
+            <div class="detail-kv"><span class="detail-k">IPv4 接口</span><span class="detail-v font-monospace">${escapeHtml(interfaceV4(account))}</span></div>
+            <div class="detail-kv"><span class="detail-k">IPv6 出口</span><span class="detail-v">${copyButtonHtml(account.ipv6, "detail-v6:" + account.id)}</span></div>
+            <div class="detail-kv"><span class="detail-k">IPv6 接口</span><span class="detail-v font-monospace">${escapeHtml(interfaceV6(account))}</span></div>
+          </div>
+          <div>
+            <div class="detail-group-title">关联排查</div>
+            <div class="detail-kv"><span class="detail-k">WARP 探测</span><span class="detail-v font-monospace">${escapeHtml(account.warp || "未探测")}</span></div>
+            <div class="detail-kv"><span class="detail-k">最近动作</span><span class="detail-v">${escapeHtml(account.last_action || "—")}</span></div>
+            <div class="d-flex flex-wrap gap-2 mt-2">
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-slot-conns="${account.id}">查看此实例连接</button>
+              <button type="button" class="btn btn-outline-secondary btn-xs" data-slot-logs="${account.id}">查看此实例日志</button>
+            </div>
+          </div>
+        </div>
+        ${traceErr ? `<div class="detail-error-box">探测错误详情：${escapeHtml(traceErr)}</div>` : ""}
+      </td>
+    </tr>
+  `;
+}
+
 function instances(data) {
   const filters = [
     ["all", "全部"],
-    ["attention", "需要关注"],
+    ["attention", "需关注"],
     ["busy", "操作中"],
-    ["healthy", "健康"],
+    ["healthy", "可用"],
     ["disabled", "已停用"],
-    ["temporary", "临时实例"]
+    ["temporary", "临时"]
   ];
   const counts = {};
   for (const [id] of filters) {
     counts[id] = data.accounts.filter((acc) => matchCategory(acc, data, id)).length;
   }
-  const rows = data.accounts.filter((account) => matchFilter(account, data));
+  let rows = data.accounts.filter((account) => matchFilter(account, data));
+  if (state.instSort === "active") {
+    rows = [...rows].sort((a, b) => (b.active || 0) - (a.active || 0) || a.id - b.id);
+  } else if (state.instSort === "attention") {
+    const rank = (acc) => matchCategory(acc, data, "attention") ? 0 : (!acc.pooled ? 1 : 2);
+    rows = [...rows].sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+  } else if (state.instSort === "uptime") {
+    rows = [...rows].sort((a, b) => (b.uptime_seconds || 0) - (a.uptime_seconds || 0));
+  }
+
   const visibleTemps = rows.filter((acc) => acc.temporary);
   const pickedVisibleCount = visibleTemps.filter((acc) => state.temps.includes(String(acc.id))).length;
   const allVisibleTempsChecked = visibleTemps.length > 0 && pickedVisibleCount === visibleTemps.length;
   const totalPickedCount = state.temps.filter((id) => data.accounts.some((acc) => acc.temporary && String(acc.id) === id)).length;
+  const hasFilter = state.filter !== "all" || Boolean((state.instQuery || "").trim());
 
   return `
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-      <div class="d-flex flex-wrap align-items-center gap-2">
-        <div class="btn-group btn-group-sm" role="group">${filters.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.filter === id ? " is-on" : ""}" data-filter="${id}">${label} (${counts[id]})</button>`).join("")}</div>
-        <input id="inst-query" class="form-control form-control-sm" type="search" placeholder="搜实例号 / 出口 IP / 地区…" value="${escapeHtml(state.instQuery)}" style="width: 13.5rem" aria-label="搜索实例">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">代理实例</h1>
+        <p class="page-sub">共 ${data.accounts.length} 个实例 · 可用 ${data.ready} · 需关注 ${data.attention + data.unknown} · 维护/停用 ${data.maintenance}</p>
       </div>
-      <div class="d-flex flex-wrap align-items-center gap-2">
-        <label class="d-flex align-items-center gap-2 mb-0 small text-body-secondary">数量
-          <input id="temp-count" class="form-control form-control-sm" type="number" min="1" max="100" step="1" value="${escapeHtml(state.tempCount || "1")}" style="width: 4.5rem" aria-label="临时实例数量">
+      <div class="toolbar-group">
+        ${state.highlightSlot !== null ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-clear-highlight="1">取消定位 #${state.highlightSlot}</button>` : ""}
+        <label class="d-inline-flex align-items-center gap-2 mb-0 small text-body-secondary">数量
+          <input id="temp-count" class="form-control form-control-sm" type="number" min="1" max="100" step="1" value="${escapeHtml(state.tempCount || "1")}" style="width: 4.5rem" aria-label="添加临时实例数量">
         </label>
-        <div class="btn-group btn-group-sm">
-          <button type="button" class="btn btn-primary" data-act="add-temp">添加临时实例</button>
-          <button type="button" class="btn btn-outline-danger" data-act="remove-temp" ${totalPickedCount === 0 ? "disabled" : ""} title="${totalPickedCount ? "移除已勾选的临时实例" : "请先在表格左侧勾选要移除的临时实例"}">批量移除${totalPickedCount ? " (" + totalPickedCount + ")" : ""}</button>
-          <button type="button" class="btn btn-outline-secondary" data-act="refresh">刷新数据</button>
-        </div>
+        <button type="button" class="btn btn-primary btn-sm" data-act="add-temp">添加临时实例</button>
+        <button type="button" class="btn btn-outline-danger btn-sm" data-act="remove-temp" ${totalPickedCount === 0 ? "disabled" : ""} title="${totalPickedCount ? "移出运行池；保留已保存的账号身份" : "先在表格左侧勾选临时实例后移除"}">移除已选${totalPickedCount ? "（" + totalPickedCount + "）" : ""}</button>
       </div>
     </div>
-    <div class="sheet table-responsive instance-scroll"><table class="table table-sm table-hover align-middle mb-0 instance-table data-table">
-      <thead><tr>
-        <th>${visibleTemps.length ? `<input class="form-check-input" type="checkbox" id="select-all-temps" ${allVisibleTempsChecked ? "checked" : ""} title="全选/取消当前列表中的临时实例" aria-label="全选临时实例">` : ""}</th>
-        <th>实例</th><th>进程</th><th>启停</th><th>状态</th><th>IPv4 出口 (点击复制)</th><th>IPv6 出口 (点击复制)</th><th>位置</th><th>后端池</th><th class="text-end">活跃连接</th><th class="text-end" title="当前黏性用户名映射数；实例成功重连后清零">黏性用户数</th><th class="text-end">重启统计（用户 / 连接）</th><th class="text-end">在线时长</th><th class="text-end col-tight">最近操作</th><th class="col-tight">操作</th>
-      </tr></thead>
-      <tbody>${rows.map((account) => {
-        const slotBusy = state.busyKeys.has("slot:" + account.id);
-        const rowCls = [
-          ["down", "attention", "retrying"].includes(account.health) ? "row-alert" : "",
-          state.highlightSlot === account.id ? "row-focus" : ""
-        ].filter(Boolean).join(" ");
-        return `<tr class="${rowCls}" data-slot-row="${account.id}">
-        <td>${account.temporary ? `<input class="form-check-input" type="checkbox" data-temp="${account.id}" ${state.temps.includes(String(account.id)) ? "checked" : ""} aria-label="选择 ${account.id}">` : ""}</td>
-        <td class="font-monospace">#${account.id}</td>
-        <td class="${account.tunnel ? "" : "text-body-secondary"}">${account.health === "connecting" ? "启动中" : (account.health === "retrying" ? "重试中" : (account.tunnel ? "运行" : "停止"))}</td>
-        <td class="${account.manual ? "" : "text-body-secondary"}">${account.manual ? "启用" : "停用"}</td>
-        <td><span class="status-cell"><span class="lamp ${account.health}"></span><span>${healthText(account.health)}</span>${account.warp ? '<span class="probe">' + escapeHtml(account.warp) + '</span>' : ""}${queueBadges(account, data)}</span></td>
-        ${egressCell(account.id, "v4", account.ipv4, interfaceV4(account))}
-        ${egressCell(account.id, "v6", account.ipv6, interfaceV6(account))}
-        <td>${escapeHtml(placeText(account))}</td>
-        <td class="${account.pooled ? "" : "text-body-secondary"}">${account.pooled ? "已入池" : "未入池"}</td>
-        <td class="text-end font-monospace">${account.active}</td>
-        <td class="text-end font-monospace">${account.users}</td>
-        <td class="text-end font-monospace">${account.restart_users} / ${account.restart_connections}</td>
-        <td class="text-end font-monospace">${duration(account.uptime_seconds)}</td>
-        <td class="text-end">${rowStatus(account)}</td>
-        <td class="text-nowrap row-actions col-tight">
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="停止接入新连接，等待活跃连接结束或排空到上限后按队列重连">优雅重连</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="restart" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="手动强制重连，不等待排空，会中断已有连接">强制重连</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="单独探测该实例的出口 IP">测出口</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}" ${slotBusy ? "disabled" : ""}>${account.manual ? "停用" : "启用"}</button>
-        </td>
-      </tr>`;
-      }).join("") || `<tr><td colspan="15" class="text-body-secondary">没有符合筛选的实例</td></tr>`}</tbody>
-    </table></div>`;
+
+    <div class="surface">
+      <div class="view-toolbar">
+        <div class="toolbar-group">
+          <div class="btn-group btn-group-sm" role="group" aria-label="实例状态筛选">${filters.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.filter === id ? " is-on" : ""}" data-filter="${id}">${label} (${counts[id]})</button>`).join("")}</div>
+          ${hasFilter ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-reset-inst-filter="1">清空筛选</button>` : ""}
+        </div>
+        <div class="toolbar-group">
+          <input id="inst-query" class="form-control form-control-sm" type="search" placeholder="搜 #编号 / 出口 IP / 地区…" value="${escapeHtml(state.instQuery)}" aria-label="搜索实例">
+          <select id="inst-sort" class="form-select form-select-sm" style="width: 8.6rem" aria-label="实例排序">
+            <option value="id" ${state.instSort === "id" ? "selected" : ""}>默认编号</option>
+            <option value="attention" ${state.instSort === "attention" ? "selected" : ""}>需关注优先</option>
+            <option value="active" ${state.instSort === "active" ? "selected" : ""}>活跃连接最多</option>
+            <option value="uptime" ${state.instSort === "uptime" ? "selected" : ""}>在线时长最长</option>
+          </select>
+        </div>
+      </div>
+
+      ${visibleTemps.length ? `
+        <div class="mobile-select-all-bar">
+          <span>临时实例勾选（${pickedVisibleCount}/${visibleTemps.length}）</span>
+          <button type="button" class="btn btn-outline-secondary btn-xs" data-mobile-toggle-temps="1">${allVisibleTempsChecked ? "取消全选" : "全选临时实例"}</button>
+        </div>` : ""}
+
+      <div class="table-wrap instance-scroll">
+        <table class="table table-hover align-middle data-table instance-table responsive-card-table">
+          <thead>
+            <tr>
+              <th class="col-id">${visibleTemps.length ? `<label class="check-hit me-1" title="全选当前临时实例"><input class="form-check-input" type="checkbox" id="select-all-temps" ${allVisibleTempsChecked ? "checked" : ""} aria-label="全选临时实例"></label>` : ""}实例</th>
+              <th class="col-state">综合状态</th>
+              <th class="col-egress">出口与地区</th>
+              <th class="col-load text-end" title="活跃连接数与当前黏性用户数">活跃 / 黏性</th>
+              <th class="col-restart">重启进度</th>
+              <th class="col-activity">在线与动态</th>
+              <th class="col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((account) => {
+              const slotBusy = state.busyKeys.has("slot:" + account.id);
+              const isAlert = ["down", "attention", "retrying"].includes(account.health) || Boolean(account.trace && account.trace.err);
+              const isExpanded = state.expandedSlots.has(account.id);
+              const rowCls = [
+                isAlert ? "row-alert" : "",
+                state.highlightSlot === account.id ? "row-focus" : ""
+              ].filter(Boolean).join(" ");
+              const warpCls = account.warp === "on" || account.warp === "plus" ? "warp-on" : (account.warp ? "warp-off" : "");
+              const secondaryStateTags = [
+                !account.pooled && account.manual && account.health !== "healthy" ? '<span class="tag-pill">未入池</span>' : "",
+                !account.manual ? '<span class="tag-pill bad">手动停用</span>' : ""
+              ].filter(Boolean).join(" ");
+
+              return `<tr class="${rowCls}" data-slot-row="${account.id}">
+                <td class="col-id" data-label="实例">
+                  <div class="d-inline-flex align-items-center gap-1">
+                    ${account.temporary ? `<label class="check-hit"><input class="form-check-input" type="checkbox" data-temp="${account.id}" ${state.temps.includes(String(account.id)) ? "checked" : ""} aria-label="选择临时实例 #${account.id}"></label>` : '<span class="d-none d-md-inline-block" style="width:24px;"></span>'}
+                    <button type="button" class="expand-btn" data-expand-slot="${account.id}" aria-expanded="${isExpanded ? "true" : "false"}" aria-label="${isExpanded ? "收起" : "展开"}实例 #${account.id} 详情" title="展开底层状态、IPv6 与探测报错">${ICONS.chevron}</button>
+                    <span class="font-monospace fw-semibold">#${account.id}</span>
+                    ${account.temporary ? '<span class="tag-pill">临时</span>' : ""}
+                  </div>
+                </td>
+                <td class="col-state" data-label="综合状态">
+                  <div class="status-cell">
+                    <span class="lamp ${lampClassForHealth(account.health)}" aria-hidden="true"></span>
+                    <span class="fw-medium">${escapeHtml(healthText(account.health))}</span>
+                    ${account.warp ? '<span class="probe ' + warpCls + '">WARP ' + escapeHtml(account.warp) + "</span>" : ""}
+                    ${queueBadges(account, data)}
+                    ${secondaryStateTags}
+                  </div>
+                </td>
+                <td class="col-egress" data-label="出口与地区">
+                  <div class="cell-stack">
+                    <div>${copyButtonHtml(account.ipv4, "egress:" + account.id + ":v4")}</div>
+                    <div class="cell-sub">
+                      <span>${escapeHtml(placeText(account))}</span>
+                      ${account.ipv6 ? '<span aria-hidden="true">·</span>' + copyButtonHtml(account.ipv6, "egress:" + account.id + ":v6", "IPv6") : ""}
+                    </div>
+                  </div>
+                </td>
+                <td class="col-load text-md-end font-monospace" data-label="活跃 / 黏性">
+                  <div class="cell-stack cell-stack-end">
+                    <div class="fw-semibold">${account.active} <span class="text-body-secondary fw-normal">/ ${account.users}</span></div>
+                    <div class="cell-sub justify-content-end" style="margin-top:0;">连接 / 用户</div>
+                  </div>
+                </td>
+                <td class="col-restart" data-label="重启进度">
+                  ${restartProgressCell(account, data)}
+                </td>
+                <td class="col-activity" data-label="在线与动态">
+                  <div class="cell-stack">
+                    <div class="font-monospace">${duration(account.uptime_seconds)}</div>
+                    <div class="cell-sub cell-clip">${rowStatus(account)}</div>
+                  </div>
+                </td>
+                <td class="col-actions" data-label="操作">
+                  <div class="row-actions-wrap">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-act="graceful-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="停止接入新连接，等待现有连接结束后重连">优雅重连</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-act="trace-slot" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="单独探测该实例出口 IP 与 WARP 状态">测出口</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-act="manual" data-slot="${account.id}" data-on="${account.manual ? "0" : "1"}" ${slotBusy ? "disabled" : ""}>${account.manual ? "停用" : "启用"}</button>
+                    <span class="row-actions-sep" aria-hidden="true"></span>
+                    <button type="button" class="btn btn-outline-danger btn-sm" data-act="restart" data-slot="${account.id}" ${slotBusy ? "disabled" : ""} title="立即断开此实例连接并强制重连（需确认）">强制重连</button>
+                  </div>
+                </td>
+              </tr>${isExpanded ? instanceDetailRow(account) : ""}`;
+            }).join("") || `<tr class="empty-row"><td colspan="7" class="text-body-secondary py-4">没有符合筛选条件的实例</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
+
 function connections() {
   const allRows = state.sessions || [];
   const activeCount = allRows.filter((r) => r.active).length;
@@ -997,53 +2736,102 @@ function connections() {
   }
   const sumUp = rows.reduce((acc, r) => acc + (Number(r.up) || 0), 0);
   const sumDown = rows.reduce((acc, r) => acc + (Number(r.down) || 0), 0);
+  const hasFilter = state.connFilter !== "all" || Boolean(q);
 
-  return `<div class="card"><div class="card-body">
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-      <div class="d-flex align-items-center gap-2">
-        <h2 class="h5 mb-0">最近连接</h2>
-        <span class="text-body-secondary small">匹配 ${rows.length}/${allRows.length} 条 · 上行 ${bytes(sumUp)} · 下行 ${bytes(sumDown)}</span>
-      </div>
-      <div class="d-flex flex-wrap align-items-center gap-2">
-        <div class="btn-group btn-group-sm" role="group">
-          <button type="button" class="btn btn-outline-secondary${state.connFilter === "all" ? " is-on" : ""}" data-conn-filter="all">全部 (${allRows.length})</button>
-          <button type="button" class="btn btn-outline-secondary${state.connFilter === "active" ? " is-on" : ""}" data-conn-filter="active">活跃 (${activeCount})</button>
-          <button type="button" class="btn btn-outline-secondary${state.connFilter === "closed" ? " is-on" : ""}" data-conn-filter="closed">已关闭 (${closedCount})</button>
-        </div>
-        <input id="conn-query" class="form-control form-control-sm" type="search" placeholder="搜用户 / 目标域名 / 客户端 / 实例…" value="${escapeHtml(state.connQuery)}" style="width: 14.5rem" aria-label="搜索连接">
-        <select id="conn-sort" class="form-select form-select-sm" style="width: 8.5rem" aria-label="排序方式">
-          <option value="newest" ${state.connSort === "newest" ? "selected" : ""}>最新建立</option>
-          <option value="traffic" ${state.connSort === "traffic" ? "selected" : ""}>总流量最高</option>
-          <option value="duration" ${state.connSort === "duration" ? "selected" : ""}>持续时间最长</option>
-          <option value="idle" ${state.connSort === "idle" ? "selected" : ""}>空闲时间最长</option>
-        </select>
+  return `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">最近连接</h1>
+        <p class="page-sub">匹配 ${rows.length}/${allRows.length} 条 · 上行 ${bytes(sumUp)} · 下行 ${bytes(sumDown)}（最多保留最近 300 条）</p>
       </div>
     </div>
-    ${!allRows.length ? `<p class="text-body-secondary mt-3 mb-0">暂无连接记录。这里最多保留最近 300 条连接，包括已关闭的连接。</p>` : `
-    <div class="sheet table-responsive connections-scroll mt-3"><table class="table table-sm table-hover align-middle mb-0 data-table"><thead><tr><th>请求</th><th>活跃状态</th><th>协议</th><th>客户端</th><th>用户</th><th>目标 (点击复制)</th><th>出口</th><th>地址族</th><th>后端</th><th class="text-end">已持续</th><th class="text-end">空闲</th><th class="text-end">上行</th><th class="text-end">下行</th></tr></thead><tbody>${rows.map((row) => {
-      const targetKey = "conn-target:" + row.id;
-      const targetCopied = state.copiedKey === targetKey;
-      return `<tr data-session="${row.id}">
-        <td class="font-monospace">${row.id}</td>
-        <td><span class="status-cell"><span class="lamp ${row.active ? "on" : ""}"></span>${row.active ? "活跃" : "已关闭"}</span></td>
-        <td>${escapeHtml(row.protocol)}</td>
-        <td class="font-monospace copyable" data-copy="${escapeHtml(row.client)}" data-copy-key="conn-client:${row.id}" title="点击复制客户端地址">${ state.copiedKey === "conn-client:" + row.id ? '<span class="text-success">已复制</span>' : escapeHtml(row.client) }</td>
-        <td>${escapeHtml(row.user)}</td>
-        <td class="font-monospace clip clip-wide copyable" data-copy="${escapeHtml(row.target)}" data-copy-key="${targetKey}" title="点击复制 ${escapeHtml(row.target)}">${targetCopied ? '<span class="text-success fw-medium">已复制 ' + escapeHtml(row.target) + "</span>" : escapeHtml(row.target)}</td>
-        <td class="font-monospace">${escapeHtml(row.egress || "—")}</td>
-        <td>${escapeHtml(row.family || "—")}</td>
-        <td class="font-monospace"><button type="button" class="slot-jump" data-jump-slot="${row.account}" title="跳转到实例 #${row.account}">#${row.account}</button></td>
-        <td class="text-end font-monospace">${duration(Math.floor(row.age_ms / 1000))}</td>
-        <td class="text-end font-monospace">${duration(Math.floor(row.idle_ms / 1000))}</td>
-        <td class="text-end font-monospace">${bytes(row.up)}</td>
-        <td class="text-end font-monospace">${bytes(row.down)}</td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="13" class="text-body-secondary">没有匹配筛选条件的连接</td></tr>`}</tbody></table></div>`}
-  </div></div>`;
+
+    <div class="surface">
+      <div class="view-toolbar">
+        <div class="toolbar-group">
+          <div class="btn-group btn-group-sm" role="group" aria-label="连接状态筛选">
+            <button type="button" class="btn btn-outline-secondary${state.connFilter === "all" ? " is-on" : ""}" data-conn-filter="all">全部 (${allRows.length})</button>
+            <button type="button" class="btn btn-outline-secondary${state.connFilter === "active" ? " is-on" : ""}" data-conn-filter="active">活跃 (${activeCount})</button>
+            <button type="button" class="btn btn-outline-secondary${state.connFilter === "closed" ? " is-on" : ""}" data-conn-filter="closed">已关闭 (${closedCount})</button>
+          </div>
+          ${hasFilter ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-reset-conn-filter="1">清空筛选</button>` : ""}
+        </div>
+        <div class="toolbar-group">
+          <input id="conn-query" class="form-control form-control-sm" type="search" placeholder="搜用户 / 目标域名 / 客户端 / #实例…" value="${escapeHtml(state.connQuery)}" aria-label="搜索连接">
+          <select id="conn-sort" class="form-select form-select-sm" style="width: 8.8rem" aria-label="连接排序方式">
+            <option value="newest" ${state.connSort === "newest" ? "selected" : ""}>最新建立</option>
+            <option value="traffic" ${state.connSort === "traffic" ? "selected" : ""}>总流量最高</option>
+            <option value="duration" ${state.connSort === "duration" ? "selected" : ""}>持续时间最长</option>
+            <option value="idle" ${state.connSort === "idle" ? "selected" : ""}>空闲时间最长</option>
+          </select>
+        </div>
+      </div>
+
+      ${!state.sessionsLoaded ? `<p class="text-body-secondary small px-3 pb-3 mb-0">正在加载连接记录…</p>` : !allRows.length ? `<p class="text-body-secondary small px-3 pb-3 mb-0">暂无连接记录。代理有请求经过后会实时显示在这里。</p>` : `
+      <div class="table-wrap connections-scroll">
+        <table class="table table-hover align-middle data-table conn-table responsive-card-table">
+          <thead>
+            <tr>
+              <th>请求</th>
+              <th>状态</th>
+              <th>协议</th>
+              <th>客户端</th>
+              <th>用户</th>
+              <th>目标地址</th>
+              <th>出口与地址族</th>
+              <th>实例</th>
+              <th class="text-end">持续 / 空闲</th>
+              <th class="text-end">上行 / 下行</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => {
+              const targetKey = "conn-target:" + row.id;
+              const clientKey = "conn-client:" + row.id;
+              return `<tr data-session="${row.id}">
+                <td class="font-monospace nowrap" data-label="请求">#${row.id}</td>
+                <td class="nowrap" data-label="状态"><span class="status-cell"><span class="lamp ${row.active ? "on" : "unknown"}" aria-hidden="true"></span><span>${row.active ? "活跃" : "已关闭"}</span></span></td>
+                <td class="nowrap" data-label="协议"><span class="probe">${escapeHtml(row.protocol || "—")}</span></td>
+                <td class="font-monospace nowrap" data-label="客户端">${copyButtonHtml(row.client, clientKey)}</td>
+                <td class="nowrap" data-label="用户">${escapeHtml(row.user || "—")}</td>
+                <td class="font-monospace col-target" data-label="目标地址">${copyButtonHtml(row.target, targetKey)}</td>
+                <td class="font-monospace nowrap" data-label="出口"><span class="d-inline-flex align-items-center gap-1 flex-wrap justify-content-end"><span>${escapeHtml(row.egress || "—")}</span>${row.family ? '<span class="tag-pill">' + escapeHtml(row.family) + "</span>" : ""}</span></td>
+                <td class="font-monospace nowrap" data-label="实例"><button type="button" class="slot-jump" data-jump-slot="${row.account}" title="跳转到实例 #${row.account}">#${row.account}</button></td>
+                <td class="text-md-end font-monospace nowrap" data-label="持续 / 空闲">
+                  <div class="cell-stack cell-stack-end">
+                    <div>${duration(Math.floor((row.age_ms || 0) / 1000))}</div>
+                    <div class="cell-sub justify-content-end" style="margin-top:0;">空闲 ${duration(Math.floor((row.idle_ms || 0) / 1000))}</div>
+                  </div>
+                </td>
+                <td class="text-md-end font-monospace nowrap" data-label="上行 / 下行">
+                  <div class="cell-stack cell-stack-end">
+                    <div>↑ ${bytes(row.up)}</div>
+                    <div class="cell-sub justify-content-end" style="margin-top:0;">↓ ${bytes(row.down)}</div>
+                  </div>
+                </td>
+              </tr>`;
+            }).join("") || `<tr class="empty-row"><td colspan="10" class="text-body-secondary py-4">没有匹配筛选条件的连接</td></tr>`}
+          </tbody>
+        </table>
+      </div>`}
+    </div>
+  `;
+}
+
+function logLevel(line) {
+  const kind = String((line && line.kind) || "").toLowerCase();
+  const t = String((line && line.text) || "");
+  if (kind === "error" || t.includes("×") || t.includes("失败") || t.includes("错误") || t.includes("拒绝") || t.includes("中断") || /\b(error|fail|failed)\b/i.test(t)) {
+    return "error";
+  }
+  if (kind === "warn" || kind === "warning" || t.includes("超时") || t.includes("重试") || t.includes("警告") || /\b(warn|warning|timeout)\b/i.test(t)) {
+    return "warn";
+  }
+  return "info";
 }
 function isBadLogLine(line) {
-  const t = (line && line.text) || "";
-  return t.includes("×") || t.includes("失败") || t.includes("错误") || t.includes("拒绝") || t.includes("中断") || /error|fail/i.test(t);
+  const lv = logLevel(line);
+  return lv === "error" || lv === "warn";
 }
 function paintLog(text, query) {
   const expression = query ? new RegExp("(" + query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi") : null;
@@ -1054,8 +2842,13 @@ function paintLog(text, query) {
       .replace(/↗/g, '<span class="ok">↗</span>')
       .replace(/×/g, '<span class="bad">×</span>')
       .replace(/ \| /g, ' <span class="sep">|</span> ');
-    return expression && index % 2 === 1 ? '<mark>' + html + '</mark>' : html;
+    return expression && index % 2 === 1 ? "<mark>" + html + "</mark>" : html;
   }).join("");
+}
+function logKindBadgeLabel(line, lv) {
+  if (lv === "error") return "异常";
+  if (lv === "warn") return "警告";
+  return { access: "访问", plan: "计划", account: "账号" }[line.kind] || "常规";
 }
 function logs() {
   const page = state.logs || { lines: [], ready: 0, attention: 0, maintenance: 0, unknown: 0 };
@@ -1075,39 +2868,191 @@ function logs() {
     if (q && !String(line.text || "").toLowerCase().includes(q)) return false;
     return true;
   });
-  return `<div class="card"><div class="card-body">
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-      <div class="d-flex align-items-center gap-2">
-        <h2 class="h5 mb-0">控制台日志</h2>
-        <span class="text-body-secondary small">${lines.length}/${allLines.length} 条 · 就绪 ${page.ready} · 异常 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</span>
+  const hasFilter = state.logKind !== "all" || state.logOnlyBad || Boolean(q);
+
+  return `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">控制台日志</h1>
+        <p class="page-sub">显示 ${lines.length}/${allLines.length} 条 · 可用 ${page.ready} · 需关注 ${page.attention} · 维护 ${page.maintenance} · 未知 ${page.unknown}</p>
       </div>
-      <div class="d-flex flex-wrap align-items-center gap-2">
+      <div class="toolbar-group">
         <button type="button" class="btn btn-outline-secondary btn-sm ${state.stick ? "is-on" : ""}" data-act="toggle-stick" title="切换日志自动跟随底部">${state.stick ? "自动滚底: 开" : "自动滚底: 暂停"}</button>
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-act="bottom">回到底部</button>
+        ${!state.stick ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-act="bottom">回到底部</button>` : ""}
         <button type="button" class="btn btn-outline-secondary btn-sm" data-act="copy">复制日志</button>
       </div>
     </div>
-    <div class="d-flex flex-wrap align-items-center gap-2 mt-2 mb-2">
-      <div class="btn-group btn-group-sm">${kinds.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.logKind === id ? " is-on" : ""}" data-log="${id}">${label} (${kindCounts[id] || 0})</button>`).join("")}</div>
-      <button type="button" class="btn btn-outline-secondary btn-sm ${state.logOnlyBad ? "is-on" : ""}" id="log-only-bad">仅看异常 (${badCount})</button>
-      <input id="log-query" class="form-control form-control-sm" type="search" placeholder="搜索日志关键字 / 实例 / 用户…" value="${escapeHtml(state.logQuery)}" style="width: 15rem" aria-label="搜索日志">
+
+    <div class="surface">
+      <div class="view-toolbar">
+        <div class="toolbar-group">
+          <div class="btn-group btn-group-sm" role="group" aria-label="日志分类">${kinds.map(([id, label]) => `<button type="button" class="btn btn-outline-secondary${state.logKind === id ? " is-on" : ""}" data-log="${id}">${label} (${kindCounts[id] || 0})</button>`).join("")}</div>
+          <button type="button" class="btn btn-outline-secondary btn-sm ${state.logOnlyBad ? "is-on" : ""}" id="log-only-bad">仅看异常 (${badCount})</button>
+          ${hasFilter ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-reset-log-filter="1">清空筛选</button>` : ""}
+        </div>
+        <div class="toolbar-group">
+          <input id="log-query" class="form-control form-control-sm" type="search" placeholder="搜索关键字 / #实例 / 用户…" value="${escapeHtml(state.logQuery)}" aria-label="搜索日志">
+        </div>
+      </div>
+      <div class="log-box" role="log" aria-live="off">${lines.length ? lines.map((line) => {
+        const lv = logLevel(line);
+        return `<div class="log-line level-${lv}"><span class="log-time">${escapeHtml(clock(line.at))}</span><span class="log-lv ${lv}">${logKindBadgeLabel(line, lv)}</span><span class="log-msg">${paintLog(line.text, state.logQuery.trim())}</span></div>`;
+      }).join("") : '<div class="log-empty">没有符合筛选条件的日志</div>'}</div>
     </div>
-    <pre class="log">${lines.map((line) => '<span class="t">' + escapeHtml(clock(line.at)) + '</span>  ' + paintLog(line.text, state.logQuery.trim())).join("\n") || "没有符合筛选条件的日志"}</pre>
-  </div></div>`;
+  `;
+}
+
+function openConfirmDialog({ title, desc, impact, confirmLabel, danger, onConfirm }) {
+  if (!confirmModal || typeof confirmModal.showModal !== "function") {
+    pushToast("此浏览器不支持安全确认弹窗，操作未执行。", true);
+    return;
+  }
+  document.getElementById("confirm-modal-title").textContent = title;
+  document.getElementById("confirm-modal-desc").textContent = desc;
+  const impactEl = document.getElementById("confirm-modal-impact");
+  impactEl.textContent = impact;
+  impactEl.classList.toggle("d-none", !impact);
+  const okBtn = document.getElementById("confirm-modal-ok");
+  okBtn.textContent = confirmLabel || "确认执行";
+  okBtn.className = "btn btn-sm " + (danger === false ? "btn-primary" : "btn-danger");
+  state.pendingConfirm = onConfirm;
+  confirmModal.showModal();
+}
+document.getElementById("confirm-modal-ok").addEventListener("click", () => {
+  const fn = state.pendingConfirm;
+  state.pendingConfirm = null;
+  if (confirmModal.open) confirmModal.close("confirm");
+  if (typeof fn === "function") fn();
+});
+confirmModalEl.addEventListener("close", () => { state.pendingConfirm = null; });
+
+for (const id of ["restart-uptime", "restart-users", "restart-connections", "restart-drain-timeout"]) {
+  const field = document.getElementById(id);
+  if (field) {
+    field.addEventListener("input", () => {
+      state.restartDraft = {
+        uptime: document.getElementById("restart-uptime").value,
+        users: document.getElementById("restart-users").value,
+        connections: document.getElementById("restart-connections").value,
+        drainTimeout: document.getElementById("restart-drain-timeout").value
+      };
+      syncPolicyDrawer(state.status);
+    });
+  }
+}
+document.querySelectorAll("#policy-drawer [data-preset]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const [fieldId, val] = btn.dataset.preset.split(":");
+    const el = document.getElementById(fieldId);
+    if (el) {
+      el.value = val;
+      state.restartDraft = {
+        uptime: document.getElementById("restart-uptime").value,
+        users: document.getElementById("restart-users").value,
+        connections: document.getElementById("restart-connections").value,
+        drainTimeout: document.getElementById("restart-drain-timeout").value
+      };
+      syncPolicyDrawer(state.status);
+    }
+  });
+});
+const policyApplyBtn = document.getElementById("policy-apply-btn");
+if (policyApplyBtn) policyApplyBtn.addEventListener("click", () => act("restart-policy", policyApplyBtn));
+const policyResetBtn = document.getElementById("policy-reset-btn");
+if (policyResetBtn) policyResetBtn.addEventListener("click", () => act("reset-policy", policyResetBtn));
+const rulesDetailsEl = document.getElementById("rules-details");
+if (rulesDetailsEl) {
+  rulesDetailsEl.addEventListener("toggle", () => { state.rulesOpen = rulesDetailsEl.open; });
 }
 
 function bind() {
+  document.querySelectorAll("[data-filter], [data-conn-filter], [data-log], #log-only-bad, [data-act='toggle-stick']").forEach((button) => {
+    button.setAttribute("aria-pressed", button.classList.contains("is-on") ? "true" : "false");
+  });
+  const authForm = document.getElementById("auth-card-form");
+  if (authForm) {
+    authForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = document.getElementById("auth-card-token");
+      submitToken(input ? input.value : "");
+    });
+  }
+  const passToggle = document.getElementById("auth-pass-toggle");
+  if (passToggle) {
+    passToggle.addEventListener("click", () => {
+      const input = document.getElementById("auth-card-token");
+      if (input) state.token = input.value;
+      state.authShowPass = !state.authShowPass;
+      render();
+    });
+  }
+
+  document.querySelectorAll("[data-open-policy]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      syncPolicyDrawer(state.status);
+      if (policyDrawer) policyDrawer.show();
+    });
+  });
+
+  document.querySelectorAll("[data-jump-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.filter = btn.dataset.jumpFilter || "all";
+      state.instQuery = "";
+      state.highlightSlot = null;
+      switchView("instances");
+    });
+  });
+  document.querySelectorAll("[data-jump-view]").forEach((btn) => {
+    btn.addEventListener("click", () => switchView(btn.dataset.jumpView));
+  });
+  document.querySelectorAll("[data-slot-conns]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.connFilter = "all";
+      state.connQuery = "#" + btn.dataset.slotConns;
+      switchView("connections");
+    });
+  });
+  document.querySelectorAll("[data-slot-logs]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.logKind = "all";
+      state.logOnlyBad = false;
+      state.logQuery = "#" + btn.dataset.slotLogs;
+      switchView("logs");
+    });
+  });
+
   document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => {
     state.filter = button.dataset.filter;
-    state.highlightSlot = 0;
+    state.highlightSlot = null;
+    render();
+  }));
+  document.querySelectorAll("[data-reset-inst-filter]").forEach((button) => button.addEventListener("click", () => {
+    state.filter = "all";
+    state.instQuery = "";
+    state.highlightSlot = null;
+    render();
+  }));
+  document.querySelectorAll("[data-clear-highlight]").forEach((button) => button.addEventListener("click", () => {
+    state.highlightSlot = null;
     render();
   }));
   document.querySelectorAll("[data-conn-filter]").forEach((button) => button.addEventListener("click", () => {
     state.connFilter = button.dataset.connFilter;
     render();
   }));
+  document.querySelectorAll("[data-reset-conn-filter]").forEach((button) => button.addEventListener("click", () => {
+    state.connFilter = "all";
+    state.connQuery = "";
+    render();
+  }));
   document.querySelectorAll("[data-log]").forEach((button) => button.addEventListener("click", () => {
     state.logKind = button.dataset.log;
+    render();
+  }));
+  document.querySelectorAll("[data-reset-log-filter]").forEach((button) => button.addEventListener("click", () => {
+    state.logKind = "all";
+    state.logOnlyBad = false;
+    state.logQuery = "";
     render();
   }));
   const badBtn = document.getElementById("log-only-bad");
@@ -1115,11 +3060,17 @@ function bind() {
     state.logOnlyBad = !state.logOnlyBad;
     render();
   });
+
   const instQuery = document.getElementById("inst-query");
   if (instQuery) instQuery.addEventListener("input", () => {
     state.instQuery = instQuery.value;
-    state.highlightSlot = 0;
+    state.highlightSlot = null;
     requestRender();
+  });
+  const instSort = document.getElementById("inst-sort");
+  if (instSort) instSort.addEventListener("change", () => {
+    state.instSort = instSort.value;
+    render();
   });
   const connQuery = document.getElementById("conn-query");
   if (connQuery) connQuery.addEventListener("input", () => {
@@ -1136,6 +3087,19 @@ function bind() {
     state.logQuery = logQuery.value;
     requestRender();
   });
+  const tempCountEl = document.getElementById("temp-count");
+  if (tempCountEl) tempCountEl.addEventListener("input", () => {
+    state.tempCount = tempCountEl.value;
+  });
+
+  document.querySelectorAll("[data-expand-slot]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const slot = Number(btn.dataset.expandSlot);
+      if (state.expandedSlots.has(slot)) state.expandedSlots.delete(slot);
+      else state.expandedSlots.add(slot);
+      render();
+    });
+  });
 
   const selectAllTemps = document.getElementById("select-all-temps");
   if (selectAllTemps) {
@@ -1147,14 +3111,23 @@ function bind() {
       tempBoxes.forEach((box) => { box.checked = checked; });
       const visibleIds = tempBoxes.map((b) => String(b.dataset.temp));
       if (checked) {
-        const merged = new Set([...state.temps, ...visibleIds]);
-        state.temps = [...merged];
+        state.temps = [...new Set([...state.temps, ...visibleIds])];
       } else {
         state.temps = state.temps.filter((id) => !visibleIds.includes(id));
       }
       render();
     });
   }
+  document.querySelectorAll("[data-mobile-toggle-temps]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tempBoxes = [...document.querySelectorAll("[data-temp]")];
+      const visibleIds = tempBoxes.map((b) => String(b.dataset.temp));
+      const allChecked = visibleIds.length > 0 && visibleIds.every((id) => state.temps.includes(id));
+      if (allChecked) state.temps = state.temps.filter((id) => !visibleIds.includes(id));
+      else state.temps = [...new Set([...state.temps, ...visibleIds])];
+      render();
+    });
+  });
   document.querySelectorAll("[data-temp]").forEach((box) => {
     box.addEventListener("change", () => {
       const id = String(box.dataset.temp);
@@ -1167,45 +3140,10 @@ function bind() {
     });
   });
 
-  for (const id of ["restart-uptime", "restart-users", "restart-connections", "restart-drain-timeout"]) {
-    const field = document.getElementById(id);
-    if (field) field.addEventListener("input", () => {
-      state.restartDraft = {
-        uptime: document.getElementById("restart-uptime").value,
-        users: document.getElementById("restart-users").value,
-        connections: document.getElementById("restart-connections").value,
-        drainTimeout: document.getElementById("restart-drain-timeout").value,
-      };
-      requestRender();
-    });
-  }
-  document.querySelectorAll("[data-preset]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const [fieldId, val] = btn.dataset.preset.split(":");
-      const el = document.getElementById(fieldId);
-      if (el) {
-        el.value = val;
-        state.restartDraft = {
-          uptime: document.getElementById("restart-uptime").value,
-          users: document.getElementById("restart-users").value,
-          connections: document.getElementById("restart-connections").value,
-          drainTimeout: document.getElementById("restart-drain-timeout").value,
-        };
-        render();
-      }
-    });
-  });
-
-  const rulesDetails = document.getElementById("rules-details");
-  if (rulesDetails) {
-    rulesDetails.addEventListener("toggle", () => {
-      state.rulesOpen = rulesDetails.open;
-    });
-  }
-
   document.querySelectorAll("[data-jump-slot]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const slot = Number(btn.dataset.jumpSlot) || 0;
+      const slot = Number(btn.dataset.jumpSlot);
+      if (!Number.isFinite(slot)) return;
       state.filter = "all";
       state.instQuery = "";
       state.highlightSlot = slot;
@@ -1231,125 +3169,207 @@ function bind() {
     });
   });
 
-  document.querySelectorAll("[data-act]").forEach((button) => button.addEventListener("click", () => act(button.dataset.act, button)));
+  document.querySelectorAll("[data-act]").forEach((button) => {
+    if (button.closest("#policy-drawer")) return;
+    button.addEventListener("click", () => act(button.dataset.act, button));
+  });
   applyFeedback();
-  const box = document.querySelector("#logs pre");
-  if (box) box.addEventListener("scroll", () => {
+
+  const logBox = document.querySelector("#logs .log-box");
+  if (logBox) logBox.addEventListener("scroll", () => {
     if (state.suppressLogScroll) return;
-    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    const nearBottom = logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight < 16;
     if (state.stick !== nearBottom) {
       state.stick = nearBottom;
-      const stickBtn = document.querySelector('[data-act="toggle-stick"]');
-      if (stickBtn) {
-        stickBtn.classList.toggle("is-on", state.stick);
-        stickBtn.textContent = state.stick ? "自动滚底: 开" : "自动滚底: 暂停";
-      }
+      render();
     }
   });
 }
 
-async function act(name, button) {
+function buildConfirmSpec(name, button, pickedTemps) {
+  const data = state.status || {};
+  const activeTotal = Number(data.active_connections) || 0;
+  if (name === "toggle" && button.dataset.on === "0") {
+    return {
+      title: "确认暂停代理转发入口？",
+      desc: "暂停后，所有新的代理请求将不再通过 WARP 隧道池转发。",
+      impact: "当前影响范围：代理池正承载 " + activeTotal + " 条活跃连接。",
+      confirmLabel: "确认暂停入口",
+      danger: true
+    };
+  }
+  if (name === "http2") {
+    const toH2 = button.dataset.on === "1";
+    return {
+      title: toH2 ? "确认切换至 HTTP/2 隧道？" : "确认切回 HTTP/3 隧道？",
+      desc: toH2
+        ? "切换后全部实例将重建为 TCP+TLS（HTTP/2）连接，用于规避 UDP 阻断。"
+        : "切回标准 QUIC/UDP（HTTP/3）后，全部实例将依次重建隧道。",
+      impact: "当前影响范围：" + (data.accounts ? data.accounts.length : 0) + " 个实例，" + activeTotal + " 条活跃连接可能出现短暂重连。",
+      confirmLabel: toH2 ? "切换到 HTTP/2" : "切回 HTTP/3",
+      danger: true
+    };
+  }
+  if (name === "graceful-restart") {
+    const timeoutNote = data.restart_drain_timeout_seconds > 0
+      ? "排空超过 " + duration(data.restart_drain_timeout_seconds) + " 将强制放行重连。"
+      : "未设置排空超时，将等待旧连接自然结束。";
+    return {
+      title: "确认对全部实例触发优雅重启？",
+      desc: "全部实例将停止接入新连接并进入排空队列，按并发上限依次保身份重连。排空期间可能暂时无法建立新连接。",
+      impact: "当前影响范围：" + (data.accounts ? data.accounts.length : 0) + " 个实例，" + activeTotal + " 条活跃连接。" + timeoutNote,
+      confirmLabel: "确认触发全池重启",
+      danger: true
+    };
+  }
+  if (name === "restart") {
+    const slot = Number(button.dataset.slot);
+    const acc = (data.accounts || []).find((a) => a.id === slot);
+    const slotActive = acc ? Number(acc.active) || 0 : 0;
+    return {
+      title: "确认强制重连实例 #" + slot + "？",
+      desc: "强制重连不会等待排空，会立即切断该实例当前承载的所有连接并重建隧道。",
+      impact: "当前影响范围：实例 #" + slot + " 上有 " + slotActive + " 条活跃连接将被立即中断。",
+      confirmLabel: "确认强制重连",
+      danger: true
+    };
+  }
+  if (name === "remove-temp" && pickedTemps.length > 0) {
+    const activeOnPicked = (data.accounts || [])
+      .filter((a) => pickedTemps.includes(String(a.id)))
+      .reduce((sum, a) => sum + (Number(a.active) || 0), 0);
+    return {
+      title: "确认移除 " + pickedTemps.length + " 个临时运行实例？",
+      desc: "临时运行实例（" + pickedTemps.map((id) => "#" + id).join("、") + "）将立即停止并移出运行池。已保存的账号身份不会删除，后续添加时可复用。",
+      impact: "当前影响范围：涉及 " + activeOnPicked + " 条活跃连接将被中断。",
+      confirmLabel: "确认移除（" + pickedTemps.length + "）",
+      danger: true
+    };
+  }
+  return null;
+}
+
+async function act(name, button, confirmed = false) {
   if (name === "refresh") return refresh(true);
   if (name === "reset-policy") {
     state.restartDraft = null;
+    syncPolicyDrawer(state.status);
     render();
+    pushToast("已还原为当前生效策略", false);
     return;
   }
   if (name === "toggle-stick") {
     state.stick = !state.stick;
+    render();
     if (state.stick) {
-      const box = document.querySelector("#logs pre");
+      const box = document.querySelector("#logs .log-box");
       if (box) box.scrollTop = box.scrollHeight;
     }
-    render();
     return;
   }
   if (name === "bottom") {
-    const box = document.querySelector("#logs pre");
-    if (box) box.scrollTop = box.scrollHeight;
     state.stick = true;
     render();
+    const box = document.querySelector("#logs .log-box");
+    if (box) box.scrollTop = box.scrollHeight;
     return;
   }
   if (name === "copy") {
-    const box = document.querySelector("#logs pre");
-    if (box) await copyText(box.textContent);
-    setFeedback("act:copy", "已复制", false);
-    applyFeedback();
+    const box = document.querySelector("#logs .log-box");
+    if (box) {
+      const text = [...box.querySelectorAll(".log-line")].map((row) => row.textContent).join("\n");
+      await copyText(text || box.textContent);
+    }
+    pushToast("已复制当前筛选的日志内容", false);
     return;
   }
 
   const key = feedbackKey(name, button);
   if (state.busyKeys.has(key)) return;
 
-  if (name === "graceful-restart" && !window.confirm("全部实例将停止接入新连接，已有连接结束后按队列重启。排空期间可能无法建立新连接，确定继续吗？")) return;
   const pickedTemps = [...new Set(state.temps)];
-  if (name === "remove-temp") {
-    if (!pickedTemps.length) return;
-    if (pickedTemps.length > 1 && !window.confirm("确定要批量移除已勾选的 " + pickedTemps.length + " 个临时实例吗？")) return;
+  if (name === "remove-temp" && !pickedTemps.length) return;
+
+  if (!confirmed) {
+    const spec = buildConfirmSpec(name, button, pickedTemps);
+    if (spec) {
+      openConfirmDialog({
+        ...spec,
+        onConfirm: () => act(name, button, true)
+      });
+      return;
+    }
   }
 
   const tempCount = document.querySelector("#temp-count");
   if (tempCount) state.tempCount = tempCount.value;
-  const text = name === "restart" ? "强制重连" : name === "graceful-slot" ? "优雅重连" : name === "trace-slot" ? "探测出口" : name === "manual" ? (button.dataset.on === "1" ? "启用" : "停用") : actionText(name, button);
+  const label = actionText(name, button);
 
   setKeyBusy(key, true);
-  setFeedback(key, "正在" + text + "…", false, 0);
+  setFeedback(key, "正在" + label + "…", false, 0);
   showError("");
   render();
+  syncPolicyDrawer(state.status);
+
   try {
-    let successText = text + "完成";
+    let successText = label + "完成";
     if (name === "toggle") await api("/api/toggle?on=" + button.dataset.on);
     if (name === "http2") await api("/api/http2?on=" + button.dataset.on);
     if (name === "trace") await api("/api/trace?slot=0");
     if (name === "trace-slot") await api("/api/trace?slot=" + button.dataset.slot);
     if (name === "graceful-restart") {
       const result = await api("/api/restart-graceful");
-      successText = result.queued ? "已提交 " + result.queued + " 个实例" : "没有新增排空任务";
+      successText = result.queued ? "已提交 " + result.queued + " 个实例进入排空队列" : "没有新增排空任务";
     }
     if (name === "graceful-slot") {
       const result = await api("/api/restart-graceful?slot=" + button.dataset.slot);
-      successText = result.queued ? "已进入排空队列" : "已在队列或无需排空";
+      successText = result.queued ? "实例 #" + button.dataset.slot + " 已进入排空队列" : "实例 #" + button.dataset.slot + " 已在队列或无需排空";
     }
     if (name === "restart-policy") {
       const uptime = document.getElementById("restart-uptime").value;
       const users = document.getElementById("restart-users").value;
       const connections = document.getElementById("restart-connections").value;
       const drainTimeout = document.getElementById("restart-drain-timeout").value;
-      if (![uptime, users, connections, drainTimeout].every((value) => /^[0-9]+$/.test(value))) throw new Error("阈值和排空上限必须是非负整数，0 表示关闭");
+      if (![uptime, users, connections, drainTimeout].every((value) => /^[0-9]+$/.test(value))) {
+        throw new Error("阈值和排空上限必须是非负整数，0 表示关闭");
+      }
       await api("/api/restart-policy?max_uptime_seconds=" + uptime + "&max_users=" + users + "&max_connections=" + connections + "&drain_timeout_seconds=" + drainTimeout);
       state.restartDraft = null;
-      successText = "策略已生效";
+      successText = "自动重启策略已生效";
+      if (policyDrawer) policyDrawer.hide();
     }
     if (name === "add-temp") {
       const count = Math.max(1, Math.min(100, Number(state.tempCount) || 1));
       state.tempCount = String(count);
       await api("/api/account/add?temporary=1&count=" + count);
+      successText = "已添加 " + count + " 个临时实例";
     }
     if (name === "remove-temp") {
       refreshSeq += 1;
       let done = 0;
       for (const slot of pickedTemps) {
         done += 1;
-        setFeedback(key, "正在移除 (" + done + "/" + pickedTemps.length + ")…", false, 0);
+        setFeedback(key, "正在移除（" + done + "/" + pickedTemps.length + "）…", false, 0);
         render();
         state.status = await api("/api/account/remove?slot=" + slot);
       }
       state.temps = [];
-      document.querySelectorAll("[data-temp]").forEach((box) => { box.checked = false; });
-      successText = "已移除 " + pickedTemps.length + " 个实例";
+      successText = "已移除 " + pickedTemps.length + " 个临时实例";
     }
     if (name === "restart") await api("/api/restart?slot=" + button.dataset.slot);
     if (name === "manual") await api("/api/account/manual?slot=" + button.dataset.slot + "&on=" + button.dataset.on);
+
     setKeyBusy(key, false);
-    setFeedback(key, successText, false, 1600);
+    setFeedback(key, successText, false, 2600);
+    pushToast(successText, false);
     await refresh(true);
   } catch (err) {
     const message = String(err.message || err);
     setKeyBusy(key, false);
-    setFeedback(key, message, true, 3000);
-    showError(message);
+    setFeedback(key, message, true, 4000);
+    pushToast(label + "失败：" + message, true, () => act(name, button, true));
     render();
+    syncPolicyDrawer(state.status);
     schedule();
   }
 }
@@ -1366,8 +3386,22 @@ async function copyText(text) {
     area.remove();
   }
 }
+function lampClassForHealth(health) {
+  return ["healthy", "attention", "down", "connecting", "retrying", "maintenance", "disabled", "unknown"].includes(health)
+    ? health
+    : "unknown";
+}
 function healthText(health) {
-  return { healthy: "健康", attention: "需关注", down: "中断", connecting: "连接中", retrying: "失败重试", maintenance: "维护", disabled: "已停用", unknown: "未知" }[health] || health;
+  return {
+    healthy: "可用",
+    attention: "需关注",
+    down: "隧道中断",
+    connecting: "连接中",
+    retrying: "失败重试",
+    maintenance: "排空维护",
+    disabled: "已停用",
+    unknown: "待确认"
+  }[health] || ("未知状态（" + health + "）");
 }
 function clock(ms, withDate) {
   if (!ms) return "—";
@@ -1396,8 +3430,15 @@ function bytes(value) {
 function escapeHtml(value) {
   return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
 }
+
 setDocumentTitle();
-refresh();
+if (state.token) {
+  refresh(true);
+} else {
+  syncAuthBar(false);
+  updateOnlineIndicator("等待鉴权", "unknown");
+  render();
+}
 </script>
 </body>
 </html>
